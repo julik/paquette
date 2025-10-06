@@ -1,14 +1,15 @@
 require 'json'
 require 'fileutils'
 require 'rubygems'
+require_relative 'directory_repository'
 
 module Paquette
   class GemServer
     GEMS_DIR = File.expand_path('../../gems', __dir__)
     
     def initialize(gems_dir = nil)
-      @gems_dir = gems_dir || GEMS_DIR
-      FileUtils.mkdir_p(@gems_dir)
+      gems_dir ||= GEMS_DIR
+      @repository = DirectoryRepository.new(gems_dir)
     end
     
     def call(env)
@@ -17,8 +18,8 @@ module Paquette
       method = request.request_method
       
       case [method, path]
-      when ['GET', '/']
-        handle_specs('4.8', request)
+        when ['GET', '/']
+          [200, { 'Content-Type' => 'text/plain' }, ['Paquette RubyGems Repository']]
         
       when ['GET', '/api/v1/dependencies']
         handle_dependencies(request)
@@ -75,21 +76,16 @@ module Paquette
         gems = []
       end
       
-      # If no gems specified, return dependencies for all gems
+      # If no gems specified, return empty array
       if gems.empty?
-        gems = Dir.glob(File.join(@gems_dir, '*.gem')).map do |gem_path|
-          gem_name = File.basename(gem_path, '.gem')
-          if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-            match[1]
-          end
-        end.compact.uniq
+        return [200, { 'Content-Type' => 'application/json' }, ['[]']]
       end
       
       dependencies = []
       gems.each do |gem_name|
-        gem_versions = find_gem_versions(gem_name)
+        gem_versions = @repository.versions_for_gem(gem_name)
         gem_versions.each do |version|
-          gem_dependencies = extract_gem_dependencies(gem_name, version)
+          gem_dependencies = @repository.gem_dependencies(gem_name, version)
           dependencies << {
             name: gem_name,
             number: version,
@@ -107,12 +103,18 @@ module Paquette
     end
     
     def handle_gem_download(gem_filename)
-      gem_path = File.join(@gems_dir, gem_filename)
-      
-      if File.exist?(gem_path)
-        [200, { 'Content-Type' => 'application/octet-stream' }, [File.read(gem_path)]]
+      # Extract gem name and version from filename
+      if match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/)
+        gem_name, version = match[1], match[2]
+        gem_path = @repository.gem_file_path(gem_name, version)
+        
+        if @repository.gem_exists?(gem_name, version)
+          [200, { 'Content-Type' => 'application/octet-stream' }, [File.read(gem_path)]]
+        else
+          [404, { 'Content-Type' => 'text/plain' }, ['Gem not found']]
+        end
       else
-        [404, { 'Content-Type' => 'text/plain' }, ['Gem not found']]
+        [404, { 'Content-Type' => 'text/plain' }, ['Invalid gem filename']]
       end
     end
     
@@ -123,36 +125,25 @@ module Paquette
     
     def handle_versions
       versions = []
-      Dir.glob(File.join(@gems_dir, '*.gem')).each do |gem_path|
-        gem_name = File.basename(gem_path, '.gem')
-        # Extract version from filename (assuming format: name-version.gem)
-        if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-          name, version = match[1], match[2]
-          versions << {
-            name: name,
-            number: version,
-            platform: 'ruby',
-            authors: ['Unknown'],
-            info: 'Uploaded to Paquette',
-            homepage: '',
-            description: '',
-            summary: '',
-            metadata: {}
-          }
-        end
+      @repository.gem_versions.each do |name, version|
+        versions << {
+          name: name,
+          number: version,
+          platform: 'ruby',
+          authors: ['Unknown'],
+          info: 'Uploaded to Paquette',
+          homepage: '',
+          description: '',
+          summary: '',
+          metadata: {}
+        }
       end
       
       [200, { 'Content-Type' => 'application/json' }, [versions.to_json]]
     end
     
     def handle_names
-      names = Dir.glob(File.join(@gems_dir, '*.gem')).map do |gem_path|
-        gem_name = File.basename(gem_path, '.gem')
-        if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-          match[1]
-        end
-      end.compact.uniq
-      
+      names = @repository.gem_names
       [200, { 'Content-Type' => 'application/json' }, [names.to_json]]
     end
     
@@ -160,19 +151,15 @@ module Paquette
       query = request.params['query'] || ''
       results = []
       
-      Dir.glob(File.join(@gems_dir, '*.gem')).each do |gem_path|
-        gem_name = File.basename(gem_path, '.gem')
-        if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-          name, version = match[1], match[2]
-          if name.include?(query)
-            results << {
-              name: name,
-              version: version,
-              platform: 'ruby',
-              authors: ['Unknown'],
-              info: 'Uploaded to Paquette'
-            }
-          end
+      @repository.gem_versions.each do |name, version|
+        if name.include?(query)
+          results << {
+            name: name,
+            version: version,
+            platform: 'ruby',
+            authors: ['Unknown'],
+            info: 'Uploaded to Paquette'
+          }
         end
       end
       
@@ -180,57 +167,36 @@ module Paquette
     end
     
     def handle_specs(version, request)
-      # Return a simple response that Bundler can understand
-      # This avoids the Marshal format issues
-      [200, { 'Content-Type' => 'text/plain' }, ['']]
+      # Return empty specs - Bundler will use the dependencies API instead
+      specs_data = Marshal.dump([])
+      
+      # For .gz requests, compress the data
+      if version.include?('.gz') || request.path_info.end_with?('.gz')
+        require 'zlib'
+        specs_data = Zlib::Deflate.deflate(specs_data)
+        [200, { 'Content-Type' => 'application/x-gzip' }, [specs_data]]
+      else
+        [200, { 'Content-Type' => 'application/octet-stream' }, [specs_data]]
+      end
     end
     
-    def find_gem_versions(gem_name)
-      versions = []
-      Dir.glob(File.join(@gems_dir, "#{gem_name}-*.gem")).each do |gem_path|
-        filename = File.basename(gem_path, '.gem')
-        if match = filename.match(/^#{Regexp.escape(gem_name)}-(\d+\.\d+\.\d+.*)$/)
-          versions << match[1]
-        end
-      end
-      versions.sort
-    end
     
     def handle_compact_names
-      names = Dir.glob(File.join(@gems_dir, '*.gem')).map do |gem_path|
-        gem_name = File.basename(gem_path, '.gem')
-        if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-          match[1]
-        end
-      end.compact.uniq.sort
-      
+      names = @repository.gem_names
       [200, { 'Content-Type' => 'text/plain' }, [names.join("\n")]]
     end
     
     def handle_compact_versions
-      versions = []
-      Dir.glob(File.join(@gems_dir, '*.gem')).each do |gem_path|
-        gem_name = File.basename(gem_path, '.gem')
-        if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-          name, version = match[1], match[2]
-          versions << "#{name} #{version}"
-        end
-      end
-      
+      versions = @repository.gem_versions.map { |name, version| "#{name} #{version}" }
       [200, { 'Content-Type' => 'text/plain' }, [versions.sort.join("\n")]]
     end
     
     def handle_compact_info(gem_name)
-      versions = find_gem_versions(gem_name)
+      info_lines = @repository.compact_info(gem_name)
       
-      if versions.empty?
+      if info_lines.empty?
         [404, { 'Content-Type' => 'text/plain' }, ['Not Found']]
       else
-        # Return compact info format: gem_name,version,platform,checksum
-        info_lines = versions.map do |version|
-          "#{gem_name},#{version},ruby,"
-        end
-        
         [200, { 'Content-Type' => 'text/plain' }, [info_lines.join("\n")]]
       end
     end
@@ -242,30 +208,5 @@ module Paquette
       Marshal.dump(specs)
     end
     
-    def extract_gem_dependencies(gem_name, version)
-      gem_file = File.join(@gems_dir, "#{gem_name}-#{version}.gem")
-      return [] unless File.exist?(gem_file)
-      
-      begin
-        # Use RubyGems to extract the gem specification
-        require 'rubygems/package'
-        
-        # Use the public API to open the gem package
-        pkg = Gem::Package.new(gem_file)
-        spec = pkg.spec
-        # Only include runtime dependencies, not development dependencies
-        runtime_deps = spec.dependencies.select { |dep| dep.type == :runtime }
-        return runtime_deps.map do |dep|
-          {
-            name: dep.name,
-            requirements: dep.requirement.to_s
-          }
-        end
-      rescue => e
-        # If we can't extract dependencies, return empty array
-        puts "Warning: Could not extract dependencies for #{gem_name}-#{version}: #{e.message}"
-        []
-      end
-    end
   end
 end

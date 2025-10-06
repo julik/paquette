@@ -141,7 +141,7 @@ class GatedGemRepositoryTest < Minitest::Test
     entitler = ->(name:, version: nil) { true }
     repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
 
-    expected_path = File.join(@gems_dir, "zip_kit-6.2.0.gem")
+    expected_path = File.join(@gems_dir, "zip_kit", "zip_kit-6.2.0.gem")
     assert_equal expected_path, repository.gem_file_path("zip_kit", "6.2.0")
   end
 
@@ -153,7 +153,7 @@ class GatedGemRepositoryTest < Minitest::Test
     repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
 
     # Should return path for entitled version
-    expected_path = File.join(@gems_dir, "zip_kit-6.2.0.gem")
+    expected_path = File.join(@gems_dir, "zip_kit", "zip_kit-6.2.0.gem")
     assert_equal expected_path, repository.gem_file_path("zip_kit", "6.2.0")
 
     # Should return nil for not entitled version

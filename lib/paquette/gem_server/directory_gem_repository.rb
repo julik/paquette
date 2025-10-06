@@ -11,39 +11,35 @@ module Paquette
       end
 
       def gem_names
-        Dir.glob(File.join(@gems_dir, "*.gem")).map do |gem_path|
-          gem_name = File.basename(gem_path, ".gem")
-          if (match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/))
-            match[1]
-          end
-        end.compact.uniq.sort
+        Dir.glob(File.join(@gems_dir, "*")).select { |path| File.directory?(path) }.map do |package_path|
+          File.basename(package_path)
+        end.sort
       end
 
       def gem_versions
         versions = []
-        Dir.glob(File.join(@gems_dir, "*.gem")).each do |gem_path|
-          gem_name = File.basename(gem_path, ".gem")
-          if (match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/))
-            name, version = match[1], match[2]
-            versions << [name, version]
+        gem_names.each do |gem_name|
+          versions_for_gem(gem_name).each do |version|
+            versions << [gem_name, version]
           end
         end
         versions.sort
       end
 
       def versions_for_gem(gem_name)
-        versions = []
-        Dir.glob(File.join(@gems_dir, "#{gem_name}-*.gem")).each do |gem_path|
+        gem_dir = File.join(@gems_dir, gem_name)
+        return [] unless Dir.exist?(gem_dir)
+
+        Dir.glob(File.join(gem_dir, "*.gem")).map do |gem_path|
           filename = File.basename(gem_path, ".gem")
           if (match = filename.match(/^#{Regexp.escape(gem_name)}-(\d+\.\d+\.\d+.*)$/))
-            versions << match[1]
+            match[1]
           end
-        end
-        versions.sort
+        end.compact.sort
       end
 
       def gem_file_path(gem_name, version)
-        File.join(@gems_dir, "#{gem_name}-#{version}.gem")
+        File.join(@gems_dir, gem_name, "#{gem_name}-#{version}.gem")
       end
 
       def gem_exists?(gem_name, version)

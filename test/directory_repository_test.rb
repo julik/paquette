@@ -61,10 +61,10 @@ class DirectoryGemRepositoryTest < Minitest::Test
   end
 
   def test_gem_file_path
-    expected_path = File.join(@gems_dir, "scatter_gather-0.1.0.gem")
+    expected_path = File.join(@gems_dir, "scatter_gather", "scatter_gather-0.1.0.gem")
     assert_equal expected_path, @repository.gem_file_path("scatter_gather", "0.1.0")
 
-    expected_path = File.join(@gems_dir, "zip_kit-6.3.2.gem")
+    expected_path = File.join(@gems_dir, "zip_kit", "zip_kit-6.3.2.gem")
     assert_equal expected_path, @repository.gem_file_path("zip_kit", "6.3.2")
   end
 

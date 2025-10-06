@@ -177,7 +177,7 @@ module Paquette
     def handle_specs(version, request)
       # Generate specs in the format expected by Bundler
       specs = generate_specs_array
-      
+
       # Use Marshal 4.8 format for compatibility with Bundler
       specs_data = marshal_dump_4_8(specs)
 
@@ -224,7 +224,7 @@ module Paquette
     def handle_latest_specs(version, request)
       # Generate latest specs (only the latest version of each gem)
       latest_specs = generate_latest_specs_array
-      
+
       # Use Marshal 4.8 format for compatibility with Bundler
       specs_data = marshal_dump_4_8(latest_specs)
 
@@ -257,7 +257,7 @@ module Paquette
       # Create Marshal data in format 4.8 for compatibility with Bundler
       # Use only basic Ruby types to ensure compatibility
       specs_array = obj.is_a?(Array) ? obj : []
-      
+
       # Simple Marshal.dump should work with basic types
       Marshal.dump(specs_array)
     end

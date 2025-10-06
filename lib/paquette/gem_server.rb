@@ -128,8 +128,7 @@ module Paquette
     end
 
     def handle_gem_upload(request)
-      # For now, just return success - actual upload would need multipart handling
-      json_ok({status: "success"})
+      [400, {}, ["Gem upload is not supported yet"]]
     end
 
     def handle_versions

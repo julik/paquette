@@ -1,3 +1,0 @@
-source "http://127.0.0.1:9988" do
-  gem "zip_kit"
-end

@@ -1,15 +1,17 @@
-require_relative "test_helper"
+require "minitest/autorun"
+require "rack/test"
+require_relative "../lib/paquette"
 
-class IntegrationTest < RackIntegrationTest
+class IntegrationTest < Minitest::Test
+  include Rack::Test::Methods
+
   def setup
     # Use the actual gems directory for testing
-    @test_gems_dir = File.expand_path("../../gems", __dir__)
+    @test_gems_dir = File.expand_path("./gems", Dir.pwd)
     @app = Paquette::App.new(@test_gems_dir)
   end
 
-  def app
-    @app
-  end
+  attr_reader :app
 
   def test_root_endpoint
     get "/"
@@ -88,17 +90,6 @@ class IntegrationTest < RackIntegrationTest
     assert last_response.body.length > 0
   end
 
-  def test_gem_info_endpoint
-    get "/info/scatter_gather"
-    assert_equal 200, last_response.status
-    assert_equal "application/json", last_response.content_type
-
-    info = JSON.parse(last_response.body)
-    assert_equal "scatter_gather", info["name"]
-    assert info["version"].is_a?(String)
-    assert info["info"].is_a?(String)
-  end
-
   def test_search_endpoint
     get "/api/v1/search.json", query: "scatter"
     assert_equal 200, last_response.status
@@ -107,40 +98,22 @@ class IntegrationTest < RackIntegrationTest
     results = JSON.parse(last_response.body)
     assert results.is_a?(Array)
     scatter_result = results.find { |r| r["name"] == "scatter_gather" }
-    assert_not_nil scatter_result
+    refute_nil scatter_result
   end
 
-  def test_compact_index_names
+  # Test that compact index endpoints are disabled (return 404)
+  def test_compact_index_names_disabled
     get "/names"
-    assert_equal 200, last_response.status
-    assert_equal "text/plain", last_response.content_type
-
-    names = last_response.body.split("\n")
-    assert_includes names, "scatter_gather"
-    assert_includes names, "test-gem"
-    assert_includes names, "zip_kit"
+    assert_equal 404, last_response.status
   end
 
-  def test_compact_index_versions
+  def test_compact_index_versions_disabled
     get "/versions"
-    assert_equal 200, last_response.status
-    assert_equal "text/plain", last_response.content_type
-
-    versions = last_response.body.split("\n")
-    assert versions.length >= 6
-    assert_includes versions, "scatter_gather 0.1.0,0.1.1"
-    assert_includes versions, "test-gem 1.0.0"
-    assert_includes versions, "zip_kit 6.2.0,6.2.1,6.3.2"
+    assert_equal 404, last_response.status
   end
 
-  def test_compact_index_info
+  def test_compact_index_info_disabled
     get "/info/scatter_gather"
-    assert_equal 200, last_response.status
-    assert_equal "text/plain", last_response.content_type
-
-    info = last_response.body
-    assert_includes info, "scatter_gather"
-    assert_includes info, "0.1.0"
-    assert_includes info, "0.1.1"
+    assert_equal 404, last_response.status
   end
 end

@@ -1,8 +1,9 @@
-require_relative "test_helper"
+require "minitest/autorun"
+require_relative "../lib/paquette"
 
 class DirectoryRepositoryTest < Minitest::Test
   def setup
-    @gems_dir = File.expand_path("../../gems", __dir__)
+    @gems_dir = File.expand_path("./gems", Dir.pwd)
     @repository = Paquette::DirectoryRepository.new(@gems_dir)
   end
 
@@ -19,13 +20,13 @@ class DirectoryRepositoryTest < Minitest::Test
     assert versions.length >= 6 # Total number of gem files
 
     # Check for scatter_gather versions
-    scatter_versions = versions.select { |name, version| name == "scatter_gather" }
+    scatter_versions = versions.slice("scatter_gather")
     assert_equal 2, scatter_versions.length
     assert_includes scatter_versions.map { |_, v| v }, "0.1.0"
     assert_includes scatter_versions.map { |_, v| v }, "0.1.1"
 
     # Check for zip_kit versions
-    zip_kit_versions = versions.select { |name, version| name == "zip_kit" }
+    zip_kit_versions = versions.slice("zip_kit")
     assert_equal 3, zip_kit_versions.length
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.0"
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.1"
@@ -54,7 +55,7 @@ class DirectoryRepositoryTest < Minitest::Test
     assert @repository.gem_exists?("scatter_gather", "0.1.1")
     assert @repository.gem_exists?("zip_kit", "6.2.0")
     assert @repository.gem_exists?("test-gem", "1.0.0")
-    
+
     refute @repository.gem_exists?("scatter_gather", "0.2.0")
     refute @repository.gem_exists?("nonexistent", "1.0.0")
   end
@@ -62,19 +63,19 @@ class DirectoryRepositoryTest < Minitest::Test
   def test_gem_file_path
     expected_path = File.join(@gems_dir, "scatter_gather-0.1.0.gem")
     assert_equal expected_path, @repository.gem_file_path("scatter_gather", "0.1.0")
-    
+
     expected_path = File.join(@gems_dir, "zip_kit-6.3.2.gem")
     assert_equal expected_path, @repository.gem_file_path("zip_kit", "6.3.2")
   end
 
   def test_gem_spec
     spec = @repository.gem_spec("test-gem", "1.0.0")
-    assert_not_nil spec
+    refute_nil spec
     assert_equal "test-gem", spec.name
     assert_equal "1.0.0", spec.version.to_s
 
     spec = @repository.gem_spec("scatter_gather", "0.1.1")
-    assert_not_nil spec
+    refute_nil spec
     assert_equal "scatter_gather", spec.name
     assert_equal "0.1.1", spec.version.to_s
 

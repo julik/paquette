@@ -13,7 +13,7 @@ module Paquette
       path = request.path_info
 
       # Route to appropriate package server based on path
-      if path.start_with?("/gems/", "/api/v1/", "/specs.", "/names", "/versions", "/info/") ||
+      if path.start_with?("/gems/", "/api/v1/", "/specs.", "/latest_specs.", "/names", "/versions", "/info/") ||
           path == "/"
         # Route to RubyGems server
         @gem_server.call(env)

@@ -1,0 +1,10 @@
+GEM
+  remote: http://localhost:9293/
+  specs:
+    test-gem (1.0.0)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  test-gem!

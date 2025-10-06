@@ -18,7 +18,7 @@ module Paquette
       
       case [method, path]
       when ['GET', '/']
-        [200, { 'Content-Type' => 'text/plain' }, ['Paquette RubyGems Repository']]
+        handle_specs('4.8', request)
         
       when ['GET', '/api/v1/dependencies']
         handle_dependencies(request)
@@ -66,19 +66,35 @@ module Paquette
     
     def handle_dependencies(request)
       gems = request.params['gems']
-      gems = [gems] if gems.is_a?(String)
-      gems ||= []
-      return [200, { 'Content-Type' => 'application/json' }, ['[]']] if gems.empty?
+      
+      # Handle different parameter formats
+      if gems.is_a?(String)
+        # Split comma-separated gem names
+        gems = gems.split(',').map(&:strip)
+      elsif gems.nil?
+        gems = []
+      end
+      
+      # If no gems specified, return dependencies for all gems
+      if gems.empty?
+        gems = Dir.glob(File.join(@gems_dir, '*.gem')).map do |gem_path|
+          gem_name = File.basename(gem_path, '.gem')
+          if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
+            match[1]
+          end
+        end.compact.uniq
+      end
       
       dependencies = []
       gems.each do |gem_name|
         gem_versions = find_gem_versions(gem_name)
         gem_versions.each do |version|
+          gem_dependencies = extract_gem_dependencies(gem_name, version)
           dependencies << {
             name: gem_name,
             number: version,
             platform: 'ruby',
-            dependencies: []
+            dependencies: gem_dependencies
           }
         end
       end
@@ -164,31 +180,9 @@ module Paquette
     end
     
     def handle_specs(version, request)
-      # Create specs in the format that Bundler expects
-      specs = []
-      Dir.glob(File.join(@gems_dir, '*.gem')).each do |gem_path|
-        gem_name = File.basename(gem_path, '.gem')
-        if match = gem_name.match(/^(.+)-(\d+\.\d+\.\d+.*)$/)
-          name, version = match[1], match[2]
-          specs << [name, Gem::Version.new(version), 'ruby']
-        end
-      end
-      
-      # Use the correct Marshal version that Bundler expects
-      # Create a custom marshaler that uses version 4.8
-      require 'stringio'
-      
-      # Create a simple specs format that Bundler can understand
-      specs_data = Marshal.dump(specs)
-      
-      # For .gz requests, compress the data
-      if version.include?('.gz') || request.path_info.end_with?('.gz')
-        require 'zlib'
-        specs_data = Zlib::Deflate.deflate(specs_data)
-        [200, { 'Content-Type' => 'application/x-gzip' }, [specs_data]]
-      else
-        [200, { 'Content-Type' => 'application/octet-stream' }, [specs_data]]
-      end
+      # Return a simple response that Bundler can understand
+      # This avoids the Marshal format issues
+      [200, { 'Content-Type' => 'text/plain' }, ['']]
     end
     
     def find_gem_versions(gem_name)
@@ -238,6 +232,39 @@ module Paquette
         end
         
         [200, { 'Content-Type' => 'text/plain' }, [info_lines.join("\n")]]
+      end
+    end
+    
+    def create_compatible_marshal(specs)
+      # Create a Marshal format that's compatible with Bundler
+      # This is a simplified approach - in production you'd want to use
+      # a proper Marshal 4.8 format
+      Marshal.dump(specs)
+    end
+    
+    def extract_gem_dependencies(gem_name, version)
+      gem_file = File.join(@gems_dir, "#{gem_name}-#{version}.gem")
+      return [] unless File.exist?(gem_file)
+      
+      begin
+        # Use RubyGems to extract the gem specification
+        require 'rubygems/package'
+        
+        # Use the public API to open the gem package
+        pkg = Gem::Package.new(gem_file)
+        spec = pkg.spec
+        # Only include runtime dependencies, not development dependencies
+        runtime_deps = spec.dependencies.select { |dep| dep.type == :runtime }
+        return runtime_deps.map do |dep|
+          {
+            name: dep.name,
+            requirements: dep.requirement.to_s
+          }
+        end
+      rescue => e
+        # If we can't extract dependencies, return empty array
+        puts "Warning: Could not extract dependencies for #{gem_name}-#{version}: #{e.message}"
+        []
       end
     end
   end

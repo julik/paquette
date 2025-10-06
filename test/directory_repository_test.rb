@@ -20,13 +20,13 @@ class DirectoryRepositoryTest < Minitest::Test
     assert versions.length >= 6 # Total number of gem files
 
     # Check for scatter_gather versions
-    scatter_versions = versions.slice("scatter_gather")
+    scatter_versions = versions.select { |name, _| name == "scatter_gather" }
     assert_equal 2, scatter_versions.length
     assert_includes scatter_versions.map { |_, v| v }, "0.1.0"
     assert_includes scatter_versions.map { |_, v| v }, "0.1.1"
 
     # Check for zip_kit versions
-    zip_kit_versions = versions.slice("zip_kit")
+    zip_kit_versions = versions.select { |name, _| name == "zip_kit" }
     assert_equal 3, zip_kit_versions.length
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.0"
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.1"
@@ -102,13 +102,21 @@ class DirectoryRepositoryTest < Minitest::Test
     info = @repository.compact_info("scatter_gather")
     assert info.is_a?(Array)
     assert_equal 2, info.length
-    assert_includes info, "scatter_gather,0.1.0,ruby,"
-    assert_includes info, "scatter_gather,0.1.1,ruby,"
+    
+    # Check that each line has the format "version |checksum:sha256_checksum,ruby:required_ruby_version"
+    info.each do |line|
+      assert_match(/^\S+\s+\|checksum:[a-f0-9]{64},ruby:.+$/, line, "Line should match compact index format: #{line}")
+    end
+    
+    # Extract versions to check they're correct
+    versions = info.map { |line| line.split(" ")[0] }
+    assert_includes versions, "0.1.0"
+    assert_includes versions, "0.1.1"
 
     info = @repository.compact_info("test-gem")
     assert info.is_a?(Array)
     assert_equal 1, info.length
-    assert_includes info, "test-gem,1.0.0,ruby,"
+    assert_match(/^1\.0\.0\s+\|checksum:[a-f0-9]{64},ruby:.+$/, info[0])
 
     # Test non-existent gem
     info = @repository.compact_info("nonexistent")

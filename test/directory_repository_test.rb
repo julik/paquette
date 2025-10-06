@@ -1,10 +1,10 @@
 require "minitest/autorun"
 require_relative "../lib/paquette"
 
-class DirectoryRepositoryTest < Minitest::Test
+class DirectoryGemRepositoryTest < Minitest::Test
   def setup
     @gems_dir = File.expand_path("./gems", Dir.pwd)
-    @repository = Paquette::DirectoryRepository.new(@gems_dir)
+    @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
   end
 
   def test_gem_names
@@ -102,12 +102,12 @@ class DirectoryRepositoryTest < Minitest::Test
     info = @repository.compact_info("scatter_gather")
     assert info.is_a?(Array)
     assert_equal 2, info.length
-    
+
     # Check that each line has the format "version |checksum:sha256_checksum,ruby:required_ruby_version"
     info.each do |line|
       assert_match(/^\S+\s+\|checksum:[a-f0-9]{64},ruby:.+$/, line, "Line should match compact index format: #{line}")
     end
-    
+
     # Extract versions to check they're correct
     versions = info.map { |line| line.split(" ")[0] }
     assert_includes versions, "0.1.0"

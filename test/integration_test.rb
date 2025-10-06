@@ -158,18 +158,18 @@ class IntegrationTest < Minitest::Test
     # Check that each line has the format "version |checksum:sha256_checksum,ruby:required_ruby_version"
     info_lines.each do |line|
       assert_match(/^\S+\s+\|checksum:[a-f0-9]{64},ruby:.+$/, line, "Line should match compact index format: #{line}")
-      
+
       # Parse the line
       version, rest = line.split(" ", 2)
       assert version.match?(/^\d+\.\d+\.\d+/), "Version should be in semver format: #{version}"
-      
+
       # Check checksum and ruby version parts
       assert rest.start_with?("|checksum:"), "Should have checksum prefix: #{rest}"
       checksum_part, ruby_part = rest[1..].split(",", 2)
       assert checksum_part.start_with?("checksum:"), "Should have checksum: #{checksum_part}"
       checksum = checksum_part.split(":", 2)[1]
       assert_match(/^[a-f0-9]{64}$/, checksum, "Checksum should be 64 hex characters (SHA256): #{checksum}")
-      
+
       assert ruby_part.start_with?("ruby:"), "Should have ruby version requirement: #{ruby_part}"
     end
 

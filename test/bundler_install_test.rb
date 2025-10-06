@@ -3,6 +3,12 @@ require "net/http"
 require_relative "../lib/paquette"
 
 class BundlerInstallTest < Minitest::Test
+  GEMFILE_SOURCE = <<~RUBY
+    source "http://localhost:9876" do
+      gem "zip_kit"
+    end
+  RUBY
+
   def setup
     @server_thread = nil
     @server_port = find_free_port

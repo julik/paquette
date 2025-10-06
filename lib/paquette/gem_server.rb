@@ -3,7 +3,8 @@ require "fileutils"
 require "rubygems"
 require "zlib"
 require "stringio"
-require_relative "directory_repository"
+require_relative "gem_server/directory_gem_repository"
+require_relative "gem_server/gated_gem_repository"
 
 module Paquette
   class GemServer
@@ -11,38 +12,32 @@ module Paquette
 
     def initialize(gems_dir = nil)
       gems_dir ||= GEMS_DIR
-      @repository = DirectoryRepository.new(gems_dir)
+      @dir_repository = DirectoryGemRepository.new(gems_dir)
     end
 
     def call(env)
       request = Rack::Request.new(env)
       path = request.path_info
       method = request.request_method
+      @repository = GatedGemRepository.new(@dir_repository) { |name:, version: nil| true }
 
       case [method, path]
       when ["GET", "/"]
         text_ok("Paquette RubyGems Repository")
-
       when ["GET", "/api/v1/dependencies"]
         # Disable dependencies API to force Bundler to use specs format
         not_found("Dependencies API not supported")
-
       when ["GET", "/api/v1/dependencies.json"]
         # Disable dependencies API to force Bundler to use specs format
         not_found("Dependencies API not supported")
-
       when ["POST", "/api/v1/gems"]
         handle_gem_upload(request)
-
       when ["GET", "/api/v1/versions"]
         handle_versions
-
       when ["GET", "/api/v1/names"]
         handle_names
-
       when ["GET", "/api/v1/search.json"]
         handle_search(request)
-
       when ["GET", "/specs.4.8"]
         handle_specs("4.8", request)
       when ["GET", "/specs.4.8.gz"]
@@ -51,13 +46,10 @@ module Paquette
         handle_latest_specs("4.8", request)
       when ["GET", "/latest_specs.4.8.gz"]
         handle_latest_specs("4.8.gz", request)
-
       when ["GET", "/names"]
         handle_compact_names
-
       when ["GET", "/versions"]
         handle_compact_versions
-
       else
         if method == "GET" && path.start_with?("/info/")
           gem_name = path[6..] # Remove '/info/' prefix
@@ -72,6 +64,8 @@ module Paquette
           not_found("Not Found")
         end
       end
+    ensure
+      @repository = nil
     end
 
     private

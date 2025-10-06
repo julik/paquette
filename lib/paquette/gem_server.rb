@@ -2,6 +2,7 @@ require "json"
 require "fileutils"
 require "rubygems"
 require "zlib"
+require "stringio"
 require_relative "directory_repository"
 
 module Paquette
@@ -52,17 +53,15 @@ module Paquette
         handle_latest_specs("4.8.gz", request)
 
       when ["GET", "/names"]
-        # Disable compact index to force Bundler to use specs format
-        not_found("Compact index not supported")
+        handle_compact_names
 
       when ["GET", "/versions"]
-        # Disable compact index to force Bundler to use specs format
-        not_found("Compact index not supported")
+        handle_compact_versions
 
       else
         if method == "GET" && path.start_with?("/info/")
-          # Disable compact index to force Bundler to use specs format
-          not_found("Compact index not supported")
+          gem_name = path[6..] # Remove '/info/' prefix
+          handle_compact_info(gem_name)
         elsif method == "GET" && path.start_with?("/gems/") && path.end_with?(".gem")
           gem_filename = path[6..] # Remove '/gems/' prefix
           handle_gem_download(gem_filename)
@@ -178,13 +177,13 @@ module Paquette
     def handle_specs(version, request)
       # Generate specs in the format expected by Bundler
       specs = generate_specs_array
-
+      
       # Use Marshal 4.8 format for compatibility with Bundler
       specs_data = marshal_dump_4_8(specs)
 
       # For .gz requests, compress the data
       if version.include?(".gz") || request&.path_info&.end_with?(".gz")
-        specs_data = Zlib::Deflate.deflate(specs_data)
+        specs_data = gzip_compress(specs_data)
         [200, {"Content-Type" => "application/x-gzip"}, [specs_data]]
       else
         [200, {"Content-Type" => "application/octet-stream"}, [specs_data]]
@@ -225,13 +224,13 @@ module Paquette
     def handle_latest_specs(version, request)
       # Generate latest specs (only the latest version of each gem)
       latest_specs = generate_latest_specs_array
-
+      
       # Use Marshal 4.8 format for compatibility with Bundler
       specs_data = marshal_dump_4_8(latest_specs)
 
       # For .gz requests, compress the data
       if version.include?(".gz") || request&.path_info&.end_with?(".gz")
-        specs_data = Zlib::Deflate.deflate(specs_data)
+        specs_data = gzip_compress(specs_data)
         [200, {"Content-Type" => "application/x-gzip"}, [specs_data]]
       else
         [200, {"Content-Type" => "application/octet-stream"}, [specs_data]]
@@ -258,9 +257,19 @@ module Paquette
       # Create Marshal data in format 4.8 for compatibility with Bundler
       # Use only basic Ruby types to ensure compatibility
       specs_array = obj.is_a?(Array) ? obj : []
-
+      
       # Simple Marshal.dump should work with basic types
       Marshal.dump(specs_array)
+    end
+
+    def gzip_compress(data)
+      # Create proper gzip format with headers, checksums, etc.
+      StringIO.open do |io|
+        Zlib::GzipWriter.wrap(io) do |gz|
+          gz.write(data)
+        end
+        io.string
+      end
     end
 
     # Helper methods for common response patterns

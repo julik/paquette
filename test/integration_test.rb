@@ -1,5 +1,6 @@
 require "minitest/autorun"
 require "rack/test"
+require "stringio"
 require_relative "../lib/paquette"
 
 class IntegrationTest < Minitest::Test
@@ -101,19 +102,81 @@ class IntegrationTest < Minitest::Test
     refute_nil scatter_result
   end
 
-  # Test that compact index endpoints are disabled (return 404)
-  def test_compact_index_names_disabled
+  # Test compact index endpoints
+  def test_compact_index_names
     get "/names"
-    assert_equal 404, last_response.status
+    assert_equal 200, last_response.status
+    assert_equal "text/plain", last_response.content_type
+
+    names = last_response.body.split("\n")
+    assert_includes names, "scatter_gather"
+    assert_includes names, "test-gem"
+    assert_includes names, "zip_kit"
   end
 
-  def test_compact_index_versions_disabled
+  def test_compact_index_versions
     get "/versions"
+    assert_equal 200, last_response.status
+    assert_equal "text/plain", last_response.content_type
+
+    versions = last_response.body.split("\n")
+    assert versions.length >= 6
+    assert_includes versions, "scatter_gather 0.1.0"
+    assert_includes versions, "scatter_gather 0.1.1"
+    assert_includes versions, "test-gem 1.0.0"
+    assert_includes versions, "zip_kit 6.2.0"
+    assert_includes versions, "zip_kit 6.2.1"
+    assert_includes versions, "zip_kit 6.3.2"
+  end
+
+  def test_compact_index_info
+    get "/info/scatter_gather"
+    assert_equal 200, last_response.status
+    assert_equal "text/plain", last_response.content_type
+
+    info = last_response.body
+    assert_includes info, "scatter_gather,0.1.0,ruby,"
+    assert_includes info, "scatter_gather,0.1.1,ruby,"
+  end
+
+  def test_compact_index_info_nonexistent
+    get "/info/nonexistent"
     assert_equal 404, last_response.status
   end
 
-  def test_compact_index_info_disabled
-    get "/info/scatter_gather"
-    assert_equal 404, last_response.status
+  def test_specs_gz_endpoint
+    get "/specs.4.8.gz"
+    assert_equal 200, last_response.status
+    assert_equal "application/x-gzip", last_response.content_type
+
+    # Verify it's proper gzip format by decompressing
+    decompressed = Zlib::GzipReader.new(StringIO.new(last_response.body)).read
+    specs = Marshal.load(decompressed)
+    assert specs.is_a?(Array)
+    assert specs.length >= 6
+
+    # Check for specific gems
+    gem_names = specs.map { |spec| spec[0] }
+    assert_includes gem_names, "scatter_gather"
+    assert_includes gem_names, "test-gem"
+    assert_includes gem_names, "zip_kit"
+  end
+
+  def test_latest_specs_gz_endpoint
+    get "/latest_specs.4.8.gz"
+    assert_equal 200, last_response.status
+    assert_equal "application/x-gzip", last_response.content_type
+
+    # Verify it's proper gzip format by decompressing
+    decompressed = Zlib::GzipReader.new(StringIO.new(last_response.body)).read
+    specs = Marshal.load(decompressed)
+    assert specs.is_a?(Array)
+    assert specs.length >= 3 # Should have latest version of each gem
+
+    # Check for latest versions
+    gem_names = specs.map { |spec| spec[0] }
+    assert_includes gem_names, "scatter_gather"
+    assert_includes gem_names, "test-gem"
+    assert_includes gem_names, "zip_kit"
   end
 end

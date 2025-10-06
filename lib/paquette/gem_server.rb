@@ -3,6 +3,7 @@ require "fileutils"
 require "rubygems"
 require "zlib"
 require "stringio"
+require "mustermann"
 require_relative "gem_server/directory_gem_repository"
 require_relative "gem_server/gated_gem_repository"
 
@@ -13,6 +14,7 @@ module Paquette
     def initialize(gems_dir = nil)
       gems_dir ||= GEMS_DIR
       @dir_repository = DirectoryGemRepository.new(gems_dir)
+      setup_routes
     end
 
     def call(env)
@@ -21,54 +23,126 @@ module Paquette
       method = request.request_method
       @repository = GatedGemRepository.new(@dir_repository) { |name:, version: nil| true }
 
-      case [method, path]
-      when ["GET", "/"]
-        text_ok("Paquette RubyGems Repository")
-      when ["GET", "/api/v1/dependencies"]
-        # Disable dependencies API to force Bundler to use specs format
-        not_found("Dependencies API not supported")
-      when ["GET", "/api/v1/dependencies.json"]
-        # Disable dependencies API to force Bundler to use specs format
-        not_found("Dependencies API not supported")
-      when ["POST", "/api/v1/gems"]
-        handle_gem_upload(request)
-      when ["GET", "/api/v1/versions"]
-        handle_versions
-      when ["GET", "/api/v1/names"]
-        handle_names
-      when ["GET", "/api/v1/search.json"]
-        handle_search(request)
-      when ["GET", "/specs.4.8"]
-        handle_specs("4.8", request)
-      when ["GET", "/specs.4.8.gz"]
-        handle_specs("4.8.gz", request)
-      when ["GET", "/latest_specs.4.8"]
-        handle_latest_specs("4.8", request)
-      when ["GET", "/latest_specs.4.8.gz"]
-        handle_latest_specs("4.8.gz", request)
-      when ["GET", "/names"]
-        handle_compact_names
-      when ["GET", "/versions"]
-        handle_compact_versions
-      else
-        if method == "GET" && path.start_with?("/info/")
-          gem_name = path[6..] # Remove '/info/' prefix
-          handle_compact_info(gem_name)
-        elsif method == "GET" && path.match?(/^\/quick\/Marshal\.4\.8\/(.+)\.gemspec\.rz$/)
-          gem_spec_name = path.match(/^\/quick\/Marshal\.4\.8\/(.+)\.gemspec\.rz$/)[1]
-          handle_quick_gemspec(gem_spec_name)
-        elsif method == "GET" && path.start_with?("/gems/") && path.end_with?(".gem")
-          gem_filename = path[6..] # Remove '/gems/' prefix
-          handle_gem_download(gem_filename)
-        else
-          not_found("Not Found")
+      # Try to match against our routes
+      @routes.each do |route|
+        if route[:method] == method && route[:pattern].match(path)
+          params = route[:pattern].params(path)
+          return send(route[:handler], request, params)
         end
       end
+
+      not_found("Not Found")
     ensure
       @repository = nil
     end
 
     private
+
+    def setup_routes
+      @routes = [
+        # Root endpoint
+        { method: "GET", pattern: Mustermann.new("/"), handler: :handle_root },
+        
+        # API endpoints
+        { method: "GET", pattern: Mustermann.new("/api/v1/dependencies"), handler: :handle_dependencies_not_supported },
+        { method: "GET", pattern: Mustermann.new("/api/v1/dependencies.json"), handler: :handle_dependencies_not_supported },
+        { method: "POST", pattern: Mustermann.new("/api/v1/gems"), handler: :handle_gem_upload },
+        { method: "GET", pattern: Mustermann.new("/api/v1/versions"), handler: :handle_versions },
+        { method: "GET", pattern: Mustermann.new("/api/v1/names"), handler: :handle_names },
+        { method: "GET", pattern: Mustermann.new("/api/v1/search.json"), handler: :handle_search },
+        
+        # Specs endpoints
+        { method: "GET", pattern: Mustermann.new("/specs.4.8"), handler: :handle_specs_4_8 },
+        { method: "GET", pattern: Mustermann.new("/specs.4.8.gz"), handler: :handle_specs_4_8_gz },
+        { method: "GET", pattern: Mustermann.new("/latest_specs.4.8"), handler: :handle_latest_specs_4_8 },
+        { method: "GET", pattern: Mustermann.new("/latest_specs.4.8.gz"), handler: :handle_latest_specs_4_8_gz },
+        
+        # Compact index endpoints
+        { method: "GET", pattern: Mustermann.new("/names"), handler: :handle_compact_names },
+        { method: "GET", pattern: Mustermann.new("/versions"), handler: :handle_compact_versions },
+        
+        # Dynamic endpoints with parameters
+        { method: "GET", pattern: Mustermann.new("/info/:gem_name"), handler: :handle_compact_info },
+        { method: "GET", pattern: Mustermann.new("/quick/Marshal.4.8/:gem_spec_name.gemspec.rz"), handler: :handle_quick_gemspec },
+        { method: "GET", pattern: Mustermann.new("/gems/:gem_filename"), handler: :handle_gem_download }
+      ]
+    end
+
+    def handle_root(request, params)
+      text_ok("Paquette RubyGems Repository")
+    end
+
+    def handle_dependencies_not_supported(request, params)
+      not_found("Dependencies API not supported")
+    end
+
+    def handle_specs_4_8(request, params)
+      handle_specs("4.8", request)
+    end
+
+    def handle_specs_4_8_gz(request, params)
+      handle_specs("4.8.gz", request)
+    end
+
+    def handle_latest_specs_4_8(request, params)
+      handle_latest_specs("4.8", request)
+    end
+
+    def handle_latest_specs_4_8_gz(request, params)
+      handle_latest_specs("4.8.gz", request)
+    end
+
+    def handle_compact_info(request, params)
+      gem_name = params["gem_name"]
+      info_lines = @repository.compact_info(gem_name)
+
+      if info_lines.empty?
+        not_found("Not Found")
+      else
+        text_ok(info_lines.join("\n"))
+      end
+    end
+
+    def handle_quick_gemspec(request, params)
+      gem_spec_name = params["gem_spec_name"]
+      # Parse gem name and version from the spec name (e.g., "zip_kit-6.3.2")
+      if (match = gem_spec_name.match(/^(.+?)-(\d+\.\d+\.\d+.*)$/))
+        gem_name, version = match[1], match[2]
+
+        if @repository.gem_exists?(gem_name, version)
+          spec = @repository.gem_spec(gem_name, version)
+          if spec
+            # Marshal the spec and compress it with raw deflate (not gzip)
+            marshaled_spec = Marshal.dump(spec)
+            compressed_spec = Zlib::Deflate.deflate(marshaled_spec)
+            [200, {"Content-Type" => "application/octet-stream"}, [compressed_spec]]
+          else
+            not_found("Spec not found")
+          end
+        else
+          not_found("Gem not found: #{gem_name}-#{version}")
+        end
+      else
+        not_found("Invalid gem spec name: #{gem_spec_name}")
+      end
+    end
+
+    def handle_gem_download(request, params)
+      gem_filename = params["gem_filename"]
+      # Extract gem name and version from filename
+      if (match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/))
+        gem_name, version = match[1], match[2]
+        gem_path = @repository.gem_file_path(gem_name, version)
+
+        if @repository.gem_exists?(gem_name, version)
+          [200, {"Content-Type" => "application/octet-stream"}, [File.read(gem_path)]]
+        else
+          not_found("Gem not found")
+        end
+      else
+        not_found("Invalid gem filename")
+      end
+    end
 
     def handle_dependencies(request)
       gems = request.params["gems"]
@@ -107,27 +181,12 @@ module Paquette
       handle_dependencies(request)
     end
 
-    def handle_gem_download(gem_filename)
-      # Extract gem name and version from filename
-      if (match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/))
-        gem_name, version = match[1], match[2]
-        gem_path = @repository.gem_file_path(gem_name, version)
 
-        if @repository.gem_exists?(gem_name, version)
-          [200, {"Content-Type" => "application/octet-stream"}, [File.read(gem_path)]]
-        else
-          not_found("Gem not found")
-        end
-      else
-        not_found("Invalid gem filename")
-      end
-    end
-
-    def handle_gem_upload(request)
+    def handle_gem_upload(request, params)
       [400, {}, ["Gem upload is not supported yet"]]
     end
 
-    def handle_versions
+    def handle_versions(request, params)
       versions = []
       @repository.gem_versions.each do |name, version|
         spec = @repository.gem_spec(name, version)
@@ -147,12 +206,12 @@ module Paquette
       json_ok(versions)
     end
 
-    def handle_names
+    def handle_names(request, params)
       names = @repository.gem_names
       json_ok(names)
     end
 
-    def handle_search(request)
+    def handle_search(request, params)
       query = request.params["query"] || ""
       results = []
 
@@ -187,12 +246,12 @@ module Paquette
       end
     end
 
-    def handle_compact_names
+    def handle_compact_names(request, params)
       names = @repository.gem_names
       text_ok(names.join("\n"))
     end
 
-    def handle_compact_versions
+    def handle_compact_versions(request, params)
       require "digest"
       require "time"
 
@@ -228,38 +287,6 @@ module Paquette
       [200, {"Content-Type" => "text/plain", "X-Checksum-Sha256" => overall_checksum}, [content]]
     end
 
-    def handle_compact_info(gem_name)
-      info_lines = @repository.compact_info(gem_name)
-
-      if info_lines.empty?
-        not_found("Not Found")
-      else
-        text_ok(info_lines.join("\n"))
-      end
-    end
-
-    def handle_quick_gemspec(gem_spec_name)
-      # Parse gem name and version from the spec name (e.g., "zip_kit-6.3.2")
-      if (match = gem_spec_name.match(/^(.+?)-(\d+\.\d+\.\d+.*)$/))
-        gem_name, version = match[1], match[2]
-
-        if @repository.gem_exists?(gem_name, version)
-          spec = @repository.gem_spec(gem_name, version)
-          if spec
-            # Marshal the spec and compress it with raw deflate (not gzip)
-            marshaled_spec = Marshal.dump(spec)
-            compressed_spec = Zlib::Deflate.deflate(marshaled_spec)
-            [200, {"Content-Type" => "application/octet-stream"}, [compressed_spec]]
-          else
-            not_found("Spec not found")
-          end
-        else
-          not_found("Gem not found: #{gem_name}-#{version}")
-        end
-      else
-        not_found("Invalid gem spec name: #{gem_spec_name}")
-      end
-    end
 
     def generate_specs_array
       # Generate specs array in the format expected by RubyGems/Bundler

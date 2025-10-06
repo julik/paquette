@@ -1,5 +1,6 @@
 require "json"
 require "fileutils"
+require "mustermann"
 require_relative "npm_server/directory_npm_repository"
 require_relative "npm_server/gated_npm_repository"
 
@@ -10,6 +11,7 @@ module Paquette
     def initialize(packages_dir = nil)
       packages_dir ||= PACKAGES_DIR
       @dir_repository = DirectoryNpmRepository.new(packages_dir)
+      setup_routes
     end
 
     def call(env)
@@ -18,45 +20,51 @@ module Paquette
       method = request.request_method
       @repository = GatedNpmRepository.new(@dir_repository) { |name:, version: nil| true }
 
-      case [method, path]
-      when ["GET", "/"]
-        text_ok("Paquette NPM Repository")
-      when ["GET", "/-/ping"]
-        handle_ping
-      when ["GET", "/-/whoami"]
-        handle_whoami
-      else
-        if method == "GET" && path.match?(/^\/-\/package\/([^\/]+)\/dist-tags$/)
-          package_name = path.match(/^\/-\/package\/([^\/]+)\/dist-tags$/)[1]
-          handle_dist_tags(package_name)
-        elsif method == "GET" && path.match?(/^\/[^\/]+$/)
-          package_name = path[1..] # Remove leading slash
-          handle_package_metadata(package_name)
-        elsif method == "GET" && path.match?(/^\/[^\/]+\/[^\/]+\.tgz$/)
-          # Handle package tarball download
-          parts = path[1..].split('/')
-          package_name = parts[0]
-          tarball_name = parts[1]
-          handle_package_download(package_name, tarball_name)
-        else
-          not_found("Not Found")
+      # Try to match against our routes
+      @routes.each do |route|
+        if route[:method] == method && route[:pattern].match(path)
+          params = route[:pattern].params(path)
+          return send(route[:handler], request, params)
         end
       end
+
+      not_found("Not Found")
     ensure
       @repository = nil
     end
 
     private
 
-    def handle_ping
+    def setup_routes
+      @routes = [
+        # Root endpoint
+        { method: "GET", pattern: Mustermann.new("/"), handler: :handle_root },
+        
+        # NPM API endpoints
+        { method: "GET", pattern: Mustermann.new("/-/ping"), handler: :handle_ping },
+        { method: "GET", pattern: Mustermann.new("/-/whoami"), handler: :handle_whoami },
+        
+        # Dynamic endpoints with parameters
+        { method: "GET", pattern: Mustermann.new("/-/package/:package_name/dist-tags"), handler: :handle_dist_tags },
+        { method: "GET", pattern: Mustermann.new("/:package_name"), handler: :handle_package_metadata },
+        { method: "GET", pattern: Mustermann.new("/:package_name/:tarball_name"), handler: :handle_package_download }
+      ]
+    end
+
+    def handle_root(request, params)
+      text_ok("Paquette NPM Repository")
+    end
+
+    def handle_ping(request, params)
       json_ok({})
     end
 
-    def handle_whoami
+    def handle_whoami(request, params)
       json_ok({ username: "paquette" })
     end
 
-    def handle_dist_tags(package_name)
+    def handle_dist_tags(request, params)
+      package_name = params["package_name"]
       metadata = @repository.package_metadata(package_name)
       if metadata && metadata[:"dist-tags"]
         json_ok(metadata[:"dist-tags"])
@@ -65,7 +73,8 @@ module Paquette
       end
     end
 
-    def handle_package_metadata(package_name)
+    def handle_package_metadata(request, params)
+      package_name = params["package_name"]
       metadata = @repository.package_metadata(package_name)
       if metadata
         json_ok(metadata)
@@ -74,7 +83,10 @@ module Paquette
       end
     end
 
-    def handle_package_download(package_name, tarball_name)
+    def handle_package_download(request, params)
+      package_name = params["package_name"]
+      tarball_name = params["tarball_name"]
+      
       # Extract version from tarball name (e.g., "package-1.0.0.tgz")
       if (match = tarball_name.match(/^#{Regexp.escape(package_name)}-(\d+\.\d+\.\d+.*)\.tgz$/))
         version = match[1]

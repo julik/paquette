@@ -1,0 +1,23 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    minitest (5.25.5)
+    nio4r (2.7.4)
+    puma (7.0.4)
+      nio4r (~> 2.0)
+    rack (3.2.1)
+    rack-test (2.2.0)
+      rack (>= 1.3)
+
+PLATFORMS
+  arm64-darwin-24
+  ruby
+
+DEPENDENCIES
+  minitest
+  puma
+  rack
+  rack-test
+
+BUNDLED WITH
+   2.6.9

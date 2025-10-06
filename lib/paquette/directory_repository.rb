@@ -75,9 +75,22 @@ module Paquette
       versions = versions_for_gem(gem_name)
       return [] if versions.empty?
 
+      require "digest"
+      
       versions.map do |version|
-        "#{gem_name},#{version},ruby,"
-      end
+        spec = gem_spec(gem_name, version)
+        next unless spec
+        
+        # Calculate SHA256 checksum of the gem file
+        gem_file = gem_file_path(gem_name, version)
+        checksum = Digest::SHA256.file(gem_file).hexdigest
+        
+        # Get required Ruby version from gemspec
+        ruby_version = spec.required_ruby_version&.to_s || ">= 0"
+        
+        # Format: version |checksum:sha256_checksum,ruby:required_ruby_version
+        "#{version} |checksum:#{checksum},ruby:#{ruby_version}"
+      end.compact
     end
   end
 end

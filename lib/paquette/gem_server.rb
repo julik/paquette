@@ -62,6 +62,9 @@ module Paquette
         if method == "GET" && path.start_with?("/info/")
           gem_name = path[6..] # Remove '/info/' prefix
           handle_compact_info(gem_name)
+        elsif method == "GET" && path.match?(/^\/quick\/Marshal\.4\.8\/(.+)\.gemspec\.rz$/)
+          gem_spec_name = path.match(/^\/quick\/Marshal\.4\.8\/(.+)\.gemspec\.rz$/)[1]
+          handle_quick_gemspec(gem_spec_name)
         elsif method == "GET" && path.start_with?("/gems/") && path.end_with?(".gem")
           gem_filename = path[6..] # Remove '/gems/' prefix
           handle_gem_download(gem_filename)
@@ -196,8 +199,39 @@ module Paquette
     end
 
     def handle_compact_versions
-      versions = @repository.gem_versions.map { |name, version| "#{name} #{version}" }
-      text_ok(versions.sort.join("\n"))
+      require "digest"
+      require "time"
+
+      # Group versions by gem name
+      gem_versions = {}
+      @repository.gem_versions.each do |name, version|
+        gem_versions[name] ||= []
+        gem_versions[name] << version
+      end
+
+      # Sort versions for each gem
+      gem_versions.each { |name, versions| versions.sort! }
+
+      # Generate the content in the official format
+      lines = []
+      lines << "created_at: #{Time.now.utc.iso8601}"
+      lines << "---"
+
+      # Add each gem with its versions and checksum
+      gem_versions.sort.each do |name, versions|
+        versions_str = versions.join(",")
+        # Create a checksum for this gem's versions
+        version_data = "#{name} #{versions.join(" ")}"
+        checksum = Digest::MD5.hexdigest(version_data)
+        lines << "#{name} #{versions_str} #{checksum}"
+      end
+
+      content = lines.join("\n")
+
+      # Calculate overall checksum for the entire content
+      overall_checksum = Digest::MD5.hexdigest(content)
+
+      [200, {"Content-Type" => "text/plain", "X-Checksum-Sha256" => overall_checksum}, [content]]
     end
 
     def handle_compact_info(gem_name)
@@ -207,6 +241,29 @@ module Paquette
         not_found("Not Found")
       else
         text_ok(info_lines.join("\n"))
+      end
+    end
+
+    def handle_quick_gemspec(gem_spec_name)
+      # Parse gem name and version from the spec name (e.g., "zip_kit-6.3.2")
+      if (match = gem_spec_name.match(/^(.+?)-(\d+\.\d+\.\d+.*)$/))
+        gem_name, version = match[1], match[2]
+
+        if @repository.gem_exists?(gem_name, version)
+          spec = @repository.gem_spec(gem_name, version)
+          if spec
+            # Marshal the spec and compress it with raw deflate (not gzip)
+            marshaled_spec = Marshal.dump(spec)
+            compressed_spec = Zlib::Deflate.deflate(marshaled_spec)
+            [200, {"Content-Type" => "application/octet-stream"}, [compressed_spec]]
+          else
+            not_found("Spec not found")
+          end
+        else
+          not_found("Gem not found: #{gem_name}-#{version}")
+        end
+      else
+        not_found("Invalid gem spec name: #{gem_spec_name}")
       end
     end
 

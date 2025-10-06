@@ -1,6 +1,7 @@
 require "rack"
 require "json"
 require "fileutils"
+require_relative "paquette/routes"
 require_relative "paquette/gem_server/gem_repository"
 require_relative "paquette/gem_server/directory_gem_repository"
 require_relative "paquette/app"

@@ -1,11 +1,11 @@
 #!/usr/bin/env ruby
 
 # Simple script to create a test gem for testing the repository
-require 'fileutils'
+require "fileutils"
 
 # Create a minimal gem structure
-gem_name = 'test-gem'
-version = '1.0.0'
+gem_name = "test-gem"
+version = "1.0.0"
 gem_dir = "tmp_#{gem_name}-#{version}"
 gemspec_content = <<~GEMSPEC
   Gem::Specification.new do |s|

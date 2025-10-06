@@ -40,3 +40,6 @@
 /seed-files/*
 
 /.DS_Store
+
+vendor/
+.bundle/

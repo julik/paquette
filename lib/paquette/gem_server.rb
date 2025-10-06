@@ -23,10 +23,12 @@ module Paquette
         text_ok("Paquette RubyGems Repository")
 
       when ["GET", "/api/v1/dependencies"]
-        handle_dependencies(request)
+        # Disable dependencies API to force Bundler to use specs format
+        not_found("Dependencies API not supported")
 
       when ["GET", "/api/v1/dependencies.json"]
-        handle_dependencies_json(request)
+        # Disable dependencies API to force Bundler to use specs format
+        not_found("Dependencies API not supported")
 
       when ["POST", "/api/v1/gems"]
         handle_gem_upload(request)
@@ -44,17 +46,23 @@ module Paquette
         handle_specs("4.8", request)
       when ["GET", "/specs.4.8.gz"]
         handle_specs("4.8.gz", request)
+      when ["GET", "/latest_specs.4.8"]
+        handle_latest_specs("4.8", request)
+      when ["GET", "/latest_specs.4.8.gz"]
+        handle_latest_specs("4.8.gz", request)
 
       when ["GET", "/names"]
-        handle_compact_names
+        # Disable compact index to force Bundler to use specs format
+        not_found("Compact index not supported")
 
       when ["GET", "/versions"]
-        handle_compact_versions
+        # Disable compact index to force Bundler to use specs format
+        not_found("Compact index not supported")
 
       else
         if method == "GET" && path.start_with?("/info/")
-          gem_name = path[6..] # Remove '/info/' prefix
-          handle_compact_info(gem_name)
+          # Disable compact index to force Bundler to use specs format
+          not_found("Compact index not supported")
         elsif method == "GET" && path.start_with?("/gems/") && path.end_with?(".gem")
           gem_filename = path[6..] # Remove '/gems/' prefix
           handle_gem_download(gem_filename)
@@ -127,16 +135,17 @@ module Paquette
     def handle_versions
       versions = []
       @repository.gem_versions.each do |name, version|
+        spec = @repository.gem_spec(name, version)
         versions << {
           name: name,
           number: version,
-          platform: "ruby",
-          authors: ["Unknown"],
-          info: "Uploaded to Paquette",
-          homepage: "",
-          description: "",
-          summary: "",
-          metadata: {}
+          platform: spec.platform.to_s,
+          authors: spec.authors,
+          info: spec.description || "",
+          homepage: spec.homepage || "",
+          description: spec.description || "",
+          summary: spec.summary || "",
+          metadata: spec.metadata || {}
         }
       end
 
@@ -168,11 +177,14 @@ module Paquette
     end
 
     def handle_specs(version, request)
-      # Return empty specs - Bundler will use the dependencies API instead
-      specs_data = Marshal.dump([])
+      # Generate specs in the format expected by Bundler
+      specs = generate_specs_array
+      
+      # Use Marshal 4.8 format for compatibility with Bundler
+      specs_data = marshal_dump_4_8(specs)
 
       # For .gz requests, compress the data
-      if version.include?(".gz") || request.path_info.end_with?(".gz")
+      if version.include?(".gz") || (request && request.path_info.end_with?(".gz"))
         specs_data = Zlib::Deflate.deflate(specs_data)
         [200, {"Content-Type" => "application/x-gzip"}, [specs_data]]
       else
@@ -200,11 +212,56 @@ module Paquette
       end
     end
 
-    def create_compatible_marshal(specs)
-      # Create a Marshal format that's compatible with Bundler
-      # This is a simplified approach - in production you'd want to use
-      # a proper Marshal 4.8 format
-      Marshal.dump(specs)
+    def generate_specs_array
+      # Generate specs array in the format expected by RubyGems/Bundler
+      # Each spec is [gem_name, version, platform]
+      # Use only basic Ruby types to ensure Marshal 4.8 compatibility
+      specs = []
+      @repository.gem_versions.each do |name, version|
+        specs << [name.to_s, version.to_s, "ruby"]
+      end
+      specs
+    end
+
+    def handle_latest_specs(version, request)
+      # Generate latest specs (only the latest version of each gem)
+      latest_specs = generate_latest_specs_array
+      
+      # Use Marshal 4.8 format for compatibility with Bundler
+      specs_data = marshal_dump_4_8(latest_specs)
+
+      # For .gz requests, compress the data
+      if version.include?(".gz") || (request && request.path_info.end_with?(".gz"))
+        specs_data = Zlib::Deflate.deflate(specs_data)
+        [200, {"Content-Type" => "application/x-gzip"}, [specs_data]]
+      else
+        [200, {"Content-Type" => "application/octet-stream"}, [specs_data]]
+      end
+    end
+
+    def generate_latest_specs_array
+      # Generate latest specs array - only the latest version of each gem
+      latest_versions = {}
+      @repository.gem_versions.each do |name, version|
+        if !latest_versions[name] || Gem::Version.new(version) > Gem::Version.new(latest_versions[name])
+          latest_versions[name] = version
+        end
+      end
+      
+      specs = []
+      latest_versions.each do |name, version|
+        specs << [name.to_s, version.to_s, "ruby"]
+      end
+      specs
+    end
+
+    def marshal_dump_4_8(obj)
+      # Create Marshal data in format 4.8 for compatibility with Bundler
+      # Use only basic Ruby types to ensure compatibility
+      specs_array = obj.is_a?(Array) ? obj : []
+      
+      # Simple Marshal.dump should work with basic types
+      Marshal.dump(specs_array)
     end
 
     # Helper methods for common response patterns

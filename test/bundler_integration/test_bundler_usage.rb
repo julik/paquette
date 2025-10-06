@@ -20,9 +20,6 @@ def test_repository(base_url = "http://localhost:9292")
       puts "✗ Repository not accessible: #{response.code}"
       return false
     end
-  rescue => e
-    puts "✗ Cannot connect to repository: #{e.message}"
-    return false
   end
 
   # Test 2: Check available gems
@@ -34,8 +31,6 @@ def test_repository(base_url = "http://localhost:9292")
     else
       puts "✗ Cannot fetch gem names: #{response.code}"
     end
-  rescue => e
-    puts "✗ Error fetching gem names: #{e.message}"
   end
 
   # Test 3: Check gem versions
@@ -50,8 +45,6 @@ def test_repository(base_url = "http://localhost:9292")
     else
       puts "✗ Cannot fetch gem versions: #{response.code}"
     end
-  rescue => e
-    puts "✗ Error fetching gem versions: #{e.message}"
   end
 
   # Test 4: Check dependencies endpoint (what Bundler uses)
@@ -68,8 +61,6 @@ def test_repository(base_url = "http://localhost:9292")
     else
       puts "✗ Cannot fetch dependencies: #{response.code}"
     end
-  rescue => e
-    puts "✗ Error fetching dependencies: #{e.message}"
   end
 
   # Test 5: Check specs endpoint (what Bundler uses)
@@ -84,8 +75,6 @@ def test_repository(base_url = "http://localhost:9292")
     else
       puts "✗ Cannot fetch specs: #{response.code}"
     end
-  rescue => e
-    puts "✗ Error fetching specs: #{e.message}"
   end
 
   puts "\n" + "=" * 50

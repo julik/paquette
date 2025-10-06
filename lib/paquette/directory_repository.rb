@@ -53,13 +53,8 @@ module Paquette
       gem_file = gem_file_path(gem_name, version)
       return nil unless File.exist?(gem_file)
 
-      begin
-        pkg = Gem::Package.new(gem_file)
-        pkg.spec
-      rescue => e
-        puts "Warning: Could not extract spec for #{gem_name}-#{version}: #{e.message}"
-        nil
-      end
+      pkg = Gem::Package.new(gem_file)
+      pkg.spec
     end
 
     def gem_dependencies(gem_name, version)

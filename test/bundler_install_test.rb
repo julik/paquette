@@ -76,13 +76,13 @@ class BundlerInstallTest < Minitest::Test
   def test_gem_endpoints
     # Test names endpoint
     response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/api/v1/names"))
-    assert_equal 200, response.code
+    assert_equal "200", response.code
     names = JSON.parse(response.body)
     assert_includes names, "test-gem"
 
     # Test versions endpoint
     response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/api/v1/versions"))
-    assert_equal 200, response.code
+    assert_equal "200", response.code
     versions = JSON.parse(response.body)
     test_gem_versions = versions.select { |v| v["name"] == "test-gem" }
     assert_equal 1, test_gem_versions.length
@@ -90,7 +90,7 @@ class BundlerInstallTest < Minitest::Test
 
     # Test specs endpoint
     response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/specs.4.8"))
-    assert_equal 200, response.code
+    assert_equal "200", response.code
     assert_equal "application/octet-stream", response.content_type
     specs = Marshal.load(response.body)
     assert specs.is_a?(Array)
@@ -101,7 +101,7 @@ class BundlerInstallTest < Minitest::Test
   def test_gem_download
     # Test gem download
     response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/gems/test-gem-1.0.0.gem"))
-    assert_equal 200, response.code
+    assert_equal "200", response.code
     assert_equal "application/octet-stream", response.content_type
     assert response.body.length > 0
   end

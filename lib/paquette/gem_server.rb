@@ -11,64 +11,63 @@ require "securerandom"
 
 module Paquette
   class GemServer
-
     @@routes = Routes.draw do |r|
       # Root endpoint
       r.get "/" do
         text_ok("Paquette RubyGems Repository")
       end
-      
+
       # API endpoints
       r.get "/api/v1/dependencies" do
         not_found("Dependencies API not supported")
       end
-      
+
       r.get "/api/v1/dependencies.json" do
         not_found("Dependencies API not supported")
       end
-      
+
       r.post "/api/v1/gems" do
         [400, {}, ["Gem upload is not supported yet"]]
       end
-      
+
       r.get "/api/v1/versions" do
         handle_versions
       end
-      
+
       r.get "/api/v1/names" do
         handle_names
       end
-      
+
       r.get "/api/v1/search.json" do |query: nil|
         handle_search(query)
       end
-      
+
       # Specs endpoints
       r.get "/specs.4.8" do
         handle_specs("4.8")
       end
-      
+
       r.get "/specs.4.8.gz" do
         handle_specs("4.8.gz")
       end
-      
+
       r.get "/latest_specs.4.8" do
         handle_latest_specs("4.8")
       end
-      
+
       r.get "/latest_specs.4.8.gz" do
         handle_latest_specs("4.8.gz")
       end
-      
+
       # Compact index endpoints
       r.get "/names" do
         handle_compact_names
       end
-      
+
       r.get "/versions" do
         handle_compact_versions
       end
-      
+
       # Dynamic endpoints with parameters
       r.get "/info/:gem_name" do |gem_name:|
         info_lines = @repository.compact_info(gem_name)
@@ -79,7 +78,7 @@ module Paquette
           text_ok(info_lines.join("\n"))
         end
       end
-      
+
       r.get "/quick/Marshal.4.8/:gem_spec_name.gemspec.rz" do |gem_spec_name:|
         # Parse gem name and version from the spec name (e.g., "zip_kit-6.3.2")
         if (match = gem_spec_name.match(/^(.+?)-(\d+\.\d+\.\d+.*)$/))
@@ -102,7 +101,7 @@ module Paquette
           not_found("Invalid gem spec name: #{gem_spec_name}")
         end
       end
-      
+
       r.get "/gems/:gem_filename" do |gem_filename:|
         # Extract gem name and version from filename
         if (match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/))
@@ -127,12 +126,14 @@ module Paquette
 
     def call(env)
       request = Rack::Request.new(env)
-      
+
       # Set up repository stack for this request:
       # 1. DirectoryGemRepository (base repository)
       # 2. Personalizer (wraps directory repo for personalization)
       # 3. GatedGemRepository (wraps personalizer for entitlements)
-      personalized_repository = Personalizer.new(@dir_repository, license_key: "LIC-#{SecureRandom.uuid}")
+      personalized_repository = Personalizer.new(@dir_repository,
+        license_key: "LIC-#{SecureRandom.uuid}",
+        magic_comment_replacements: {"# paquette_license_info" => "LIC-#{SecureRandom.uuid}"})
       @repository = GatedGemRepository.new(personalized_repository) { |name:, version: nil| true }
 
       if (route = @@routes.match(request))
@@ -143,7 +144,6 @@ module Paquette
     end
 
     private
-
 
     def handle_dependencies(request)
       gems = request.params["gems"]
@@ -181,7 +181,6 @@ module Paquette
     def handle_dependencies_json(request)
       handle_dependencies(request)
     end
-
 
     def handle_versions
       versions = []
@@ -283,7 +282,6 @@ module Paquette
 
       [200, {"Content-Type" => "text/plain", "X-Checksum-Sha256" => overall_checksum}, [content]]
     end
-
 
     def generate_specs_array
       # Generate specs array in the format expected by RubyGems/Bundler

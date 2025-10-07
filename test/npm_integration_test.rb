@@ -7,7 +7,7 @@ class NpmIntegrationTest < Minitest::Test
     # Create a temporary directory for test packages
     @test_packages_dir = Dir.mktmpdir("paquette_npm_test")
     @app = Paquette::NpmServer.new(@test_packages_dir)
-    
+
     # Create some test packages
     create_test_packages
   end
@@ -28,7 +28,7 @@ class NpmIntegrationTest < Minitest::Test
     get "/-/ping"
     assert_equal 200, last_response.status
     assert_equal "application/json", last_response.content_type
-    
+
     response = JSON.parse(last_response.body)
     assert_equal({}, response)
   end
@@ -37,7 +37,7 @@ class NpmIntegrationTest < Minitest::Test
     get "/-/whoami"
     assert_equal 200, last_response.status
     assert_equal "application/json", last_response.content_type
-    
+
     response = JSON.parse(last_response.body)
     assert_equal "paquette", response["username"]
   end
@@ -46,7 +46,7 @@ class NpmIntegrationTest < Minitest::Test
     get "/test-package"
     assert_equal 200, last_response.status
     assert_equal "application/json", last_response.content_type
-    
+
     metadata = JSON.parse(last_response.body)
     assert_equal "test-package", metadata["name"]
     assert metadata["versions"].is_a?(Hash)
@@ -67,7 +67,7 @@ class NpmIntegrationTest < Minitest::Test
     get "/-/package/test-package/dist-tags"
     assert_equal 200, last_response.status
     assert_equal "application/json", last_response.content_type
-    
+
     dist_tags = JSON.parse(last_response.body)
     assert_equal "1.1.0", dist_tags["latest"]
   end
@@ -97,7 +97,7 @@ class NpmIntegrationTest < Minitest::Test
   def test_multiple_packages
     get "/another-package"
     assert_equal 200, last_response.status
-    
+
     metadata = JSON.parse(last_response.body)
     assert_equal "another-package", metadata["name"]
     assert metadata["versions"].key?("2.0.0")
@@ -107,14 +107,14 @@ class NpmIntegrationTest < Minitest::Test
   def test_package_versions_structure
     get "/test-package"
     metadata = JSON.parse(last_response.body)
-    
+
     # Check version structure
     version_1_0_0 = metadata["versions"]["1.0.0"]
     assert_equal "test-package", version_1_0_0["name"]
     assert_equal "1.0.0", version_1_0_0["version"]
     assert version_1_0_0["dist"].is_a?(Hash)
     assert_equal "test-package/test-package-1.0.0.tgz", version_1_0_0["dist"]["tarball"]
-    
+
     version_1_1_0 = metadata["versions"]["1.1.0"]
     assert_equal "test-package", version_1_1_0["name"]
     assert_equal "1.1.0", version_1_1_0["version"]
@@ -127,11 +127,11 @@ class NpmIntegrationTest < Minitest::Test
     # Create test-package with versions 1.0.0 and 1.1.0
     package_dir = File.join(@test_packages_dir, "test-package")
     FileUtils.mkdir_p(package_dir)
-    
+
     # Create dummy .tgz files
     File.write(File.join(package_dir, "test-package-1.0.0.tgz"), "dummy tarball content 1.0.0")
     File.write(File.join(package_dir, "test-package-1.1.0.tgz"), "dummy tarball content 1.1.0")
-    
+
     # Create another-package with version 2.0.0
     another_package_dir = File.join(@test_packages_dir, "another-package")
     FileUtils.mkdir_p(another_package_dir)

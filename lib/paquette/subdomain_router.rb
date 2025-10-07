@@ -6,7 +6,7 @@ module Paquette
     def initialize(&block)
       @mappings = {}
       @fallback = nil
-      
+
       if block_given?
         block.call(self)
       end
@@ -15,10 +15,10 @@ module Paquette
     def call(env)
       request = Rack::Request.new(env)
       host = request.host
-      
+
       # Extract subdomain from host
       subdomain = extract_subdomain(host)
-      
+
       if subdomain && @mappings[subdomain]
         app = @mappings[subdomain]
         if app.respond_to?(:call)
@@ -42,20 +42,17 @@ module Paquette
       @fallback = to
     end
 
-
     private
 
     def extract_subdomain(host)
       # Handle localhost with port (e.g., localhost:9292)
-      host = host.split(':').first if host.include?(':')
-      
+      host = host.split(":").first if host.include?(":")
+
       # Extract the first part of the hostname (subdomain)
-      if match = host.match(/^([a-z\-\d]+)\./)
+      if (match = host.match(/^([a-z\-\d]+)\./))
         subdomain = match[1]
         # Only return if this subdomain is actually mapped
         @mappings.key?(subdomain) ? subdomain : nil
-      else
-        nil
       end
     end
   end

@@ -60,39 +60,39 @@ class SubdomainRouterTest < Minitest::Test
 
   def test_routing_to_gems_server
     env = create_env("gems.example.com", "/")
-    
+
     # Mock the GemServer instance to verify it's called
     gem_server_mock = Minitest::Mock.new
     gem_server_mock.expect :call, [200, {}, ["GemServer response"]], [env]
-    
+
     # Stub the instance method
     @gem_server.stub :call, ->(env) { gem_server_mock.call(env) } do
       response = @router.call(env)
       assert_equal [200, {}, ["GemServer response"]], response
     end
-    
+
     gem_server_mock.verify
   end
 
   def test_routing_to_npm_server
     env = create_env("npm.example.com", "/")
-    
+
     # Mock the NpmServer instance to verify it's called
     npm_server_mock = Minitest::Mock.new
     npm_server_mock.expect :call, [200, {}, ["NpmServer response"]], [env]
-    
+
     # Stub the instance method
     @npm_server.stub :call, ->(env) { npm_server_mock.call(env) } do
       response = @router.call(env)
       assert_equal [200, {}, ["NpmServer response"]], response
     end
-    
+
     npm_server_mock.verify
   end
 
   def test_routing_to_default_app
     env = create_env("example.com", "/")
-    
+
     # The router should call the default app
     response = @router.call(env)
     assert_equal [200, {}, ["Default app response"]], response
@@ -100,7 +100,7 @@ class SubdomainRouterTest < Minitest::Test
 
   def test_fallback_behavior
     env = create_env("unknown.example.com", "/")
-    
+
     # The router should call the fallback app
     response = @router.call(env)
     assert_equal [200, {}, ["Default app response"]], response

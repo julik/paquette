@@ -20,12 +20,14 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert versions.length >= 7 # Total number of gem files
 
     # Check for scatter_gather versions
+    # standard:disable Style/HashSlice
     scatter_versions = versions.select { |name, _| name == "scatter_gather" }
     assert_equal 2, scatter_versions.length
     assert_includes scatter_versions.map { |_, v| v }, "0.1.0"
     assert_includes scatter_versions.map { |_, v| v }, "0.1.1"
 
     # Check for zip_kit versions
+    # standard:disable Style/HashSlice
     zip_kit_versions = versions.select { |name, _| name == "zip_kit" }
     assert_equal 3, zip_kit_versions.length
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.0"
@@ -33,7 +35,9 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert_includes zip_kit_versions.map { |_, v| v }, "6.3.2"
 
     # Check for minuscule_test versions
+    # standard:disable Style/HashSlice
     minuscule_versions = versions.select { |name, _| name == "minuscule_test" }
+    # standard:enable Style/HashSlice
     assert_equal 1, minuscule_versions.length
     assert_includes minuscule_versions.map { |_, v| v }, "0.1.0"
   end

@@ -6,22 +6,21 @@ require_relative "npm_server/gated_npm_repository"
 
 module Paquette
   class NpmServer
-
     @@routes = Routes.draw do |r|
       # Root endpoint
       r.get "/" do
         text_ok("Paquette NPM Repository")
       end
-      
+
       # NPM API endpoints
       r.get "/-/ping" do
         json_ok({})
       end
-      
+
       r.get "/-/whoami" do
-        json_ok({ username: "paquette" })
+        json_ok({username: "paquette"})
       end
-      
+
       # Dynamic endpoints with parameters
       r.get "/-/package/:package_name/dist-tags" do |package_name:|
         metadata = @repository.package_metadata(package_name)
@@ -31,7 +30,7 @@ module Paquette
           not_found("Package not found")
         end
       end
-      
+
       r.get "/:package_name" do |package_name:|
         metadata = @repository.package_metadata(package_name)
         if metadata
@@ -40,7 +39,7 @@ module Paquette
           not_found("Package not found")
         end
       end
-      
+
       r.get "/:package_name/:tarball_name" do |package_name:, tarball_name:|
         # Extract version from tarball name (e.g., "package-1.0.0.tgz")
         if (match = tarball_name.match(/^#{Regexp.escape(package_name)}-(\d+\.\d+\.\d+.*)\.tgz$/))

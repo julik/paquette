@@ -45,7 +45,9 @@ class GatedGemRepositoryTest < Minitest::Test
     assert versions.length >= 7 # Total number of gem files
 
     # Check for zip_kit versions
+    # standard:disable Style/HashSlice
     zip_kit_versions = versions.select { |name, _| name == "zip_kit" }
+    # standard:enable Style/HashSlice
     assert_equal 3, zip_kit_versions.length
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.0"
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.1"

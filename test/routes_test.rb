@@ -13,7 +13,7 @@ class RoutesTest < Minitest::Test
 
     def call(env)
       request = Rack::Request.new(env)
-      
+
       if (route = @routes.match(request))
         @last_params = route.params(request)
         @last_action = @routes.perform_action(route, self, request)
@@ -45,7 +45,6 @@ class RoutesTest < Minitest::Test
         end
       end
     end
-
   end
 
   def setup
@@ -113,11 +112,11 @@ class RoutesTest < Minitest::Test
 
   def test_route_builder_methods
     routes = Paquette::Routes.draw do |r|
-      r.get "/get" do; [200, {}, ["GET"]]; end
-      r.post "/post" do; [200, {}, ["POST"]]; end
-      r.put "/put" do; [200, {}, ["PUT"]]; end
-      r.delete "/delete" do; [200, {}, ["DELETE"]]; end
-      r.patch "/patch" do; [200, {}, ["PATCH"]]; end
+      r.get("/get") { [200, {}, ["GET"]] }
+      r.post("/post") { [200, {}, ["POST"]] }
+      r.put("/put") { [200, {}, ["PUT"]] }
+      r.delete("/delete") { [200, {}, ["DELETE"]] }
+      r.patch("/patch") { [200, {}, ["PATCH"]] }
     end
 
     assert_equal 5, routes.instance_variable_get(:@routes).length
@@ -125,7 +124,7 @@ class RoutesTest < Minitest::Test
 
   def test_instance_exec_in_route_blocks
     test_instance = self
-    
+
     routes = Paquette::Routes.draw do |r|
       r.get "/self-test" do
         [200, {}, ["Instance: #{self.class}"]]
@@ -135,7 +134,7 @@ class RoutesTest < Minitest::Test
     # Create a mock request
     request = Rack::Request.new(Rack::MockRequest.env_for("/self-test"))
     route = routes.match(request)
-    
+
     assert route
     result = routes.perform_action(route, test_instance, request)
     assert_equal [200, {}, ["Instance: RoutesTest"]], result

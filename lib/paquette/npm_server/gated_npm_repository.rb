@@ -40,13 +40,13 @@ module Paquette
 
         # Filter versions based on entitlements
         entitled_versions = versions_for_package(package_name)
-        
+
         # Update the versions hash to only include entitled versions
-        metadata[:versions] = metadata[:versions].select { |version, _| entitled_versions.include?(version) }
-        
+        metadata[:versions] = metadata[:versions].slice(*entitled_versions)
+
         # Update time entries to only include entitled versions
-        metadata[:time] = metadata[:time].select { |version, _| entitled_versions.include?(version) }
-        
+        metadata[:time] = metadata[:time].slice(*entitled_versions)
+
         # Update dist-tags to use the latest entitled version
         if entitled_versions.any?
           latest_entitled = entitled_versions.max_by { |v| Gem::Version.new(v) }

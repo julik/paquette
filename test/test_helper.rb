@@ -7,4 +7,3 @@ require "stringio"
 require "net/http"
 require "tempfile"
 require_relative "../lib/paquette"
-

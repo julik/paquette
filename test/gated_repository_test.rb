@@ -14,7 +14,8 @@ class GatedGemRepositoryTest < Minitest::Test
     assert_includes names, "scatter_gather"
     assert_includes names, "test-gem"
     assert_includes names, "zip_kit"
-    assert_equal 3, names.length
+    assert_includes names, "minuscule_test"
+    assert_equal 4, names.length
   end
 
   def test_gem_names_with_only_zip_kit_entitled
@@ -41,7 +42,7 @@ class GatedGemRepositoryTest < Minitest::Test
     repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
 
     versions = repository.gem_versions
-    assert versions.length >= 6 # Total number of gem files
+    assert versions.length >= 7 # Total number of gem files
 
     # Check for zip_kit versions
     zip_kit_versions = versions.select { |name, _| name == "zip_kit" }

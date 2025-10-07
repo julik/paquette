@@ -26,6 +26,7 @@ class IntegrationTest < Minitest::Test
     assert_includes names, "scatter_gather"
     assert_includes names, "test-gem"
     assert_includes names, "zip_kit"
+    assert_includes names, "minuscule_test"
   end
 
   def test_versions_endpoint
@@ -34,7 +35,7 @@ class IntegrationTest < Minitest::Test
     assert_equal "application/json", last_response.content_type
 
     versions = JSON.parse(last_response.body)
-    assert versions.length >= 6 # We have 6 gems in total
+    assert versions.length >= 7 # We have 7 gems in total
 
     # Check for specific gems
     scatter_gather_versions = versions.select { |v| v["name"] == "scatter_gather" }
@@ -47,6 +48,10 @@ class IntegrationTest < Minitest::Test
     assert_includes zip_kit_versions.map { |v| v["number"] }, "6.2.0"
     assert_includes zip_kit_versions.map { |v| v["number"] }, "6.2.1"
     assert_includes zip_kit_versions.map { |v| v["number"] }, "6.3.2"
+
+    minuscule_versions = versions.select { |v| v["name"] == "minuscule_test" }
+    assert_equal 1, minuscule_versions.length
+    assert_includes minuscule_versions.map { |v| v["number"] }, "0.1.0"
   end
 
   def test_specs_endpoint
@@ -56,13 +61,14 @@ class IntegrationTest < Minitest::Test
 
     specs = Marshal.load(last_response.body)
     assert specs.is_a?(Array)
-    assert specs.length >= 6
+    assert specs.length >= 7
 
     # Check for specific gems
     gem_names = specs.map { |spec| spec[0] }
     assert_includes gem_names, "scatter_gather"
     assert_includes gem_names, "test-gem"
     assert_includes gem_names, "zip_kit"
+    assert_includes gem_names, "minuscule_test"
   end
 
   def test_latest_specs_endpoint
@@ -72,13 +78,14 @@ class IntegrationTest < Minitest::Test
 
     specs = Marshal.load(last_response.body)
     assert specs.is_a?(Array)
-    assert specs.length >= 3 # Should have latest version of each gem
+    assert specs.length >= 4 # Should have latest version of each gem
 
     # Check for latest versions
     gem_names = specs.map { |spec| spec[0] }
     assert_includes gem_names, "scatter_gather"
     assert_includes gem_names, "test-gem"
     assert_includes gem_names, "zip_kit"
+    assert_includes gem_names, "minuscule_test"
   end
 
   def test_gem_download
@@ -109,6 +116,7 @@ class IntegrationTest < Minitest::Test
     assert_includes names, "scatter_gather"
     assert_includes names, "test-gem"
     assert_includes names, "zip_kit"
+    assert_includes names, "minuscule_test"
   end
 
   def test_compact_index_versions
@@ -128,7 +136,7 @@ class IntegrationTest < Minitest::Test
 
     # Check gem lines (skip timestamp and separator)
     gem_lines = lines[2..]
-    assert gem_lines.length >= 3
+    assert gem_lines.length >= 4
 
     # Check that each gem line has the format "gem_name versions checksum"
     gem_lines.each do |line|
@@ -142,6 +150,7 @@ class IntegrationTest < Minitest::Test
     assert_includes gem_names, "scatter_gather"
     assert_includes gem_names, "test-gem"
     assert_includes gem_names, "zip_kit"
+    assert_includes gem_names, "minuscule_test"
   end
 
   def test_compact_index_info
@@ -190,13 +199,14 @@ class IntegrationTest < Minitest::Test
     decompressed = Zlib::GzipReader.new(StringIO.new(last_response.body)).read
     specs = Marshal.load(decompressed)
     assert specs.is_a?(Array)
-    assert specs.length >= 6
+    assert specs.length >= 7
 
     # Check for specific gems
     gem_names = specs.map { |spec| spec[0] }
     assert_includes gem_names, "scatter_gather"
     assert_includes gem_names, "test-gem"
     assert_includes gem_names, "zip_kit"
+    assert_includes gem_names, "minuscule_test"
   end
 
   def test_latest_specs_gz_endpoint
@@ -208,13 +218,14 @@ class IntegrationTest < Minitest::Test
     decompressed = Zlib::GzipReader.new(StringIO.new(last_response.body)).read
     specs = Marshal.load(decompressed)
     assert specs.is_a?(Array)
-    assert specs.length >= 3 # Should have latest version of each gem
+    assert specs.length >= 4 # Should have latest version of each gem
 
     # Check for latest versions
     gem_names = specs.map { |spec| spec[0] }
     assert_includes gem_names, "scatter_gather"
     assert_includes gem_names, "test-gem"
     assert_includes gem_names, "zip_kit"
+    assert_includes gem_names, "minuscule_test"
   end
 
   def test_quick_gemspec_endpoint

@@ -11,12 +11,13 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert_includes names, "scatter_gather"
     assert_includes names, "test-gem"
     assert_includes names, "zip_kit"
-    assert_equal 3, names.length
+    assert_includes names, "minuscule_test"
+    assert_equal 4, names.length
   end
 
   def test_gem_versions
     versions = @repository.gem_versions
-    assert versions.length >= 6 # Total number of gem files
+    assert versions.length >= 7 # Total number of gem files
 
     # Check for scatter_gather versions
     scatter_versions = versions.select { |name, _| name == "scatter_gather" }
@@ -30,6 +31,11 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.0"
     assert_includes zip_kit_versions.map { |_, v| v }, "6.2.1"
     assert_includes zip_kit_versions.map { |_, v| v }, "6.3.2"
+
+    # Check for minuscule_test versions
+    minuscule_versions = versions.select { |name, _| name == "minuscule_test" }
+    assert_equal 1, minuscule_versions.length
+    assert_includes minuscule_versions.map { |_, v| v }, "0.1.0"
   end
 
   def test_versions_for_gem
@@ -47,6 +53,10 @@ class DirectoryGemRepositoryTest < Minitest::Test
     test_gem_versions = @repository.versions_for_gem("test-gem")
     assert_equal 1, test_gem_versions.length
     assert_includes test_gem_versions, "1.0.0"
+
+    minuscule_versions = @repository.versions_for_gem("minuscule_test")
+    assert_equal 1, minuscule_versions.length
+    assert_includes minuscule_versions, "0.1.0"
   end
 
   def test_gem_exists
@@ -54,6 +64,7 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert @repository.gem_exists?("scatter_gather", "0.1.1")
     assert @repository.gem_exists?("zip_kit", "6.2.0")
     assert @repository.gem_exists?("test-gem", "1.0.0")
+    assert @repository.gem_exists?("minuscule_test", "0.1.0")
 
     refute @repository.gem_exists?("scatter_gather", "0.2.0")
     refute @repository.gem_exists?("nonexistent", "1.0.0")
@@ -65,6 +76,9 @@ class DirectoryGemRepositoryTest < Minitest::Test
 
     expected_path = File.join(@gems_dir, "zip_kit", "zip_kit-6.3.2.gem")
     assert_equal expected_path, @repository.gem_file_path("zip_kit", "6.3.2")
+
+    expected_path = File.join(@gems_dir, "minuscule_test", "minuscule_test-0.1.0.gem")
+    assert_equal expected_path, @repository.gem_file_path("minuscule_test", "0.1.0")
   end
 
   def test_gem_spec
@@ -77,6 +91,11 @@ class DirectoryGemRepositoryTest < Minitest::Test
     refute_nil spec
     assert_equal "scatter_gather", spec.name
     assert_equal "0.1.1", spec.version.to_s
+
+    spec = @repository.gem_spec("minuscule_test", "0.1.0")
+    refute_nil spec
+    assert_equal "minuscule_test", spec.name
+    assert_equal "0.1.0", spec.version.to_s
 
     # Test non-existent gem
     spec = @repository.gem_spec("nonexistent", "1.0.0")
@@ -91,6 +110,10 @@ class DirectoryGemRepositoryTest < Minitest::Test
     deps = @repository.gem_dependencies("scatter_gather", "0.1.1")
     assert deps.is_a?(Array)
     # The actual dependencies depend on what's in the scatter_gather-0.1.1.gem file
+
+    deps = @repository.gem_dependencies("minuscule_test", "0.1.0")
+    assert deps.is_a?(Array)
+    # The actual dependencies depend on what's in the minuscule_test-0.1.0.gem file
 
     # Test non-existent gem
     deps = @repository.gem_dependencies("nonexistent", "1.0.0")
@@ -116,6 +139,11 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert info.is_a?(Array)
     assert_equal 1, info.length
     assert_match(/^1\.0\.0\s+\|checksum:[a-f0-9]{64},ruby:.+$/, info[0])
+
+    info = @repository.compact_info("minuscule_test")
+    assert info.is_a?(Array)
+    assert_equal 1, info.length
+    assert_match(/^0\.1\.0\s+\|checksum:[a-f0-9]{64},ruby:.+$/, info[0])
 
     # Test non-existent gem
     info = @repository.compact_info("nonexistent")

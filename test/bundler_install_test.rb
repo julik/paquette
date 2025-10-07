@@ -23,6 +23,7 @@ class BundlerInstallTest < Minitest::Test
         gemfile << <<~RUBY
           source "http://localhost:#{@server_port}" do
             gem "zip_kit"
+            gem "minuscule_test"
           end
         RUBY
       end

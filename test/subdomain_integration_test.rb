@@ -1,7 +1,4 @@
-require "minitest/autorun"
-require "rack/test"
-require "rack"
-require "json"
+require_relative "test_helper"
 
 class SubdomainIntegrationTest < Minitest::Test
   include Rack::Test::Methods

@@ -1,6 +1,4 @@
-require "minitest/autorun"
-require "net/http"
-require_relative "../lib/paquette"
+require_relative "test_helper"
 
 class BundlerInstallTest < Minitest::Test
   def setup

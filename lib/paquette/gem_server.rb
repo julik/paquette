@@ -9,11 +9,6 @@ require_relative "gem_server/gated_gem_repository"
 
 module Paquette
   class GemServer
-    GEMS_DIR = File.expand_path("../../packages/gems", __dir__)
-
-    def self.call(env)
-      new.call(env)
-    end
 
     @@routes = Routes.draw do |r|
       # Root endpoint
@@ -123,8 +118,7 @@ module Paquette
       end
     end
 
-    def initialize(gems_dir = nil)
-      gems_dir ||= GEMS_DIR
+    def initialize(gems_dir)
       @dir_repository = DirectoryGemRepository.new(gems_dir)
     end
 
@@ -137,8 +131,6 @@ module Paquette
       else
         not_found("Not Found")
       end
-    ensure
-      @repository = nil
     end
 
     private

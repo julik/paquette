@@ -1,14 +1,12 @@
-require "minitest/autorun"
-require "rack/test"
-require "stringio"
-require_relative "../lib/paquette"
+require_relative "test_helper"
 
 class IntegrationTest < Minitest::Test
   include Rack::Test::Methods
 
   def setup
-    # Use the default App configuration
-    @app = Paquette::App.new
+    # Use the gem server directly for backward compatibility testing
+    gems_dir = File.expand_path("./packages/gems", Dir.pwd)
+    @app = Paquette::GemServer.new(gems_dir)
   end
 
   attr_reader :app

@@ -1,8 +1,4 @@
-require "minitest/autorun"
-require "rack/test"
-require "fileutils"
-require "tempfile"
-require_relative "../lib/paquette"
+require_relative "test_helper"
 
 class NpmIntegrationTest < Minitest::Test
   include Rack::Test::Methods

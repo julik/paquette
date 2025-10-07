@@ -1,5 +1,4 @@
-require "minitest/autorun"
-require_relative "../lib/paquette"
+require_relative "test_helper"
 
 class DirectoryGemRepositoryTest < Minitest::Test
   def setup

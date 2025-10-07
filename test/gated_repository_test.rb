@@ -1,6 +1,4 @@
-require "minitest/autorun"
-require_relative "../lib/paquette"
-require_relative "../lib/paquette/gem_server/gated_gem_repository"
+require_relative "test_helper"
 
 class GatedGemRepositoryTest < Minitest::Test
   def setup

@@ -3,9 +3,13 @@ require_relative "test_helper"
 class SubdomainRouterTest < Minitest::Test
   def setup
     @mock_app = MockApp.new
+    gems_dir = File.expand_path("./packages/gems", Dir.pwd)
+    packages_dir = File.expand_path("./packages/npm", Dir.pwd)
+    @gem_server = Paquette::GemServer.new(gems_dir)
+    @npm_server = Paquette::NpmServer.new(packages_dir)
     @router = Paquette::SubdomainRouter.new do |router|
-      router.map "gems", to: Paquette::GemServer
-      router.map "npm", to: Paquette::NpmServer
+      router.map "gems", to: @gem_server
+      router.map "npm", to: @npm_server
       router.fallback to: @mock_app
     end
   end
@@ -57,12 +61,12 @@ class SubdomainRouterTest < Minitest::Test
   def test_routing_to_gems_server
     env = create_env("gems.example.com", "/")
     
-    # Mock the GemServer class method to verify it's called
+    # Mock the GemServer instance to verify it's called
     gem_server_mock = Minitest::Mock.new
     gem_server_mock.expect :call, [200, {}, ["GemServer response"]], [env]
     
-    # Stub the GemServer class to return our mock
-    Paquette::GemServer.stub :call, ->(env) { gem_server_mock.call(env) } do
+    # Stub the instance method
+    @gem_server.stub :call, ->(env) { gem_server_mock.call(env) } do
       response = @router.call(env)
       assert_equal [200, {}, ["GemServer response"]], response
     end
@@ -73,12 +77,12 @@ class SubdomainRouterTest < Minitest::Test
   def test_routing_to_npm_server
     env = create_env("npm.example.com", "/")
     
-    # Mock the NpmServer class method to verify it's called
+    # Mock the NpmServer instance to verify it's called
     npm_server_mock = Minitest::Mock.new
     npm_server_mock.expect :call, [200, {}, ["NpmServer response"]], [env]
     
-    # Stub the NpmServer class to return our mock
-    Paquette::NpmServer.stub :call, ->(env) { npm_server_mock.call(env) } do
+    # Stub the instance method
+    @npm_server.stub :call, ->(env) { npm_server_mock.call(env) } do
       response = @router.call(env)
       assert_equal [200, {}, ["NpmServer response"]], response
     end

@@ -1,6 +1,4 @@
-require "minitest/autorun"
-require "rack/test"
-require_relative "../lib/paquette"
+require_relative "test_helper"
 
 class RoutesTest < Minitest::Test
   include Rack::Test::Methods

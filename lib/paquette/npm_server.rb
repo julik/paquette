@@ -6,11 +6,6 @@ require_relative "npm_server/gated_npm_repository"
 
 module Paquette
   class NpmServer
-    PACKAGES_DIR = File.expand_path("../../packages/npm", __dir__)
-
-    def self.call(env)
-      new.call(env)
-    end
 
     @@routes = Routes.draw do |r|
       # Root endpoint
@@ -63,8 +58,7 @@ module Paquette
       end
     end
 
-    def initialize(packages_dir = nil)
-      packages_dir ||= PACKAGES_DIR
+    def initialize(packages_dir)
       @dir_repository = DirectoryNpmRepository.new(packages_dir)
     end
 
@@ -77,8 +71,6 @@ module Paquette
       else
         not_found("Not Found")
       end
-    ensure
-      @repository = nil
     end
 
     private

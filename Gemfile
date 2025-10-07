@@ -3,6 +3,7 @@ source "https://rubygems.org"
 gem "rack"
 gem "puma"
 gem "mustermann"
+gem "sourcemap"
 
 group :test do
   gem "minitest"

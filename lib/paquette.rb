@@ -8,4 +8,5 @@ module Paquette
   require_relative "paquette/npm_server"
   require_relative "paquette/subdomain_router"
   require_relative "paquette/gem_repacker"
+  require_relative "paquette/npm_repacker"
 end

@@ -3,7 +3,7 @@ require_relative "../lib/paquette"
 
 class DirectoryGemRepositoryTest < Minitest::Test
   def setup
-    @gems_dir = File.expand_path("./gems", Dir.pwd)
+    @gems_dir = File.expand_path("./packages/gems", Dir.pwd)
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
   end
 

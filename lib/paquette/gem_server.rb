@@ -9,7 +9,7 @@ require_relative "gem_server/gated_gem_repository"
 
 module Paquette
   class GemServer
-    GEMS_DIR = File.expand_path("../../gems", __dir__)
+    GEMS_DIR = File.expand_path("../../packages/gems", __dir__)
 
     @@routes = Routes.draw do |r|
       # Root endpoint

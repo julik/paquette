@@ -6,7 +6,7 @@ require_relative "npm_server/gated_npm_repository"
 
 module Paquette
   class NpmServer
-    PACKAGES_DIR = File.expand_path("../../packages", __dir__)
+    PACKAGES_DIR = File.expand_path("../../packages/npm", __dir__)
 
     @@routes = Routes.draw do |r|
       # Root endpoint

@@ -17,8 +17,8 @@ module Paquette
           path == "/"
         # Route to RubyGems server
         @gem_server.call(env)
-      elsif path.start_with?("/npm/", "/@") || path.match?(/^\/[^\/]+$/)
-        # Route to NPM server (for package names like /express, /@scope/package)
+      elsif path.start_with?("/npm/", "/@") || path.start_with?("/-/") || path.match?(/^\/[^\/]+$/) || path.match?(/^\/[^\/]+\/[^\/]+\.tgz$/)
+        # Route to NPM server (for package names like /express, /@scope/package, NPM API endpoints like /-/ping, and tarball downloads)
         @npm_server.call(env)
       else
         # For now, route unknown paths to gem server for backward compatibility

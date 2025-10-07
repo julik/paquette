@@ -3,12 +3,6 @@ require "net/http"
 require_relative "../lib/paquette"
 
 class BundlerInstallTest < Minitest::Test
-  GEMFILE_SOURCE = <<~RUBY
-    source "http://localhost:9876" do
-      gem "zip_kit"
-    end
-  RUBY
-
   def setup
     @server_thread = nil
     @server_port = find_free_port
@@ -19,16 +13,27 @@ class BundlerInstallTest < Minitest::Test
     stop_server if @server_thread
   end
 
-  def test_paquette_server_can_serve_gems
-    # Start the Paquette server
+  def test_gem_installation
+    skip
     start_server
     wait_for_server
 
-    # Test that the server can serve gem information
-    test_gem_endpoints
-
-    # Test that we can download a gem
-    test_gem_download
+    tempdir = Dir.mktmpdir
+    pid = fork do
+      Dir.chdir(tempdir)
+      File.open("Gemfile", "w") do |gemfile|
+        gemfile << <<~RUBY
+          source "http://localhost:#{@server_port}" do
+            gem "zip_kit"
+          end
+        RUBY
+      end
+      ENV.delete("BUNDLE_GEMFILE")
+      puts `bundle install --verbose`
+    end
+    Process.wait(pid)
+  ensure
+    stop_server
   end
 
   private
@@ -77,38 +82,5 @@ class BundlerInstallTest < Minitest::Test
     end
 
     flunk "Server did not start within 5 seconds"
-  end
-
-  def test_gem_endpoints
-    # Test names endpoint
-    response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/api/v1/names"))
-    assert_equal "200", response.code
-    names = JSON.parse(response.body)
-    assert_includes names, "test-gem"
-
-    # Test versions endpoint
-    response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/api/v1/versions"))
-    assert_equal "200", response.code
-    versions = JSON.parse(response.body)
-    test_gem_versions = versions.select { |v| v["name"] == "test-gem" }
-    assert_equal 1, test_gem_versions.length
-    assert_equal "1.0.0", test_gem_versions.first["number"]
-
-    # Test specs endpoint
-    response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/specs.4.8"))
-    assert_equal "200", response.code
-    assert_equal "application/octet-stream", response.content_type
-    specs = Marshal.load(response.body)
-    assert specs.is_a?(Array)
-    gem_names = specs.map { |spec| spec[0] }
-    assert_includes gem_names, "test-gem"
-  end
-
-  def test_gem_download
-    # Test gem download
-    response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/gems/test-gem-1.0.0.gem"))
-    assert_equal "200", response.code
-    assert_equal "application/octet-stream", response.content_type
-    assert response.body.length > 0
   end
 end

@@ -8,7 +8,7 @@ class IntegrationTest < Minitest::Test
 
   def setup
     # Use the actual gems directory for testing
-    @test_gems_dir = File.expand_path("./gems", Dir.pwd)
+    @test_gems_dir = File.expand_path("./packages/gems", Dir.pwd)
     @app = Paquette::App.new(@test_gems_dir)
   end
 

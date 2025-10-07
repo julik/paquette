@@ -11,6 +11,10 @@ module Paquette
   class GemServer
     GEMS_DIR = File.expand_path("../../packages/gems", __dir__)
 
+    def self.call(env)
+      new.call(env)
+    end
+
     @@routes = Routes.draw do |r|
       # Root endpoint
       r.get "/" do

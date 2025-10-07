@@ -7,9 +7,8 @@ class IntegrationTest < Minitest::Test
   include Rack::Test::Methods
 
   def setup
-    # Use the actual gems directory for testing
-    @test_gems_dir = File.expand_path("./packages/gems", Dir.pwd)
-    @app = Paquette::App.new(@test_gems_dir)
+    # Use the default App configuration
+    @app = Paquette::App.new
   end
 
   attr_reader :app

@@ -7,6 +7,7 @@ require_relative "paquette/gem_server/directory_gem_repository"
 require_relative "paquette/app"
 require_relative "paquette/gem_server"
 require_relative "paquette/npm_server"
+require_relative "paquette/subdomain_router"
 
 module Paquette
   VERSION = "0.1.0"

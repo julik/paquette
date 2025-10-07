@@ -6,6 +6,8 @@ require "stringio"
 require_relative "routes"
 require_relative "gem_server/directory_gem_repository"
 require_relative "gem_server/gated_gem_repository"
+require_relative "gem_server/personalizer"
+require "securerandom"
 
 module Paquette
   class GemServer
@@ -105,13 +107,14 @@ module Paquette
         # Extract gem name and version from filename
         if (match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/))
           gem_name, version = match[1], match[2]
-          gem_path = @repository.gem_file_path(gem_name, version)
+          return not_found("Gem not found or it is not within your license") unless @repository.gem_exists?(gem_name, version)
 
-          if @repository.gem_exists?(gem_name, version)
-            [200, {"Content-Type" => "application/octet-stream"}, [File.read(gem_path)]]
-          else
-            not_found("Gem not found")
-          end
+          # gem_file_path now automatically returns personalized gem
+          gem_path = @repository.gem_file_path(gem_name, version)
+          clen = File.size(gem_path).to_s
+          hh = {"Content-Type" => "application/octet-stream", "Content-Length" => clen}
+
+          [200, hh, File.open(gem_path, "rb")]
         else
           not_found("Invalid gem filename")
         end
@@ -124,7 +127,13 @@ module Paquette
 
     def call(env)
       request = Rack::Request.new(env)
-      @repository = GatedGemRepository.new(@dir_repository) { |name:, version: nil| true }
+      
+      # Set up repository stack for this request:
+      # 1. DirectoryGemRepository (base repository)
+      # 2. Personalizer (wraps directory repo for personalization)
+      # 3. GatedGemRepository (wraps personalizer for entitlements)
+      personalized_repository = Personalizer.new(@dir_repository, license_key: "LIC-#{SecureRandom.uuid}")
+      @repository = GatedGemRepository.new(personalized_repository) { |name:, version: nil| true }
 
       if (route = @@routes.match(request))
         @@routes.perform_action(route, self, request)

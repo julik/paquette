@@ -4,6 +4,7 @@ require "fileutils"
 require "digest"
 require "tmpdir"
 require "tempfile"
+require "open3"
 
 module Paquette
   class GemServer
@@ -38,8 +39,10 @@ module Paquette
         FileUtils.mkdir_p(@unpacked_gem_dir)
 
         # Use gem unpack command to extract the gem
-        result = system("gem unpack #{@gem_path} --target=#{@unpacked_gem_dir}")
-        raise "Failed to unpack gem: #{@gem_path}" unless result
+        _, stderr, status = Open3.capture3("gem unpack #{@gem_path} --target=#{@unpacked_gem_dir}")
+        unless status.success?
+          raise "Failed to unpack gem: #{@gem_path}. Error: #{stderr}"
+        end
 
         # Find the unpacked gem directory - it should be the only directory in unpacked_gem_dir
         @gem_dir = Dir.glob(File.join(@unpacked_gem_dir, "*")).find { |path| File.directory?(path) }
@@ -108,8 +111,10 @@ module Paquette
         create_gemspec_file(gemspec_path, original_spec)
 
         # Build the new gem using gem build command
-        result = system("cd #{@gem_dir} && gem build #{File.basename(gemspec_path)}")
-        raise "Failed to build gem" unless result
+        _, stderr, status = Open3.capture3("gem", "build", File.basename(gemspec_path), chdir: @gem_dir)
+        unless status.success?
+          raise "Failed to build gem. Error: #{stderr}"
+        end
 
         # Find the newly created gem file
         gem_name = File.basename(@gem_path, ".gem")

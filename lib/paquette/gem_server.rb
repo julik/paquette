@@ -129,12 +129,12 @@ module Paquette
 
       # Set up repository stack for this request:
       # 1. DirectoryGemRepository (base repository)
-      # 2. Personalizer (wraps directory repo for personalization)
-      # 3. GatedGemRepository (wraps personalizer for entitlements)
-      personalized_repository = Personalizer.new(@dir_repository,
+      # 2. GatedGemRepository (wraps directory repo for entitlements)
+      # 3. Personalizer (wraps gated repo for personalization)
+      gated_repository = GatedGemRepository.new(@dir_repository) { |name:, version: nil| true }
+      @repository = Personalizer.new(gated_repository,
         license_key: "LIC-#{SecureRandom.uuid}",
         magic_comment_replacements: {"# paquette_license_info" => "LIC-#{SecureRandom.uuid}"})
-      @repository = GatedGemRepository.new(personalized_repository) { |name:, version: nil| true }
 
       if (route = @@routes.match(request))
         @@routes.perform_action(route, self, request)

@@ -1,4 +1,5 @@
 require_relative "test_helper"
+require "open3"
 
 class GemRepackerTest < Minitest::Test
   def setup
@@ -122,8 +123,8 @@ class GemRepackerTest < Minitest::Test
 
     begin
       # Unpack the new gem
-      result = system("gem unpack #{gem_path} --target=#{unpacked_dir}")
-      assert result, "Failed to unpack the repacked gem"
+      _, stderr, status = Open3.capture3("gem unpack #{gem_path} --target=#{unpacked_dir}")
+      assert status.success?, "Failed to unpack the repacked gem: #{stderr}"
 
       # Find the unpacked gem directory
       gem_dir = Dir.glob(File.join(unpacked_dir, "*")).find { |path| File.directory?(path) }

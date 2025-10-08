@@ -50,7 +50,7 @@ module Paquette
         personalized_path = File.join(personalized_dir, "#{gem_name}-#{version}-personalized.gem")
 
         Paquette::GemServer::GemRepacker.repack(original_gem_path,
-          additional_metadata_keys: {"paquette.license_key" => @license_key},
+          gemspec_extras: {"paquette.license_key" => @license_key},
           magic_comment_replacements: @magic_comment_replacements)
 
         # Move the repacked gem to our personalized location

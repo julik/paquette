@@ -116,9 +116,7 @@ module Paquette
       sourcemap_content = File.read(sourcemap_path)
       sourcemap_data = JSON.parse(sourcemap_content)
 
-      # Log that we found a sourcemap that needs updating
-      puts "Info: Found sourcemap #{sourcemap_path} with offset difference of #{offset_diff} characters"
-      puts "Info: Sourcemap contains #{sourcemap_data["sources"]&.length || 0} source files"
+      # Sourcemap found and needs updating (debug output removed)
 
       # For now, we'll just log the information. In a production system,
       # you would need to implement proper sourcemap offset adjustment
@@ -132,8 +130,8 @@ module Paquette
       # 3. Re-encoding the mappings string
       # 4. Updating the sourcemap JSON
     rescue => e
-      # If sourcemap parsing fails, log the error but don't fail the process
-      puts "Warning: Failed to parse sourcemap #{sourcemap_path}: #{e.message}"
+      # If sourcemap parsing fails, silently continue (debug output removed)
+      # The sourcemap update is not critical for the repacking process
     end
 
     def repackage_package

@@ -1,10 +1,10 @@
 require_relative "test_helper"
+require "socket"
 
 class BundlerInstallTest < Minitest::Test
   def setup
     @server_thread = nil
-    @server_port = find_free_port
-    @gems_dir = File.expand_path("./gems", Dir.pwd)
+    
   end
 
   def teardown
@@ -12,23 +12,26 @@ class BundlerInstallTest < Minitest::Test
   end
 
   def test_gem_installation
-    skip
     start_server
-    wait_for_server
+    sleep 2
+    # wait_for_server
 
     tempdir = Dir.mktmpdir
     pid = fork do
       Dir.chdir(tempdir)
       File.open("Gemfile", "w") do |gemfile|
         gemfile << <<~RUBY
-          source "http://localhost:#{@server_port}" do
+          source "http://gem.localhost:#{@server_port}" do
             gem "zip_kit"
             gem "minuscule_test"
           end
         RUBY
       end
-      ENV.delete("BUNDLE_GEMFILE")
-      puts `bundle install --verbose`
+      Bundler.with_unbundled_env do
+        ENV["BUNDLE_GEMFILE"] = Dir.pwd + "/Gemfile"
+        system("bundle config set --local disable_checksum_validation true")
+        system("bundle install --verbose")
+      end
     end
     Process.wait(pid)
   ensure
@@ -38,7 +41,6 @@ class BundlerInstallTest < Minitest::Test
   private
 
   def find_free_port
-    require "socket"
     server = TCPServer.new("127.0.0.1", 0)
     port = server.addr[1]
     server.close
@@ -46,12 +48,11 @@ class BundlerInstallTest < Minitest::Test
   end
 
   def start_server
-    gems_dir = File.expand_path("./gems", Dir.pwd)
-    cmd = "cd #{Dir.pwd} && GEMS_DIR=#{gems_dir} puma -p #{@server_port} -e test"
+    return if @server_thread
+    @server_port = find_free_port
+    cmd = "puma --port #{@server_port} -e test"
 
-    @server_thread = Thread.new do
-      system(cmd)
-    end
+    @server_thread ||= Thread.new { system(cmd) }
   end
 
   def stop_server

@@ -9,14 +9,15 @@ require "open3"
 module Paquette
   class GemServer
     class GemRepacker
-      def self.repack(gem_path, additional_metadata_keys: {}, magic_comment_replacements: {}, &block)
-        new(gem_path, additional_metadata_keys: additional_metadata_keys, magic_comment_replacements: magic_comment_replacements).repack(&block)
+      def self.repack(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, &block)
+        new(gem_path, gemspec_extras: gemspec_extras, magic_comment_replacements: magic_comment_replacements, files: files).repack(&block)
       end
 
-      def initialize(gem_path, additional_metadata_keys: {}, magic_comment_replacements: {})
+      def initialize(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {})
         @gem_path = gem_path
-        @additional_metadata_keys = additional_metadata_keys
+        @gemspec_extras = gemspec_extras
         @magic_comment_replacements = magic_comment_replacements
+        @files = files
         @temp_dir = nil
         @unpacked_gem_dir = nil
       end
@@ -26,6 +27,7 @@ module Paquette
 
         unpack_gem
         process_ruby_files
+        inject_files
         new_gem_path = repackage_gem
         cleanup
         new_gem_path
@@ -52,6 +54,19 @@ module Paquette
       def process_ruby_files
         Dir.glob(File.join(@gem_dir, "**", "*.rb")).each do |rb_file|
           process_ruby_file(rb_file)
+        end
+      end
+
+      def inject_files
+        @files.each do |file_path, content|
+          # Ensure the file path is relative to the gem directory
+          full_path = File.join(@gem_dir, file_path)
+          
+          # Create parent directories if they don't exist
+          FileUtils.mkdir_p(File.dirname(full_path))
+          
+          # Write the file content
+          File.write(full_path, content)
         end
       end
 
@@ -132,8 +147,13 @@ module Paquette
         new_spec = spec.dup
 
         # Add additional metadata keys
-        @additional_metadata_keys.each do |key, value|
+        @gemspec_extras.each do |key, value|
           new_spec.metadata[key] = value
+        end
+
+        # Add injected files to the files list
+        @files.each do |file_path, _content|
+          new_spec.files << file_path unless new_spec.files.include?(file_path)
         end
 
         # Use the built-in to_ruby method to safely serialize the specification

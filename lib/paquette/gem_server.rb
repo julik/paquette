@@ -18,14 +18,6 @@ module Paquette
       end
 
       # API endpoints
-      r.get "/api/v1/dependencies" do
-        not_found("Dependencies API not supported")
-      end
-
-      r.get "/api/v1/dependencies.json" do
-        not_found("Dependencies API not supported")
-      end
-
       r.post "/api/v1/gems" do
         [400, {}, ["Gem upload is not supported yet"]]
       end

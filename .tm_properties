@@ -1,2 +1,2 @@
-excludeInFileChooser = "{$excludeInFileChooser,site,tmp,storage,node_modules,app/assets/builds}"
-excludeInFolderSearch = "{$excludeInFolderSearch,site,tmp,storage,node_modules,app/assets/builds}"
+excludeInFileChooser = "{$excludeInFileChooser,site,tmp,storage,node_modules,app/assets/builds,vendor}"
+excludeInFolderSearch = "{$excludeInFolderSearch,site,tmp,storage,node_modules,app/assets/builds,vendor}"

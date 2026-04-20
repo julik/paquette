@@ -1,13 +1,49 @@
 require_relative "gem_repository"
 require "rubygems/package"
+require "tempfile"
 
 module Paquette
   class GemServer
     # Repository implementation that reads gems from a directory
     class DirectoryGemRepository < GemRepository
+      class GemAlreadyExists < StandardError; end
+
+      class InvalidGem < StandardError; end
+
       def initialize(gems_dir)
         @gems_dir = gems_dir
         FileUtils.mkdir_p(@gems_dir)
+      end
+
+      # Persists a .gem file from its raw binary contents. Returns the parsed
+      # spec on success. Raises InvalidGem when the payload can't be opened as
+      # a gem, or GemAlreadyExists if the name+version is already on disk.
+      def add_gem(binary_data)
+        raise InvalidGem, "Empty gem payload" if binary_data.nil? || binary_data.empty?
+
+        tmp = Tempfile.new(["paquette_push", ".gem"])
+        tmp.binmode
+        tmp.write(binary_data)
+        tmp.close
+
+        spec = begin
+          Gem::Package.new(tmp.path).spec
+        rescue Gem::Package::Error, StandardError => e
+          raise InvalidGem, "Could not read gem: #{e.message}"
+        end
+
+        name = spec.name
+        version = spec.version.to_s
+        raise GemAlreadyExists, "#{name}-#{version} already exists" if gem_exists?(name, version)
+
+        dest_dir = File.join(@gems_dir, name)
+        FileUtils.mkdir_p(dest_dir)
+        FileUtils.mv(tmp.path, gem_file_path(name, version))
+
+        spec
+      ensure
+        tmp&.close unless tmp&.closed?
+        File.unlink(tmp.path) if tmp && File.exist?(tmp.path)
       end
 
       def gem_names

@@ -3,11 +3,14 @@ require "fileutils"
 require "rubygems"
 require "zlib"
 require "stringio"
+require "digest"
+require "time"
+require "securerandom"
+
 require_relative "routes"
 require_relative "gem_server/directory_gem_repository"
 require_relative "gem_server/gated_gem_repository"
 require_relative "gem_server/personalizer"
-require "securerandom"
 
 module Paquette
   class GemServer
@@ -19,7 +22,7 @@ module Paquette
 
       # API endpoints
       r.post "/api/v1/gems" do
-        [400, {}, ["Gem upload is not supported yet"]]
+        handle_push
       end
 
       r.get "/api/v1/versions" do
@@ -118,6 +121,10 @@ module Paquette
 
     def call(env)
       request = Rack::Request.new(env)
+      route = @@routes.match(request)
+      return not_found("Not found") unless route
+
+      @request = request
 
       # Set up repository stack for this request:
       # 1. DirectoryGemRepository (base repository)
@@ -128,11 +135,7 @@ module Paquette
         license_key: "LIC-#{SecureRandom.uuid}",
         magic_comment_replacements: {"# paquette_license_info" => "LIC-#{SecureRandom.uuid}"})
 
-      if (route = @@routes.match(request))
-        @@routes.perform_action(route, self, request)
-      else
-        not_found("Not Found")
-      end
+      @@routes.perform_action(route, self, request)
     end
 
     private
@@ -199,6 +202,17 @@ module Paquette
       json_ok(names)
     end
 
+    def handle_push
+      gem_data = @request.body.read
+
+      spec = @dir_repository.add_gem(gem_data)
+      text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
+    rescue DirectoryGemRepository::GemAlreadyExists => e
+      [409, {"Content-Type" => "text/plain"}, [e.message]]
+    rescue DirectoryGemRepository::InvalidGem => e
+      bad_request(e.message)
+    end
+
     def handle_search(query)
       query ||= ""
       results = []
@@ -240,9 +254,6 @@ module Paquette
     end
 
     def handle_compact_versions
-      require "digest"
-      require "time"
-
       # Group versions by gem name
       gem_versions = {}
       @repository.gem_versions.each do |name, version|

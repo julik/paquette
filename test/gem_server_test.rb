@@ -244,4 +244,51 @@ class GemServerTest < Minitest::Test
     get "/quick/Marshal.4.8/nonexistent-1.0.0.gemspec.rz"
     assert_equal 404, last_response.status
   end
+
+  def test_push_publishes_gem
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+      binary = File.binread(fixture)
+
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+
+      assert_equal 200, session.last_response.status
+      assert_equal "text/plain", session.last_response.content_type
+      assert_equal "Successfully registered gem: minuscule_test-0.1.0", session.last_response.body
+
+      persisted = File.join(dir, "minuscule_test", "minuscule_test-0.1.0.gem")
+      assert File.exist?(persisted)
+      assert_equal binary, File.binread(persisted)
+    end
+  end
+
+  def test_push_rejects_duplicate
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+      binary = File.binread(fixture)
+
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+      assert_equal 200, session.last_response.status
+
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+      assert_equal 409, session.last_response.status
+      assert_match(/already exists/, session.last_response.body)
+    end
+  end
+
+  def test_push_rejects_invalid_payload
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      session.post "/api/v1/gems", "not a real gem", "CONTENT_TYPE" => "application/octet-stream"
+      assert_equal 400, session.last_response.status
+    end
+  end
 end

@@ -124,6 +124,50 @@ class DirectoryGemRepositoryTest < Minitest::Test
     assert_equal [], deps
   end
 
+  def test_add_gem_persists_file_and_returns_spec
+    fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    binary = File.binread(fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      spec = repo.add_gem(binary)
+
+      assert_equal "minuscule_test", spec.name
+      assert_equal "0.1.0", spec.version.to_s
+      assert repo.gem_exists?("minuscule_test", "0.1.0")
+      assert_equal binary, File.binread(repo.gem_file_path("minuscule_test", "0.1.0"))
+    end
+  end
+
+  def test_add_gem_rejects_duplicate
+    fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    binary = File.binread(fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(binary)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::GemAlreadyExists) do
+        repo.add_gem(binary)
+      end
+    end
+  end
+
+  def test_add_gem_rejects_invalid_payload
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem("")
+      end
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem("not a real gem file")
+      end
+    end
+  end
+
   def test_compact_info
     info = @repository.compact_info("scatter_gather")
     assert info.is_a?(Array)

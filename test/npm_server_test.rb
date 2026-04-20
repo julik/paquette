@@ -1,6 +1,6 @@
 require_relative "test_helper"
 
-class NpmIntegrationTest < Minitest::Test
+class NpmServerTest < Minitest::Test
   include Rack::Test::Methods
 
   def setup

@@ -1,6 +1,6 @@
 require_relative "test_helper"
 
-class SubdomainIntegrationTest < Minitest::Test
+class SubdomainRouterIntegrationTest < Minitest::Test
   include Rack::Test::Methods
 
   def setup

@@ -1,6 +1,6 @@
 require_relative "test_helper"
 
-class IntegrationTest < Minitest::Test
+class GemServerTest < Minitest::Test
   include Rack::Test::Methods
 
   def setup

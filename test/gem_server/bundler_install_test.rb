@@ -1,4 +1,4 @@
-require_relative "test_helper"
+require_relative "../test_helper"
 require "socket"
 
 class BundlerInstallTest < Minitest::Test

@@ -168,6 +168,77 @@ class DirectoryGemRepositoryTest < Minitest::Test
     end
   end
 
+  def test_yank_gem_moves_file_to_tomb
+    fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    binary = File.binread(fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(binary)
+
+      repo.yank_gem("minuscule_test", "0.1.0")
+
+      refute repo.gem_exists?("minuscule_test", "0.1.0")
+      assert repo.tomb_exists?("minuscule_test", "0.1.0")
+      assert_equal binary, File.binread(repo.tomb_file_path("minuscule_test", "0.1.0"))
+    end
+  end
+
+  def test_yank_excludes_gem_from_listings
+    fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    binary = File.binread(fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(binary)
+      repo.yank_gem("minuscule_test", "0.1.0")
+
+      assert_equal [], repo.versions_for_gem("minuscule_test")
+      assert_equal [], repo.gem_versions
+      assert_equal [], repo.compact_info("minuscule_test")
+    end
+  end
+
+  def test_yank_gem_raises_when_missing
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::GemNotFound) do
+        repo.yank_gem("nonexistent", "1.0.0")
+      end
+    end
+  end
+
+  def test_yank_twice_raises_not_found
+    fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    binary = File.binread(fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(binary)
+      repo.yank_gem("minuscule_test", "0.1.0")
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::GemNotFound) do
+        repo.yank_gem("minuscule_test", "0.1.0")
+      end
+    end
+  end
+
+  def test_add_gem_refuses_when_tombed
+    fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    binary = File.binread(fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(binary)
+      repo.yank_gem("minuscule_test", "0.1.0")
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::GemYanked) do
+        repo.add_gem(binary)
+      end
+    end
+  end
+
   def test_compact_info
     info = @repository.compact_info("scatter_gather")
     assert info.is_a?(Array)

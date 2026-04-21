@@ -25,6 +25,10 @@ module Paquette
         handle_push
       end
 
+      r.delete "/api/v1/gems/yank" do
+        handle_yank
+      end
+
       r.get "/api/v1/versions" do
         handle_versions
       end
@@ -207,10 +211,25 @@ module Paquette
 
       spec = @dir_repository.add_gem(gem_data)
       text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
+    rescue DirectoryGemRepository::GemYanked => e
+      [403, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::GemAlreadyExists => e
       [409, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::InvalidGem => e
       bad_request(e.message)
+    end
+
+    def handle_yank
+      gem_name = @request.params["gem_name"]
+      version = @request.params["version"]
+
+      return bad_request("Missing gem_name") if gem_name.nil? || gem_name.empty?
+      return bad_request("Missing version") if version.nil? || version.empty?
+
+      @dir_repository.yank_gem(gem_name, version)
+      text_ok("Successfully yanked gem: #{gem_name}-#{version}")
+    rescue DirectoryGemRepository::GemNotFound => e
+      not_found(e.message)
     end
 
     def handle_search(query)

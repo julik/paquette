@@ -291,4 +291,68 @@ class GemServerTest < Minitest::Test
       assert_equal 400, session.last_response.status
     end
   end
+
+  def test_yank_removes_gem_from_listings
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+      binary = File.binread(fixture)
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+
+      session.delete "/api/v1/gems/yank", {gem_name: "minuscule_test", version: "0.1.0"}
+      assert_equal 200, session.last_response.status
+      assert_equal "Successfully yanked gem: minuscule_test-0.1.0", session.last_response.body
+
+      tomb = File.join(dir, "minuscule_test", "minuscule_test-0.1.0.gem.tomb")
+      assert File.exist?(tomb)
+      refute File.exist?(File.join(dir, "minuscule_test", "minuscule_test-0.1.0.gem"))
+
+      # The gem disappears from version listings and compact info
+      session.get "/api/v1/versions"
+      versions = JSON.parse(session.last_response.body)
+      assert_empty versions.select { |v| v["name"] == "minuscule_test" }
+
+      session.get "/info/minuscule_test"
+      assert_equal 404, session.last_response.status
+    end
+  end
+
+  def test_yank_nonexistent_returns_404
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      session.delete "/api/v1/gems/yank", {gem_name: "nope", version: "1.0.0"}
+      assert_equal 404, session.last_response.status
+    end
+  end
+
+  def test_yank_missing_params_returns_400
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      session.delete "/api/v1/gems/yank", {gem_name: "foo"}
+      assert_equal 400, session.last_response.status
+    end
+  end
+
+  def test_push_refuses_tombed_gem
+    Dir.mktmpdir do |dir|
+      app_with_writable_dir = Paquette::GemServer.new(dir)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+      binary = File.binread(fixture)
+
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+      session.delete "/api/v1/gems/yank", {gem_name: "minuscule_test", version: "0.1.0"}
+
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+      assert_equal 403, session.last_response.status
+      assert_match(/yanked/, session.last_response.body)
+    end
+  end
 end

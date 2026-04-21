@@ -10,6 +10,10 @@ module Paquette
 
       class InvalidGem < StandardError; end
 
+      class GemNotFound < StandardError; end
+
+      class GemYanked < StandardError; end
+
       def initialize(gems_dir)
         @gems_dir = gems_dir
         FileUtils.mkdir_p(@gems_dir)
@@ -34,6 +38,7 @@ module Paquette
 
         name = spec.name
         version = spec.version.to_s
+        raise GemYanked, "#{name}-#{version} was yanked and cannot be republished" if tomb_exists?(name, version)
         raise GemAlreadyExists, "#{name}-#{version} already exists" if gem_exists?(name, version)
 
         dest_dir = File.join(@gems_dir, name)
@@ -44,6 +49,25 @@ module Paquette
       ensure
         tmp&.close unless tmp&.closed?
         File.unlink(tmp.path) if tmp && File.exist?(tmp.path)
+      end
+
+      # Yanks a gem by renaming its .gem file to .gem.tomb. The tomb prevents
+      # the same name+version from being re-pushed later. Raises GemNotFound
+      # when the gem was never present or already yanked.
+      def yank_gem(gem_name, version)
+        gem_path = gem_file_path(gem_name, version)
+        raise GemNotFound, "#{gem_name}-#{version} not found" unless File.exist?(gem_path)
+
+        FileUtils.mv(gem_path, tomb_file_path(gem_name, version))
+        nil
+      end
+
+      def tomb_file_path(gem_name, version)
+        gem_file_path(gem_name, version) + ".tomb"
+      end
+
+      def tomb_exists?(gem_name, version)
+        File.exist?(tomb_file_path(gem_name, version))
       end
 
       def gem_names

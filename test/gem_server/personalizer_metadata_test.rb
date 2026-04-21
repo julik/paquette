@@ -34,7 +34,7 @@ class PersonalizerMetadataTest < Minitest::Test
 
     # Test that the metadata persists through the repository stack
     personalized_repository = Paquette::GemServer::Personalizer.new(@dir_repository, license_key: "STACK-TEST-123")
-    gated_repository = Paquette::GemServer::GatedGemRepository.new(personalized_repository) { |name:, version: nil| true }
+    gated_repository = Paquette::GemServer::ReadGatedRepository.new(personalized_repository) { |name:, version: nil| true }
 
     # Get gem through the stack
     gem_path = gated_repository.gem_file_path("minuscule_test", "0.1.0")

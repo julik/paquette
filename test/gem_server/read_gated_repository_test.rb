@@ -1,6 +1,6 @@
 require_relative "../test_helper"
 
-class GatedGemRepositoryTest < Minitest::Test
+class ReadGatedRepositoryTest < Minitest::Test
   def setup
     @gems_dir = File.expand_path("./packages/gems", Dir.pwd)
     @directory_repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
@@ -8,7 +8,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_names_with_all_gems_entitled
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     names = repository.gem_names
     assert_includes names, "scatter_gather"
@@ -20,7 +20,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_names_with_only_zip_kit_entitled
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     names = repository.gem_names
     assert_includes names, "zip_kit"
@@ -31,7 +31,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_names_with_no_gems_entitled
     entitler = ->(name:, version: nil) { false }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     names = repository.gem_names
     assert_equal 0, names.length
@@ -39,7 +39,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_versions_with_all_entitled
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     versions = repository.gem_versions
     assert versions.length >= 7 # Total number of gem files
@@ -56,7 +56,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_versions_with_only_zip_kit_entitled
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     versions = repository.gem_versions
     assert_equal 3, versions.length
@@ -77,7 +77,7 @@ class GatedGemRepositoryTest < Minitest::Test
     entitler = ->(name:, version: nil) do
       name == "zip_kit" && (version.nil? || ["6.2.0", "6.2.1"].include?(version))
     end
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     versions = repository.gem_versions
     assert_equal 2, versions.length
@@ -90,7 +90,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_versions_for_gem_with_all_versions_entitled
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     zip_kit_versions = repository.versions_for_gem("zip_kit")
     assert_equal 3, zip_kit_versions.length
@@ -101,7 +101,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_versions_for_gem_with_only_zip_kit_entitled
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # zip_kit should return all versions
     zip_kit_versions = repository.versions_for_gem("zip_kit")
@@ -120,7 +120,7 @@ class GatedGemRepositoryTest < Minitest::Test
     entitler = ->(name:, version: nil) do
       name == "zip_kit" && (version.nil? || ["6.2.0", "6.2.1"].include?(version))
     end
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     zip_kit_versions = repository.versions_for_gem("zip_kit")
     assert_equal 2, zip_kit_versions.length
@@ -131,7 +131,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_versions_for_gem_with_gem_not_entitled
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # scatter_gather is not entitled, should return empty array
     scatter_versions = repository.versions_for_gem("scatter_gather")
@@ -140,7 +140,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_file_path_with_entitled_version
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     expected_path = File.join(@gems_dir, "zip_kit", "zip_kit-6.2.0.gem")
     assert_equal expected_path, repository.gem_file_path("zip_kit", "6.2.0")
@@ -151,7 +151,7 @@ class GatedGemRepositoryTest < Minitest::Test
     entitler = ->(name:, version: nil) do
       name == "zip_kit" && (version.nil? || ["6.2.0", "6.2.1"].include?(version))
     end
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # Should return path for entitled version
     expected_path = File.join(@gems_dir, "zip_kit", "zip_kit-6.2.0.gem")
@@ -163,7 +163,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_file_path_with_not_entitled_gem
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # scatter_gather is not entitled
     assert_nil repository.gem_file_path("scatter_gather", "0.1.0")
@@ -171,7 +171,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_exists_with_entitled_version
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     assert repository.gem_exists?("zip_kit", "6.2.0")
     assert repository.gem_exists?("zip_kit", "6.2.1")
@@ -183,7 +183,7 @@ class GatedGemRepositoryTest < Minitest::Test
     entitler = ->(name:, version: nil) do
       name == "zip_kit" && (version.nil? || ["6.2.0", "6.2.1"].include?(version))
     end
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # Should return true for entitled versions
     assert repository.gem_exists?("zip_kit", "6.2.0")
@@ -195,7 +195,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_gem_exists_with_not_entitled_gem
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # scatter_gather is not entitled
     assert_nil repository.gem_exists?("scatter_gather", "0.1.0")
@@ -203,7 +203,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_compact_info_with_entitled_gem
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     info = repository.compact_info("zip_kit")
     assert info.is_a?(Array)
@@ -222,7 +222,7 @@ class GatedGemRepositoryTest < Minitest::Test
 
   def test_compact_info_with_not_entitled_gem
     entitler = ->(name:, version: nil) { name == "zip_kit" }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # zip_kit is entitled
     info = repository.compact_info("zip_kit")
@@ -239,7 +239,7 @@ class GatedGemRepositoryTest < Minitest::Test
     entitler = ->(name:, version: nil) do
       name == "zip_kit" && (version.nil? || ["6.2.0", "6.2.1"].include?(version))
     end
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     info = repository.compact_info("zip_kit")
     assert info.is_a?(Array)
@@ -251,10 +251,26 @@ class GatedGemRepositoryTest < Minitest::Test
     refute_includes versions, "6.3.2"
   end
 
+  def test_add_gem_raises_write_not_allowed
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository) { |**| true }
+
+    assert_raises(Paquette::GemServer::ReadGatedRepository::WriteNotAllowed) do
+      repository.add_gem("anything")
+    end
+  end
+
+  def test_yank_gem_raises_write_not_allowed
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository) { |**| true }
+
+    assert_raises(Paquette::GemServer::ReadGatedRepository::WriteNotAllowed) do
+      repository.yank_gem("zip_kit", "6.2.0")
+    end
+  end
+
   def test_delegated_methods_still_work
-    # Test that methods not overridden in GatedGemRepository still delegate correctly
+    # Test that methods not overridden in ReadGatedRepository still delegate correctly
     entitler = ->(name:, version: nil) { true }
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # Test gem_spec delegation
     spec = repository.gem_spec("zip_kit", "6.2.0")
@@ -276,7 +292,7 @@ class GatedGemRepositoryTest < Minitest::Test
         name == "scatter_gather"
       end
     end
-    repository = Paquette::GemServer::GatedGemRepository.new(@directory_repository, &entitler)
+    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     # gem_names should include both
     names = repository.gem_names

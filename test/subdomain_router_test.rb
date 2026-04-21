@@ -5,7 +5,7 @@ class SubdomainRouterTest < Minitest::Test
     @mock_app = MockApp.new
     gems_dir = File.expand_path("./packages/gems", Dir.pwd)
     packages_dir = File.expand_path("./packages/npm", Dir.pwd)
-    @gem_server = Paquette::GemServer.new(gems_dir)
+    @gem_server = Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(gems_dir))
     @npm_server = Paquette::NpmServer.new(packages_dir)
     @router = Paquette::SubdomainRouter.new do |router|
       router.map "gems", to: @gem_server

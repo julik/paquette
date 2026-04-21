@@ -11,7 +11,7 @@ class RepositoryStackTest < Minitest::Test
     personalized_repository = Paquette::GemServer::Personalizer.new(@dir_repository,
       license_key: "TEST-LICENSE-123",
       magic_comment_replacements: {"# paquette_license_info" => "TEST-LICENSE-123"})
-    gated_repository = Paquette::GemServer::GatedGemRepository.new(personalized_repository) { |name:, version: nil| true }
+    gated_repository = Paquette::GemServer::ReadGatedRepository.new(personalized_repository) { |name:, version: nil| true }
 
     # Verify the stack works end-to-end
     assert gated_repository.gem_names.include?("minuscule_test")
@@ -40,7 +40,7 @@ class RepositoryStackTest < Minitest::Test
     personalized_repository = Paquette::GemServer::Personalizer.new(@dir_repository,
       license_key: "TEST-LICENSE-123",
       magic_comment_replacements: {"# paquette_license_info" => "TEST-LICENSE-123"})
-    gated_repository = Paquette::GemServer::GatedGemRepository.new(personalized_repository) { |name:, version: nil| true }
+    gated_repository = Paquette::GemServer::ReadGatedRepository.new(personalized_repository) { |name:, version: nil| true }
 
     # Test that methods are delegated correctly
     assert_equal @dir_repository.gem_names, gated_repository.gem_names

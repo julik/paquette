@@ -5,11 +5,10 @@ require "zlib"
 require "stringio"
 require "digest"
 require "time"
-require "securerandom"
 
 require_relative "routes"
 require_relative "gem_server/directory_gem_repository"
-require_relative "gem_server/gated_gem_repository"
+require_relative "gem_server/read_gated_repository"
 require_relative "gem_server/personalizer"
 
 module Paquette
@@ -119,8 +118,15 @@ module Paquette
       end
     end
 
-    def initialize(gems_dir)
-      @dir_repository = DirectoryGemRepository.new(gems_dir)
+    # Build a gem server backed by `repository`. Reads, writes, and yanks
+    # all flow through this one object — whether writes are accepted depends
+    # on the wrapper chain the caller assembled. A ReadGatedRepository, for
+    # example, refuses add_gem and yank_gem; a bare DirectoryGemRepository
+    # accepts both. Callers typically construct the stack per-request so
+    # user-specific state (entitlements, license keys) is captured in
+    # plain closures rather than stored on the server.
+    def initialize(repository)
+      @repository = repository
     end
 
     def call(env)
@@ -129,16 +135,6 @@ module Paquette
       return not_found("Not found") unless route
 
       @request = request
-
-      # Set up repository stack for this request:
-      # 1. DirectoryGemRepository (base repository)
-      # 2. GatedGemRepository (wraps directory repo for entitlements)
-      # 3. Personalizer (wraps gated repo for personalization)
-      gated_repository = GatedGemRepository.new(@dir_repository) { |name:, version: nil| true }
-      @repository = Personalizer.new(gated_repository,
-        license_key: "LIC-#{SecureRandom.uuid}",
-        magic_comment_replacements: {"# paquette_license_info" => "LIC-#{SecureRandom.uuid}"})
-
       @@routes.perform_action(route, self, request)
     end
 
@@ -209,8 +205,10 @@ module Paquette
     def handle_push
       gem_data = @request.body.read
 
-      spec = @dir_repository.add_gem(gem_data)
+      spec = @repository.add_gem(gem_data)
       text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
+    rescue ReadGatedRepository::WriteNotAllowed => e
+      [403, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::GemYanked => e
       [403, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::GemAlreadyExists => e
@@ -226,8 +224,10 @@ module Paquette
       return bad_request("Missing gem_name") if gem_name.nil? || gem_name.empty?
       return bad_request("Missing version") if version.nil? || version.empty?
 
-      @dir_repository.yank_gem(gem_name, version)
+      @repository.yank_gem(gem_name, version)
       text_ok("Successfully yanked gem: #{gem_name}-#{version}")
+    rescue ReadGatedRepository::WriteNotAllowed => e
+      [403, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::GemNotFound => e
       not_found(e.message)
     end

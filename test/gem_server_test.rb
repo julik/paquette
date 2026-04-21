@@ -4,9 +4,9 @@ class GemServerTest < Minitest::Test
   include Rack::Test::Methods
 
   def setup
-    # Use the gem server directly for backward compatibility testing
     gems_dir = File.expand_path("./packages/gems", Dir.pwd)
-    @app = Paquette::GemServer.new(gems_dir)
+    repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+    @app = Paquette::GemServer.new(repo)
   end
 
   attr_reader :app
@@ -247,7 +247,8 @@ class GemServerTest < Minitest::Test
 
   def test_push_publishes_gem
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
@@ -267,7 +268,8 @@ class GemServerTest < Minitest::Test
 
   def test_push_rejects_duplicate
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
@@ -284,7 +286,8 @@ class GemServerTest < Minitest::Test
 
   def test_push_rejects_invalid_payload
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       session.post "/api/v1/gems", "not a real gem", "CONTENT_TYPE" => "application/octet-stream"
@@ -294,7 +297,8 @@ class GemServerTest < Minitest::Test
 
   def test_yank_removes_gem_from_listings
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
@@ -321,7 +325,8 @@ class GemServerTest < Minitest::Test
 
   def test_yank_nonexistent_returns_404
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       session.delete "/api/v1/gems/yank", {gem_name: "nope", version: "1.0.0"}
@@ -331,7 +336,8 @@ class GemServerTest < Minitest::Test
 
   def test_yank_missing_params_returns_400
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       session.delete "/api/v1/gems/yank", {gem_name: "foo"}
@@ -341,7 +347,8 @@ class GemServerTest < Minitest::Test
 
   def test_push_refuses_tombed_gem
     Dir.mktmpdir do |dir|
-      app_with_writable_dir = Paquette::GemServer.new(dir)
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
@@ -353,6 +360,23 @@ class GemServerTest < Minitest::Test
       session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
       assert_equal 403, session.last_response.status
       assert_match(/yanked/, session.last_response.body)
+    end
+  end
+
+  def test_push_and_yank_return_403_through_read_gated_repository
+    Dir.mktmpdir do |dir|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| true }
+      read_only_app = Paquette::GemServer.new(gated)
+      session = Rack::Test::Session.new(Rack::MockSession.new(read_only_app))
+
+      session.post "/api/v1/gems", "anything", "CONTENT_TYPE" => "application/octet-stream"
+      assert_equal 403, session.last_response.status
+      assert_match(/not allowed/, session.last_response.body)
+
+      session.delete "/api/v1/gems/yank", {gem_name: "foo", version: "1.0.0"}
+      assert_equal 403, session.last_response.status
+      assert_match(/not allowed/, session.last_response.body)
     end
   end
 end

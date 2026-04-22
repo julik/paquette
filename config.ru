@@ -1,7 +1,9 @@
 require_relative "lib/paquette"
 
-# Use packages directory next to config.ru
-packages_dir = File.expand_path("packages", __dir__)
+# Packages dir defaults to the one next to config.ru. Tests set
+# PAQUETTE_PACKAGES_DIR to point at test/fixtures so they don't depend
+# on whatever a dev-time gem push might have left on disk.
+packages_dir = ENV["PAQUETTE_PACKAGES_DIR"] || File.expand_path("packages", __dir__)
 
 npm_dir = File.join(packages_dir, "npm")
 gems_dir = File.join(packages_dir, "gems")

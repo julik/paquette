@@ -8,43 +8,38 @@ class SubdomainRouterIntegrationTest < Minitest::Test
   end
 
   def app
-    # Load the actual config.ru file
+    # Load config.ru with the test fixtures dir so we don't depend on
+    # whatever a dev push may have left in packages/.
+    ENV["PAQUETTE_PACKAGES_DIR"] = File.expand_path("fixtures", __dir__)
     Rack::Builder.parse_file(File.expand_path("../config.ru", __dir__))
   end
 
   def test_gem_subdomain_routing
-    # Test that requests to gem.example.com are routed to GemServer
     get "/", {}, {"HTTP_HOST" => "gem.example.com"}
     assert_equal 200, last_response.status
     assert_equal "Paquette RubyGems Repository", last_response.body
   end
 
   def test_gem_subdomain_api_endpoints
-    # Test that gem API endpoints work with gem subdomain
     get "/api/v1/names", {}, {"HTTP_HOST" => "gem.example.com"}
     assert_equal 200, last_response.status
     assert_equal "application/json", last_response.content_type
 
     names = JSON.parse(last_response.body)
-    assert_includes names, "scatter_gather"
-    assert_includes names, "test-gem"
-    assert_includes names, "zip_kit"
+    assert_equal ["minuscule_test", "zip_kit"], names.sort
   end
 
   def test_gem_subdomain_specs_endpoint
-    # Test that specs endpoint works with gem subdomain
     get "/specs.4.8", {}, {"HTTP_HOST" => "gem.example.com"}
     assert_equal 200, last_response.status
     assert_equal "application/octet-stream", last_response.content_type
 
     specs = Marshal.load(last_response.body)
     assert specs.is_a?(Array)
-    assert specs.length >= 6
+    assert_equal 3, specs.length
 
-    gem_names = specs.map { |spec| spec[0] }
-    assert_includes gem_names, "scatter_gather"
-    assert_includes gem_names, "test-gem"
-    assert_includes gem_names, "zip_kit"
+    gem_names = specs.map { |spec| spec[0] }.sort.uniq
+    assert_equal ["minuscule_test", "zip_kit"], gem_names
   end
 
   def test_npm_subdomain_routing
@@ -113,8 +108,7 @@ class SubdomainRouterIntegrationTest < Minitest::Test
   end
 
   def test_gem_subdomain_gem_download
-    # Test that gem download works with gem subdomain
-    get "/gems/scatter_gather-0.1.1.gem", {}, {"HTTP_HOST" => "gem.example.com"}
+    get "/gems/zip_kit-6.2.0.gem", {}, {"HTTP_HOST" => "gem.example.com"}
     assert_equal 200, last_response.status
     assert_equal "application/octet-stream", last_response.content_type
     assert last_response.body.length > 0

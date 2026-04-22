@@ -2,7 +2,7 @@ require_relative "test_helper"
 
 class NpmRepackerTest < Minitest::Test
   def setup
-    @test_package_path = File.expand_path("./packages/npm/react-dropzone/react-dropzone-14.3.8.tgz", Dir.pwd)
+    @test_package_path = File.join(FIXTURE_NPM_DIR, "react-dropzone", "react-dropzone-14.3.8.tgz")
   end
 
   def test_repack_with_text_replacement

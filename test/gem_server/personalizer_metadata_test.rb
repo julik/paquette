@@ -2,7 +2,7 @@ require_relative "../test_helper"
 
 class PersonalizerMetadataTest < Minitest::Test
   def setup
-    @gems_dir = File.expand_path("./packages/gems", Dir.pwd)
+    @gems_dir = FIXTURE_GEMS_DIR
     @dir_repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
     @personalizer = Paquette::GemServer::Personalizer.new(@dir_repository, license_key: "TEST-LICENSE-789")
   end

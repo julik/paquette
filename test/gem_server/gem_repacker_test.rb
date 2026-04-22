@@ -3,7 +3,7 @@ require "open3"
 
 class GemRepackerTest < Minitest::Test
   def setup
-    @test_gem_path = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
+    @test_gem_path = File.join(FIXTURE_GEMS_DIR, "minuscule_test", "minuscule_test-0.1.0.gem")
   end
 
   def test_repack_with_line_transformation
@@ -171,8 +171,7 @@ class GemRepackerTest < Minitest::Test
     assert File.exist?(@test_gem_path), "Test gem not found at #{@test_gem_path}"
 
     # Test the Personalizer with custom magic comment replacements
-    gems_dir = File.expand_path("./packages/gems", Dir.pwd)
-    dir_repository = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+    dir_repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
 
     custom_replacements = {
       "# paquette_license_info" => "CUSTOM-LICENSE-123",
@@ -279,7 +278,7 @@ class GemRepackerTest < Minitest::Test
       expected_files.each do |file_path, expected_content|
         full_file_path = File.join(gem_dir, file_path)
         assert File.exist?(full_file_path), "Expected file '#{file_path}' not found in unpacked gem"
-        
+
         actual_content = File.read(full_file_path)
         assert_equal expected_content, actual_content, "File '#{file_path}' content doesn't match expected content"
       end

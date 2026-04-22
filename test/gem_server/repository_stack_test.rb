@@ -2,7 +2,7 @@ require_relative "../test_helper"
 
 class RepositoryStackTest < Minitest::Test
   def setup
-    @gems_dir = File.expand_path("./packages/gems", Dir.pwd)
+    @gems_dir = FIXTURE_GEMS_DIR
     @dir_repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
   end
 

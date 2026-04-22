@@ -4,7 +4,6 @@ require "socket"
 class BundlerInstallTest < Minitest::Test
   def setup
     @server_thread = nil
-    
   end
 
   def teardown
@@ -50,9 +49,10 @@ class BundlerInstallTest < Minitest::Test
   def start_server
     return if @server_thread
     @server_port = find_free_port
+    env = {"PAQUETTE_PACKAGES_DIR" => File.expand_path("../fixtures", __dir__)}
     cmd = "puma --port #{@server_port} -e test"
 
-    @server_thread ||= Thread.new { system(cmd) }
+    @server_thread ||= Thread.new { system(env, cmd) }
   end
 
   def stop_server

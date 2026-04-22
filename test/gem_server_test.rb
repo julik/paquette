@@ -3,9 +3,10 @@ require_relative "test_helper"
 class GemServerTest < Minitest::Test
   include Rack::Test::Methods
 
+  MINUSCULE_FIXTURE = File.join(FIXTURE_GEMS_DIR, "minuscule_test", "minuscule_test-0.1.0.gem")
+
   def setup
-    gems_dir = File.expand_path("./packages/gems", Dir.pwd)
-    repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+    repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     @app = Paquette::GemServer.new(repo)
   end
 
@@ -23,10 +24,7 @@ class GemServerTest < Minitest::Test
     assert_equal "application/json", last_response.content_type
 
     names = JSON.parse(last_response.body)
-    assert_includes names, "scatter_gather"
-    assert_includes names, "test-gem"
-    assert_includes names, "zip_kit"
-    assert_includes names, "minuscule_test"
+    assert_equal ["minuscule_test", "zip_kit"], names.sort
   end
 
   def test_versions_endpoint
@@ -35,19 +33,12 @@ class GemServerTest < Minitest::Test
     assert_equal "application/json", last_response.content_type
 
     versions = JSON.parse(last_response.body)
-    assert versions.length >= 7 # We have 7 gems in total
-
-    # Check for specific gems
-    scatter_gather_versions = versions.select { |v| v["name"] == "scatter_gather" }
-    assert_equal 2, scatter_gather_versions.length
-    assert_includes scatter_gather_versions.map { |v| v["number"] }, "0.1.0"
-    assert_includes scatter_gather_versions.map { |v| v["number"] }, "0.1.1"
+    assert_equal 3, versions.length
 
     zip_kit_versions = versions.select { |v| v["name"] == "zip_kit" }
-    assert_equal 3, zip_kit_versions.length
+    assert_equal 2, zip_kit_versions.length
     assert_includes zip_kit_versions.map { |v| v["number"] }, "6.2.0"
     assert_includes zip_kit_versions.map { |v| v["number"] }, "6.2.1"
-    assert_includes zip_kit_versions.map { |v| v["number"] }, "6.3.2"
 
     minuscule_versions = versions.select { |v| v["name"] == "minuscule_test" }
     assert_equal 1, minuscule_versions.length
@@ -61,14 +52,10 @@ class GemServerTest < Minitest::Test
 
     specs = Marshal.load(last_response.body)
     assert specs.is_a?(Array)
-    assert specs.length >= 7
+    assert_equal 3, specs.length
 
-    # Check for specific gems
-    gem_names = specs.map { |spec| spec[0] }
-    assert_includes gem_names, "scatter_gather"
-    assert_includes gem_names, "test-gem"
-    assert_includes gem_names, "zip_kit"
-    assert_includes gem_names, "minuscule_test"
+    gem_names = specs.map { |spec| spec[0] }.sort.uniq
+    assert_equal ["minuscule_test", "zip_kit"], gem_names
   end
 
   def test_latest_specs_endpoint
@@ -78,32 +65,27 @@ class GemServerTest < Minitest::Test
 
     specs = Marshal.load(last_response.body)
     assert specs.is_a?(Array)
-    assert specs.length >= 4 # Should have latest version of each gem
+    assert_equal 2, specs.length
 
-    # Check for latest versions
-    gem_names = specs.map { |spec| spec[0] }
-    assert_includes gem_names, "scatter_gather"
-    assert_includes gem_names, "test-gem"
-    assert_includes gem_names, "zip_kit"
-    assert_includes gem_names, "minuscule_test"
+    gem_names = specs.map { |spec| spec[0] }.sort
+    assert_equal ["minuscule_test", "zip_kit"], gem_names
   end
 
   def test_gem_download
-    get "/gems/scatter_gather-0.1.1.gem"
+    get "/gems/zip_kit-6.2.0.gem"
     assert_equal 200, last_response.status
     assert_equal "application/octet-stream", last_response.content_type
     assert last_response.body.length > 0
   end
 
   def test_search_endpoint
-    get "/api/v1/search.json", query: "scatter"
+    get "/api/v1/search.json", query: "zip"
     assert_equal 200, last_response.status
     assert_equal "application/json", last_response.content_type
 
     results = JSON.parse(last_response.body)
     assert results.is_a?(Array)
-    scatter_result = results.find { |r| r["name"] == "scatter_gather" }
-    refute_nil scatter_result
+    assert results.any? { |r| r["name"] == "zip_kit" }
   end
 
   # Test compact index endpoints
@@ -113,10 +95,7 @@ class GemServerTest < Minitest::Test
     assert_equal "text/plain", last_response.content_type
 
     names = last_response.body.split("\n")
-    assert_includes names, "scatter_gather"
-    assert_includes names, "test-gem"
-    assert_includes names, "zip_kit"
-    assert_includes names, "minuscule_test"
+    assert_equal ["minuscule_test", "zip_kit"], names.sort
   end
 
   def test_compact_index_versions
@@ -136,7 +115,7 @@ class GemServerTest < Minitest::Test
 
     # Check gem lines (skip timestamp and separator)
     gem_lines = lines[2..]
-    assert gem_lines.length >= 4
+    assert_equal 2, gem_lines.length
 
     # Check that each gem line has the format "gem_name versions checksum"
     gem_lines.each do |line|
@@ -145,31 +124,25 @@ class GemServerTest < Minitest::Test
       assert_match(/^[a-f0-9]{32}$/, parts[-1], "Checksum should be 32 hex characters: #{line}")
     end
 
-    # Check for specific gems
     gem_names = gem_lines.map { |line| line.split(" ")[0] }
-    assert_includes gem_names, "scatter_gather"
-    assert_includes gem_names, "test-gem"
-    assert_includes gem_names, "zip_kit"
-    assert_includes gem_names, "minuscule_test"
+    assert_equal ["minuscule_test", "zip_kit"], gem_names.sort
   end
 
   def test_compact_index_info
-    get "/info/scatter_gather"
+    get "/info/zip_kit"
     assert_equal 200, last_response.status
     assert_equal "text/plain", last_response.content_type
 
     info_lines = last_response.body.split("\n")
-    assert info_lines.length >= 2
+    assert_equal 2, info_lines.length
 
     # Check that each line has the format "version |checksum:sha256_checksum,ruby:required_ruby_version"
     info_lines.each do |line|
       assert_match(/^\S+\s+\|checksum:[a-f0-9]{64},ruby:.+$/, line, "Line should match compact index format: #{line}")
 
-      # Parse the line
       version, rest = line.split(" ", 2)
       assert version.match?(/^\d+\.\d+\.\d+/), "Version should be in semver format: #{version}"
 
-      # Check checksum and ruby version parts
       assert rest.start_with?("|checksum:"), "Should have checksum prefix: #{rest}"
       checksum_part, ruby_part = rest[1..].split(",", 2)
       assert checksum_part.start_with?("checksum:"), "Should have checksum: #{checksum_part}"
@@ -179,10 +152,9 @@ class GemServerTest < Minitest::Test
       assert ruby_part.start_with?("ruby:"), "Should have ruby version requirement: #{ruby_part}"
     end
 
-    # Check for specific versions
     version_lines = info_lines.map { |line| line.split(" ")[0] }
-    assert_includes version_lines, "0.1.0"
-    assert_includes version_lines, "0.1.1"
+    assert_includes version_lines, "6.2.0"
+    assert_includes version_lines, "6.2.1"
   end
 
   def test_compact_index_info_nonexistent
@@ -195,18 +167,13 @@ class GemServerTest < Minitest::Test
     assert_equal 200, last_response.status
     assert_equal "application/x-gzip", last_response.content_type
 
-    # Verify it's proper gzip format by decompressing
     decompressed = Zlib::GzipReader.new(StringIO.new(last_response.body)).read
     specs = Marshal.load(decompressed)
     assert specs.is_a?(Array)
-    assert specs.length >= 7
+    assert_equal 3, specs.length
 
-    # Check for specific gems
-    gem_names = specs.map { |spec| spec[0] }
-    assert_includes gem_names, "scatter_gather"
-    assert_includes gem_names, "test-gem"
-    assert_includes gem_names, "zip_kit"
-    assert_includes gem_names, "minuscule_test"
+    gem_names = specs.map { |spec| spec[0] }.sort.uniq
+    assert_equal ["minuscule_test", "zip_kit"], gem_names
   end
 
   def test_latest_specs_gz_endpoint
@@ -214,30 +181,24 @@ class GemServerTest < Minitest::Test
     assert_equal 200, last_response.status
     assert_equal "application/x-gzip", last_response.content_type
 
-    # Verify it's proper gzip format by decompressing
     decompressed = Zlib::GzipReader.new(StringIO.new(last_response.body)).read
     specs = Marshal.load(decompressed)
     assert specs.is_a?(Array)
-    assert specs.length >= 4 # Should have latest version of each gem
+    assert_equal 2, specs.length
 
-    # Check for latest versions
-    gem_names = specs.map { |spec| spec[0] }
-    assert_includes gem_names, "scatter_gather"
-    assert_includes gem_names, "test-gem"
-    assert_includes gem_names, "zip_kit"
-    assert_includes gem_names, "minuscule_test"
+    gem_names = specs.map { |spec| spec[0] }.sort
+    assert_equal ["minuscule_test", "zip_kit"], gem_names
   end
 
   def test_quick_gemspec_endpoint
-    get "/quick/Marshal.4.8/zip_kit-6.3.2.gemspec.rz"
+    get "/quick/Marshal.4.8/zip_kit-6.2.0.gemspec.rz"
     assert_equal 200, last_response.status
     assert_equal "application/octet-stream", last_response.content_type
 
-    # Verify it's compressed with raw deflate and can be decompressed
     decompressed = Zlib::Inflate.inflate(last_response.body)
     spec = Marshal.load(decompressed)
     assert_equal "zip_kit", spec.name
-    assert_equal "6.3.2", spec.version.to_s
+    assert_equal "6.2.0", spec.version.to_s
   end
 
   def test_quick_gemspec_nonexistent
@@ -251,8 +212,7 @@ class GemServerTest < Minitest::Test
       app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
-      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
-      binary = File.binread(fixture)
+      binary = File.binread(MINUSCULE_FIXTURE)
 
       session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
 
@@ -272,8 +232,7 @@ class GemServerTest < Minitest::Test
       app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
-      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
-      binary = File.binread(fixture)
+      binary = File.binread(MINUSCULE_FIXTURE)
 
       session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
       assert_equal 200, session.last_response.status
@@ -301,8 +260,7 @@ class GemServerTest < Minitest::Test
       app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
-      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
-      binary = File.binread(fixture)
+      binary = File.binread(MINUSCULE_FIXTURE)
       session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
 
       session.delete "/api/v1/gems/yank", {gem_name: "minuscule_test", version: "0.1.0"}
@@ -351,8 +309,7 @@ class GemServerTest < Minitest::Test
       app_with_writable_dir = Paquette::GemServer.new(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
-      fixture = File.expand_path("./packages/gems/minuscule_test/minuscule_test-0.1.0.gem", Dir.pwd)
-      binary = File.binread(fixture)
+      binary = File.binread(MINUSCULE_FIXTURE)
 
       session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
       session.delete "/api/v1/gems/yank", {gem_name: "minuscule_test", version: "0.1.0"}

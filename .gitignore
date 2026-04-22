@@ -43,3 +43,12 @@
 
 vendor/
 .bundle/
+
+# Dev-time package store. Tests use test/fixtures/, so dev pushes can
+# pile up here without poisoning the suite.
+/packages/gems/*
+!/packages/gems/.keep
+/packages/npm/*
+!/packages/npm/.keep
+
+.claude/

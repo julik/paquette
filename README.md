@@ -71,6 +71,10 @@ Note that Paquette will use whichever auth you wrap it with - that is to say, in
 
 To install gems from Paquette, set it as source in your Gemfile - and provide auth for whichever auth mechanism you wrap it with:
 
+```ruby
+gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gems.paquette.acme.com"
+```
+
 ### API Endpoints
 
 - `GET /` - Repository info

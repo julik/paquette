@@ -1,5 +1,5 @@
 module Paquette
-  VERSION = "0.1.0"
+  require_relative "paquette/version"
 
   require_relative "paquette/routes"
   require_relative "paquette/gem_server/gem_repository"

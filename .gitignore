@@ -52,3 +52,7 @@ vendor/
 !/packages/npm/.keep
 
 .claude/
+
+# Gem build artifacts
+/pkg/
+*.gem

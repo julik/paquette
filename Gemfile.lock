@@ -1,3 +1,11 @@
+PATH
+  remote: .
+  specs:
+    paquette (0.1.0)
+      mustermann (~> 3.0)
+      rack (~> 3.0)
+      sourcemap (~> 0.1)
+
 GEM
   remote: https://rubygems.org/
   specs:
@@ -66,12 +74,10 @@ PLATFORMS
 
 DEPENDENCIES
   minitest
-  mustermann
+  paquette!
   puma
-  rack
   rack-test
   rake
-  sourcemap
   standard
 
 BUNDLED WITH

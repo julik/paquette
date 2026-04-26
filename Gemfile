@@ -1,9 +1,8 @@
 source "https://rubygems.org"
 
-gem "rack"
+gemspec
+
 gem "puma"
-gem "mustermann"
-gem "sourcemap"
 
 group :test do
   gem "minitest"

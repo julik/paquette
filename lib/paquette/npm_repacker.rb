@@ -114,7 +114,7 @@ module Paquette
     def update_sourcemap_file(sourcemap_path, offset_diff)
       # Read and parse the sourcemap
       sourcemap_content = File.read(sourcemap_path)
-      sourcemap_data = JSON.parse(sourcemap_content)
+      JSON.parse(sourcemap_content)
 
       # Sourcemap found and needs updating (debug output removed)
 
@@ -129,7 +129,7 @@ module Paquette
       # 2. Adjusting the generated line/column positions
       # 3. Re-encoding the mappings string
       # 4. Updating the sourcemap JSON
-    rescue => e
+    rescue
       # If sourcemap parsing fails, silently continue (debug output removed)
       # The sourcemap update is not critical for the repacking process
     end

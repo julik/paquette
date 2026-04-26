@@ -61,10 +61,10 @@ module Paquette
         @files.each do |file_path, content|
           # Ensure the file path is relative to the gem directory
           full_path = File.join(@gem_dir, file_path)
-          
+
           # Create parent directories if they don't exist
           FileUtils.mkdir_p(File.dirname(full_path))
-          
+
           # Write the file content
           File.write(full_path, content)
         end

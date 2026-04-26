@@ -104,14 +104,17 @@ module Paquette
         # Extract gem name and version from filename
         if (match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/))
           gem_name, version = match[1], match[2]
-          return not_found("Gem not found or it is not within your license") unless @repository.gem_exists?(gem_name, version)
 
-          # gem_file_path now automatically returns personalized gem
-          gem_path = @repository.gem_file_path(gem_name, version)
-          clen = File.size(gem_path).to_s
-          hh = {"Content-Type" => "application/octet-stream", "Content-Length" => clen}
+          if @repository.gem_exists?(gem_name, version)
+            # gem_file_path now automatically returns personalized gem
+            gem_path = @repository.gem_file_path(gem_name, version)
+            clen = File.size(gem_path).to_s
+            hh = {"Content-Type" => "application/octet-stream", "Content-Length" => clen}
 
-          [200, hh, File.open(gem_path, "rb")]
+            [200, hh, File.open(gem_path, "rb")]
+          else
+            not_found("Gem not found or it is not within your license")
+          end
         else
           not_found("Invalid gem filename")
         end

@@ -320,6 +320,27 @@ class GemServerTest < Minitest::Test
     end
   end
 
+  def test_compact_info_returns_404_for_gated_gem
+    repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
+    gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }
+    gated_app = Paquette::GemServer.new(gated)
+    session = Rack::Test::Session.new(Rack::MockSession.new(gated_app))
+
+    session.get "/info/zip_kit"
+    assert_equal 404, session.last_response.status
+  end
+
+  def test_gem_download_returns_404_for_gated_gem
+    repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
+    gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }
+    gated_app = Paquette::GemServer.new(gated)
+    session = Rack::Test::Session.new(Rack::MockSession.new(gated_app))
+
+    session.get "/gems/zip_kit-6.2.1.gem"
+    assert_equal 404, session.last_response.status
+    assert_match(/not found/i, session.last_response.body)
+  end
+
   def test_push_and_yank_return_403_through_read_gated_repository
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)

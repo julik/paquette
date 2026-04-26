@@ -151,14 +151,14 @@ class ReadGatedRepositoryTest < Minitest::Test
     repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
     assert repository.gem_exists?("zip_kit", "6.2.0")
-    assert_nil repository.gem_exists?("zip_kit", "6.2.1")
+    assert_equal false, repository.gem_exists?("zip_kit", "6.2.1")
   end
 
   def test_gem_exists_with_not_entitled_gem
     entitler = ->(name:, version: nil) { name == "zip_kit" }
     repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository, &entitler)
 
-    assert_nil repository.gem_exists?("minuscule_test", "0.1.0")
+    assert_equal false, repository.gem_exists?("minuscule_test", "0.1.0")
   end
 
   def test_compact_info_with_entitled_gem
@@ -185,7 +185,7 @@ class ReadGatedRepositoryTest < Minitest::Test
     assert info.is_a?(Array)
     assert_equal 2, info.length
 
-    assert_nil repository.compact_info("minuscule_test")
+    assert_equal [], repository.compact_info("minuscule_test")
   end
 
   def test_compact_info_with_subset_of_versions_entitled

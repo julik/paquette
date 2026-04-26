@@ -45,7 +45,7 @@ module Paquette
       end
 
       def compact_info(gem_name)
-        return nil unless @entitler.call(name: gem_name)
+        return [] unless @entitler.call(name: gem_name)
 
         all_info = super
         return all_info unless all_info.is_a?(Array)
@@ -59,6 +59,8 @@ module Paquette
       def gem_exists?(gem_name, version)
         if @entitler.call(name: gem_name, version: version)
           super
+        else
+          false
         end
       end
 

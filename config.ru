@@ -10,6 +10,13 @@ gems_dir = File.join(packages_dir, "gems")
 
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 
+# Uncomment and configure to require token authentication.
+# The block receives the raw token and should return an identity object
+# (stored in env["paquette.identity"]) or nil/false to reject.
+# use Paquette::TokenAuthorization, "Paquette" do |token|
+#   AccessToken.find_by(secret: token)&.owner
+# end
+
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
   router.map "gem", to: Paquette::GemServer.new(gems_repo)
   router.map "npm", to: Paquette::NpmServer.new(npm_dir)

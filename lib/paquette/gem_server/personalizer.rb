@@ -81,6 +81,12 @@ module Paquette
           files: @files)
 
         FileUtils.mv(repacked, personalized_path)
+        # The repacker builds into a directory of its own and hands the caller
+        # the path — which makes the directory ours to take away. Moving the gem
+        # out and leaving the directory behind would drop one empty directory in
+        # the tmpdir per cache miss, which is per licensee, per gem, per version,
+        # forever.
+        FileUtils.remove_entry(File.dirname(repacked))
         personalized_path
       end
 

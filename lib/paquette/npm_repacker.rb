@@ -10,6 +10,8 @@ module Paquette
   # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
   # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
   class NpmRepacker
+    class MarkerNotApplied < StandardError; end
+
     # Binary assets and sourcemaps are copied through untouched.
     SOURCE_EXTENSIONS = %w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze
 
@@ -70,7 +72,7 @@ module Paquette
         entry.content
       end
 
-      content = apply_magic_comment_replacements(content) if replaceable?(relative_path)
+      content = apply_magic_comment_replacements(content, relative_path) if replaceable?(relative_path)
 
       with_content(entry, content)
     end
@@ -79,8 +81,11 @@ module Paquette
       @magic_comment_replacements.any? && SOURCE_EXTENSIONS.include?(File.extname(relative_path))
     end
 
-    # One line replaced by one line, or sourcemap mappings would silently misalign.
-    def apply_magic_comment_replacements(content)
+    # A whole comment line is replaced by a whole comment line. Sourcemaps
+    # restart their column counter at every line, so rewriting one line cannot
+    # disturb the mappings on any other; keeping the line a comment means no
+    # mapped token sits on the one line that did change.
+    def apply_magic_comment_replacements(content, relative_path)
       text = content.dup.force_encoding(Encoding::UTF_8)
       return content unless text.valid_encoding?
 
@@ -93,7 +98,27 @@ module Paquette
         "// #{replacement[1].to_s.tr("\r\n", " ")}#{ending}"
       end.join
 
+      verify_markers_applied(replaced, relative_path)
       replaced.b
+    end
+
+    # A marker still present after the pass was one the line-wise match could
+    # not reach — `esbuild --minify` pulls a legal comment onto the end of a
+    # code line, and the package would then be served with no license key in it
+    # and nothing to say so. A marker that is simply absent is fine: most
+    # packages in a corpus carry no marker at all.
+    #
+    # Replacing it mid-line instead is not the fix. That would put the license
+    # text on a line with mapped tokens, which is the one edit that does shift
+    # sourcemap columns.
+    def verify_markers_applied(text, relative_path)
+      @magic_comment_replacements.each_key do |marker|
+        next unless text.include?(marker)
+
+        raise MarkerNotApplied,
+          "#{relative_path} still contains #{marker.inspect} after personalization: it is not alone on its line " \
+          "(minified?), so the license key would have been left out of the served package"
+      end
     end
 
     def apply_package_json_extras(entries, root)

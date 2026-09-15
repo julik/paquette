@@ -78,6 +78,40 @@ class NpmRepackerTest < Minitest::Test
     assert_equal "// licensed to Acme\nexport const x = 1;\n", content
   end
 
+  # `esbuild --minify` pulls a legal comment onto the end of a code line. The
+  # whole-line match then misses it and the package would be served with no
+  # license key in it and nothing to say so.
+  def test_a_marker_the_line_match_cannot_reach_is_refused
+    source = fixture_package(files: {"index.js" => "function e(o,r){return o+r}// paquette_license_info\n"})
+
+    error = assert_raises(Paquette::NpmRepacker::MarkerNotApplied) do
+      Paquette::NpmRepacker.repack(source,
+        magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+    end
+
+    assert_includes error.message, "index.js"
+  end
+
+  # Most packages in a corpus carry no marker; that is not a failure.
+  def test_a_package_without_the_marker_repacks_normally
+    source = fixture_package(files: {"index.js" => "export const x = 1;\n"})
+
+    path = Paquette::NpmRepacker.repack(source,
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+
+    assert_equal "export const x = 1;\n", tarball_file(path, "package/index.js")
+  end
+
+  # A marker inside a file type we never rewrite is not a missed replacement.
+  def test_a_marker_in_an_unprocessed_file_is_left_alone
+    source = fixture_package(files: {"styles.css" => "/* // paquette_license_info */\n"})
+
+    path = Paquette::NpmRepacker.repack(source,
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+
+    assert_equal "/* // paquette_license_info */\n", tarball_file(path, "package/styles.css")
+  end
+
   # Sourcemaps address generated code by line, so a marker line must be
   # replaced by exactly one line or every mapping below it misaligns.
   def test_replacement_preserves_the_line_count

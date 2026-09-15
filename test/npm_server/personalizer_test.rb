@@ -40,6 +40,27 @@ class NpmPersonalizerTest < Minitest::Test
     refute_includes tarball_file(path, "package/index.js"), "paquette_license_info"
   end
 
+  # Failing closed matters more here than anywhere: package.json still carries
+  # the key, so a package served with the marker left in its code looks
+  # personalized from the outside while the licensee's copy is untraceable.
+  def test_a_package_whose_marker_could_not_be_applied_is_not_served
+    write_npm_package(@dir, name: "minified", version: "1.0.0",
+      files: {"index.js" => "function e(o,r){return o+r}// paquette_license_info\n"})
+
+    assert_raises(Paquette::NpmRepacker::MarkerNotApplied) do
+      personalized.package_file_path("minified", "1.0.0")
+    end
+  end
+
+  # A package with no marker at all is ordinary, not a failure.
+  def test_a_package_without_the_marker_is_served
+    write_npm_package(@dir, name: "unmarked", version: "1.0.0",
+      files: {"index.js" => "export const x = 1;\n"})
+
+    path = personalized.package_file_path("unmarked", "1.0.0")
+    assert_equal "export const x = 1;\n", tarball_file(path, "package/index.js")
+  end
+
   def test_the_license_key_lands_in_package_json
     path = personalized.package_file_path("widget", "1.0.0")
     package_json = JSON.parse(tarball_file(path, "package/package.json"))

@@ -136,7 +136,9 @@ The scope stays on the package name but is dropped from the filename, exactly as
 
 npm records a `dist.integrity` hash for every version and refuses to install a tarball whose bytes do not match. A registry that rebuilds a tarball to serve it therefore has to rebuild it to *the same bytes* it published a hash for — so `Paquette::Tarball` writes archives that are byte-reproducible: entries sorted, mtimes carried over from the input, no build timestamp in the gzip header. `NpmRepacker` and `Personalizer` are built on that, and the published hashes are always taken from the personalized tarball rather than the original.
 
-Magic comment replacements deliberately replace one line with one line. npm packages ship sourcemaps, which address generated code by line and column, so inserting a line would silently misalign every stack trace below it.
+Magic comment replacements swap one whole comment line for another. A sourcemap restarts its column counter at every line, so rewriting a line cannot disturb the mappings on any other line — only on the line that changed, and keeping that line a comment means no mapped token was sitting on it. Changing the line *count*, or putting the license text on a line with real code, is what would misalign a customer's stack traces.
+
+Because of that, a marker the line match cannot reach is an error rather than a silent pass. `esbuild --minify` pulls a legal comment onto the end of a code line; the package would otherwise be served with no license key in it and nothing to say so — and `package.json` would still carry the key, so it would look personalized from the outside. A package with no marker at all is ordinary and repacks untouched.
 
 ### Publishing packages into Paquette
 

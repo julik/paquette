@@ -224,6 +224,12 @@ class DirectoryGemRepositoryTest < Minitest::Test
       assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.0"))
       assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.1"))
 
+      # Every freshly written sidecar names its format. Nothing reads the
+      # number yet — it is there so a future format change has something on
+      # disk to dispatch on.
+      written = JSON.parse(File.read(sidecar_path(tmp, "zip_kit", "6.2.0")))
+      assert_equal 1, written.fetch("format_version")
+
       # The second call must come out of the sidecars, not the gems — plant
       # a checksum no file hashes to and see it served back
       sidecar = sidecar_path(tmp, "zip_kit", "6.2.0")

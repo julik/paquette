@@ -201,12 +201,26 @@ module Paquette
         nil
       end
 
+      # Written into every sidecar, and checked by nothing — deliberately.
+      # The reader keys off the fields it needs and ignores the rest, so a
+      # sidecar from before this constant existed reads exactly as well as
+      # one written today, and no migration or version branch is wanted yet.
+      # The number is here for the day the format has to change: when it
+      # does, the reader will need something on disk to dispatch on, and a
+      # file that says "1" can be told apart from whatever comes after it,
+      # while a file written before anyone recorded a version is ambiguous
+      # forever. So the version goes in now, while writing it costs nothing,
+      # instead of at the moment it is needed and every existing sidecar
+      # lacks it.
+      SIDECAR_FORMAT_VERSION = 1
+
       def derive_sidecar(gem_name, version, gem_file, stat)
         spec = gem_spec(gem_name, version)
         return nil unless spec
 
         checksum = Digest::SHA256.file(gem_file).hexdigest
         fields = GemRepository.compact_info_fields(spec, checksum).merge(
+          "format_version" => SIDECAR_FORMAT_VERSION,
           "version" => version,
           "size" => stat.size,
           "mtime_ns" => mtime_ns(stat)

@@ -142,11 +142,7 @@ module Paquette
           gem_file = gem_file_path(gem_name, version)
           checksum = Digest::SHA256.file(gem_file).hexdigest
 
-          # Get required Ruby version from gemspec
-          ruby_version = spec.required_ruby_version&.to_s || ">= 0"
-
-          # Format: version |checksum:sha256_checksum,ruby:required_ruby_version
-          "#{version} |checksum:#{checksum},ruby:#{ruby_version}"
+          GemRepository.compact_info_line(version, spec, checksum)
         end.compact
       end
     end

@@ -48,6 +48,50 @@ module Paquette
       def compact_info(gem_name)
         raise NotImplementedError, "Subclasses must implement compact_info"
       end
+
+      # One line of an /info/ file, in the compact index format:
+      #
+      #   VERSION DEP:REQ,DEP:REQ|checksum:SHA256,ruby:REQ
+      #
+      # The dependency section is what Bundler resolves against, and the gem it
+      # later downloads is checked against it — a line that claims no
+      # dependencies for a gem that has them makes that gem uninstallable with
+      # "revealed dependencies not in the API", because Bundler will not silently
+      # accept a spec that disagrees with the index it resolved from.
+      #
+      # This is a class method on purpose. Every repository that renders compact
+      # info needs it, and some of them are SimpleDelegators — an instance
+      # method here would be forwarded to the wrapped repository, which is
+      # harmless for pure formatting but invites the mistake of putting a
+      # *reading* method next to it and having the wrapper silently bypassed.
+      #
+      # `version` is passed rather than read off the spec because the version
+      # column may carry a platform suffix ("1.0.0-x86_64-linux"), which the
+      # spec's own version does not have, and the repository is the thing that
+      # knows which version string it publishes.
+      def self.compact_info_line(version, spec, checksum)
+        # Development dependencies are not part of the resolution and rubygems.org
+        # does not publish them; sending them would make Bundler resolve gems a
+        # consumer never asked for.
+        deps = spec.dependencies.select { |dep| dep.type == :runtime }.sort_by(&:name).map do |dep|
+          "#{dep.name}:#{requirement_string(dep.requirement)}"
+        end.join(",")
+
+        ruby_version = spec.required_ruby_version&.to_s || ">= 0"
+
+        # No space between the dependency list and the pipe, but one after the
+        # version — which means a gem without dependencies gets "1.0.0 |...",
+        # exactly what rubygems.org serves for such a gem.
+        "#{version} #{deps}|checksum:#{checksum},ruby:#{ruby_version}"
+      end
+
+      # Gem::Requirement#to_s joins several clauses with ", " — but a comma
+      # separates *dependencies* in this format, so within one dependency the
+      # clauses are joined with "&" instead: ">= 1.0, < 3" becomes ">= 1.0&< 3".
+      # The space inside a clause stays; rubygems.org keeps it too.
+      def self.requirement_string(requirement)
+        requirement.to_s.split(", ").join("&")
+      end
     end
   end
 end

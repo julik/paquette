@@ -205,4 +205,161 @@ class DirectoryGemRepositoryTest < Minitest::Test
 
     assert_equal [], @repository.compact_info("nonexistent")
   end
+
+  # A registry that predates the cache is just a tree of .gem files, and it
+  # has to serve correctly from the first request with nothing but ordinary
+  # traffic to warm it — no backfill step, no re-push. The files here are
+  # placed by hand, deliberately not through add_gem, because that is what
+  # an inherited directory looks like.
+  def test_compact_info_warms_a_pre_existing_directory_through_serving_alone
+    Dir.mktmpdir do |tmp|
+      FileUtils.mkdir_p(File.join(tmp, "zip_kit"))
+      FileUtils.cp(File.join(@gems_dir, "zip_kit", "zip_kit-6.2.0.gem"), File.join(tmp, "zip_kit"))
+      FileUtils.cp(File.join(@gems_dir, "zip_kit", "zip_kit-6.2.1.gem"), File.join(tmp, "zip_kit"))
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      refute Dir.exist?(File.join(tmp, "zip_kit", ".paquette-cache"))
+
+      first = repo.compact_info("zip_kit")
+      assert_equal @repository.compact_info("zip_kit"), first
+      assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.0"))
+      assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.1"))
+
+      # The second call must come out of the sidecars, not the gems — plant
+      # a checksum no file hashes to and see it served back
+      sidecar = sidecar_path(tmp, "zip_kit", "6.2.0")
+      fields = JSON.parse(File.read(sidecar))
+      fields["checksum"] = "f" * 64
+      File.write(sidecar, JSON.generate(fields))
+
+      line = repo.compact_info("zip_kit").find { |l| l.start_with?("6.2.0 ") }
+      assert_includes line, "checksum:#{"f" * 64}"
+    end
+  end
+
+  def test_compact_info_warm_cache_output_is_byte_identical_to_cold
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+
+      cold = repo.compact_info("zip_kit")
+      assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.0")), "The first call should have left a sidecar behind"
+
+      warm = repo.compact_info("zip_kit")
+      assert_equal cold, warm
+    end
+  end
+
+  def test_compact_info_serves_from_sidecar_without_reopening_the_gem
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+      repo.compact_info("minuscule_test")
+
+      # Plant a checksum in the sidecar that no gem file could ever hash to.
+      # If the warm path served it, the gem was not re-read — which is the
+      # entire point of the cache, proven from the outside without
+      # instrumenting Gem::Package. The size and mtime stay untouched so the
+      # staleness guard keeps vouching for the entry.
+      sidecar = sidecar_path(tmp, "minuscule_test", "0.1.0")
+      fields = JSON.parse(File.read(sidecar))
+      fields["checksum"] = "0" * 64
+      File.write(sidecar, JSON.generate(fields))
+
+      line = repo.compact_info("minuscule_test").fetch(0)
+      assert_includes line, "checksum:#{"0" * 64}"
+    end
+  end
+
+  def test_yanked_gem_disappears_despite_warm_cache
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+      repo.compact_info("minuscule_test")
+
+      repo.yank_gem("minuscule_test", "0.1.0")
+
+      assert_equal [], repo.compact_info("minuscule_test")
+      refute File.exist?(sidecar_path(tmp, "minuscule_test", "0.1.0")), "Yank should tidy the orphaned sidecar away"
+    end
+  end
+
+  def test_compact_info_re_derives_when_gem_file_bytes_change
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+      repo.compact_info("zip_kit")
+
+      # A gem file changing in place should never happen — a yank renames,
+      # a re-push is refused. But if it ever does, the sidecar's size and
+      # mtime no longer match and the entry must be re-derived rather than
+      # vouch for bytes it has never seen.
+      other_bytes = File.binread(File.join(@gems_dir, "zip_kit", "zip_kit-6.2.1.gem"))
+      File.binwrite(File.join(tmp, "zip_kit", "zip_kit-6.2.0.gem"), other_bytes)
+
+      line = repo.compact_info("zip_kit").find { |l| l.start_with?("6.2.0 ") }
+      assert_includes line, "checksum:#{Digest::SHA256.hexdigest(other_bytes)}"
+    end
+  end
+
+  def test_compact_info_recovers_from_corrupt_sidecar
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+      expected = repo.compact_info("minuscule_test")
+
+      sidecar = sidecar_path(tmp, "minuscule_test", "0.1.0")
+      File.write(sidecar, "definitely { not JSON")
+
+      assert_equal expected, repo.compact_info("minuscule_test")
+      # And the corrupt file got replaced with a usable one, not left to be
+      # tripped over on every request from here on out
+      assert_kind_of Hash, JSON.parse(File.read(sidecar))
+    end
+  end
+
+  def test_compact_info_serves_from_source_when_gems_dir_is_read_only
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+      expected_zip_kit = repo.compact_info("zip_kit")
+
+      FileUtils.rm_rf(File.join(tmp, "zip_kit", ".paquette-cache"))
+      FileUtils.chmod(0o555, File.join(tmp, "zip_kit"))
+      begin
+        assert_equal expected_zip_kit, repo.compact_info("zip_kit")
+        refute Dir.exist?(File.join(tmp, "zip_kit", ".paquette-cache"))
+      ensure
+        FileUtils.chmod(0o755, File.join(tmp, "zip_kit"))
+      end
+    end
+  end
+
+  def test_sidecar_cache_is_invisible_to_listings
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+      repo.compact_info("zip_kit")
+      repo.compact_info("minuscule_test")
+
+      # And a cache directory sitting at the top level of the gems dir —
+      # where nothing in this class ever puts one — must not read as a
+      # package either
+      FileUtils.mkdir_p(File.join(tmp, ".paquette-cache"))
+      File.write(File.join(tmp, ".paquette-cache", "stray.json"), "{}")
+
+      assert_equal ["minuscule_test", "zip_kit"], repo.gem_names
+      assert_equal [["minuscule_test", "0.1.0"], ["zip_kit", "6.2.0"], ["zip_kit", "6.2.1"]], repo.gem_versions
+      assert_equal ["6.2.0", "6.2.1"], repo.versions_for_gem("zip_kit")
+    end
+  end
+
+  private
+
+  # A throwaway repository holding all three fixture gems, pushed the way a
+  # real one receives them. The fixtures under test/ stay read-only in these
+  # tests because the cache writes next to the gems it describes.
+  def seeded_repo(tmp)
+    repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+    ["minuscule_test/minuscule_test-0.1.0.gem", "zip_kit/zip_kit-6.2.0.gem", "zip_kit/zip_kit-6.2.1.gem"].each do |rel|
+      repo.add_gem(File.binread(File.join(@gems_dir, rel)))
+    end
+    repo
+  end
+
+  def sidecar_path(gems_dir, gem_name, version)
+    File.join(gems_dir, gem_name, ".paquette-cache", "#{gem_name}-#{version}.json")
+  end
 end

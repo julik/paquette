@@ -56,3 +56,7 @@ vendor/
 # Gem build artifacts
 /pkg/
 *.gem
+# Derived-metadata sidecars DirectoryGemRepository writes next to the gems
+# it serves. The suite reads test/fixtures/gems in place, so caches appear
+# there; they are rebuilt from the gem files whenever missing.
+.paquette-cache/

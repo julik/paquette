@@ -11,8 +11,7 @@ require "puma/server"
 # metadata promised is what the server served, personalization and all.
 class NpmInstallTest < Minitest::Test
   def setup
-    @npm_available = !`which npm`.strip.empty?
-    return unless @npm_available
+    require_tool "npm", !`which npm`.strip.empty?, "PAQUETTE_REQUIRE_NPM"
 
     @packages_dir = Dir.mktmpdir("paquette_npm_install_packages")
     @project_dir = Dir.mktmpdir("paquette_npm_install_project")
@@ -25,8 +24,6 @@ class NpmInstallTest < Minitest::Test
   end
 
   def test_npm_installs_a_package
-    skip "npm is not installed" unless @npm_available
-
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     serve(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
 
@@ -35,8 +32,6 @@ class NpmInstallTest < Minitest::Test
   end
 
   def test_npm_installs_a_scoped_package
-    skip "npm is not installed" unless @npm_available
-
     write_npm_package(@packages_dir, name: "@acme/widgets", version: "2.0.0")
     serve(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
 
@@ -45,8 +40,6 @@ class NpmInstallTest < Minitest::Test
   end
 
   def test_npm_resolves_a_dependency_between_two_served_packages
-    skip "npm is not installed" unless @npm_available
-
     write_npm_package(@packages_dir, name: "leaf", version: "1.2.0")
     write_npm_package(@packages_dir, name: "trunk", version: "1.0.0", dependencies: {"leaf" => "^1.0.0"})
     serve(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
@@ -56,8 +49,6 @@ class NpmInstallTest < Minitest::Test
   end
 
   def test_npm_installs_the_latest_stable_rather_than_a_prerelease
-    skip "npm is not installed" unless @npm_available
-
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     write_npm_package(@packages_dir, name: "widget", version: "2.0.0-beta.1")
     serve(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
@@ -71,8 +62,6 @@ class NpmInstallTest < Minitest::Test
   # built on the fly for one licensee. If the repack were not reproducible, or
   # the hashes were taken from the original, npm would refuse this install.
   def test_npm_installs_a_personalized_package
-    skip "npm is not installed" unless @npm_available
-
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0",
       files: {"index.js" => "// paquette_license_info\nmodule.exports = 1;\n"})
 
@@ -94,8 +83,6 @@ class NpmInstallTest < Minitest::Test
   # A gated corpus must not merely hide a package from the listing — the install
   # itself has to fail.
   def test_npm_cannot_install_a_package_outside_the_entitlement
-    skip "npm is not installed" unless @npm_available
-
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     write_npm_package(@packages_dir, name: "secret", version: "1.0.0")
 

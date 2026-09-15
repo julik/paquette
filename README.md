@@ -169,6 +169,19 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 - `DELETE /{package}/-rev/{rev}` - Unpublish a package
 - `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
 
+## Running the tests
+
+```bash
+bundle exec rake test
+```
+
+Most of it is ordinary Ruby, but two parts drive real tooling, because a package registry that only ever answers its own test suite can be perfectly self-consistent and still serve something no client will accept:
+
+- `test/npm_server/npm_install_test.rb` runs the **npm CLI** on this machine against a Paquette booted on a loopback port.
+- `test/npm_server/docker_client_test.rb` runs npm **inside a container** (`test/docker/Dockerfile`) talking to a Paquette on the host through `host.docker.internal`. Nothing of Paquette's is in that container — it installs, verifies integrity, publishes and unpublishes the way a customer's machine would.
+
+Both skip themselves when node or docker is missing. That is convenient locally and dangerous in CI, where a skip looks exactly like a pass, so the workflow sets `PAQUETTE_REQUIRE_NPM=1` and `PAQUETTE_REQUIRE_DOCKER=1` — with those set, missing tooling fails the run instead of quietly removing the coverage.
+
 ## License
 
 Paquette is offered under the terms of the [O'Sassy license](https://osaasy.dev/) - basically, don't make it into your own product. Use it to sell your libraries. And godspeed!

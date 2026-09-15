@@ -12,6 +12,23 @@ require_relative "../lib/paquette"
 FIXTURE_GEMS_DIR = File.expand_path("fixtures/gems", __dir__)
 FIXTURE_NPM_DIR = File.expand_path("fixtures/npm", __dir__)
 
+# Tests that drive a real npm, or a container, skip themselves when the tooling
+# is not installed — which is right on a laptop and wrong in CI, where a skip
+# looks exactly like a pass and the test quietly stops running. Setting the
+# matching environment variable turns the skip into a failure, so a runner that
+# loses its docker or its node says so.
+module ExternalTooling
+  def require_tool(name, available, env_var)
+    return if available
+
+    if ENV[env_var].to_s.empty?
+      skip "#{name} is not available"
+    else
+      flunk "#{name} is not available, and #{env_var} says this run must have it"
+    end
+  end
+end
+
 module NpmTarballHelpers
   # The mtime npm itself stamps on every file it packs (1985-10-26), used here
   # for the same reason: it keeps a built fixture identical from run to run.
@@ -93,5 +110,6 @@ end
 module Minitest
   class Test
     include NpmTarballHelpers
+    include ExternalTooling
   end
 end

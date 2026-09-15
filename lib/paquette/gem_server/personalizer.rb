@@ -42,11 +42,11 @@ module Paquette
           personalized_gem_file = gem_file_path(gem_name, version)
           checksum = Digest::SHA256.file(personalized_gem_file).hexdigest
 
-          # Get required Ruby version from gemspec
-          ruby_version = spec.required_ruby_version&.to_s || ">= 0"
-
-          # Format: version |checksum:sha256_checksum,ruby:required_ruby_version
-          "#{version} |checksum:#{checksum},ruby:#{ruby_version}"
+          # The checksum is the personalized gem's, but the dependencies are the
+          # original spec's — repacking never touches them, and a line that
+          # disagreed with the gem it points at is exactly the failure this
+          # format exists to prevent.
+          GemRepository.compact_info_line(version, spec, checksum)
         end.compact
       end
 

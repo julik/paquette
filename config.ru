@@ -8,7 +8,12 @@ packages_dir = ENV["PAQUETTE_PACKAGES_DIR"] || File.expand_path("packages", __di
 npm_dir = File.join(packages_dir, "npm")
 gems_dir = File.join(packages_dir, "gems")
 
+# Both servers take a repository, and the wrapper chain you build around it
+# decides what a caller may see and whether they may publish. Bare repositories
+# like these are wide open — which is the dev-time setup, and why the README
+# calls this slightly unhinged.
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 
 # Uncomment and configure to require token authentication.
 # The block receives the raw token and should return an identity object
@@ -19,7 +24,7 @@ gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
   router.map "gem", to: Paquette::GemServer.new(gems_repo)
-  router.map "npm", to: Paquette::NpmServer.new(npm_dir)
+  router.map "npm", to: Paquette::NpmServer.new(npm_repo)
   router.fallback to: ->(*) { [404, {}, ["Need subdomain gem/npm"]] }
 end
 

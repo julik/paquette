@@ -1,4 +1,5 @@
 require_relative "../test_helper"
+require "digest"
 require "open3"
 
 class GemRepackerTest < Minitest::Test
@@ -193,6 +194,39 @@ class GemRepackerTest < Minitest::Test
     File.delete(personalized_gem_path) if File.exist?(personalized_gem_path)
   end
 
+  # A repack has to be reproducible, because Personalizer publishes a SHA256 for
+  # one and then serves another. Without SOURCE_DATE_EPOCH it was not: a .gem is
+  # a tar of three gzip members, a gzip header carries the time it was written,
+  # and RubyGems takes that — and the inner tar mtimes — from Time.now. The same
+  # inputs a second apart produced different bytes that inflated to identical
+  # content, which every `bundle install` would report as a checksum mismatch.
+  #
+  # The sleep is the test. Anything shorter than a second passes whether this
+  # works or not, which is exactly how the bug survived being looked at.
+  def test_repacking_is_reproducible_across_seconds
+    first = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
+      files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
+    digest = Digest::SHA256.file(first).hexdigest
+
+    sleep 1.1
+
+    second = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
+      files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
+
+    refute_equal first, second, "each repack should land somewhere of its own"
+    assert_equal digest, Digest::SHA256.file(second).hexdigest,
+      "same inputs must give the same bytes, or a published checksum describes a gem nobody receives"
+  end
+
+  # Pinned to the gem it was made from rather than to a build clock, so two
+  # machines repacking the same source agree.
+  def test_the_repack_keeps_the_original_gems_date
+    original = Gem::Package.new(@test_gem_path).spec.date
+    repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path, files: {"X.txt" => "x\n"})
+
+    assert_equal original, Gem::Package.new(repacked).spec.date
+  end
+
   private
 
   def verify_repacking(gem_path, expected_random_chars)
@@ -235,16 +269,15 @@ class GemRepackerTest < Minitest::Test
 
     personalized_path = File.join(personalized_dir, "minuscule_test-0.1.0-personalized.gem")
 
-    Paquette::GemServer::GemRepacker.repack(@test_gem_path,
+    # The repacker says where it put the gem. Guessing a path in the shared
+    # tmpdir instead — which this helper used to do, mirroring Personalizer —
+    # is how two repacks of one gem ended up overwriting each other and a
+    # caller was handed whichever finished last.
+    repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
       gemspec_extras: {"paquette.license_key" => "TEST-LICENSE-456"},
       magic_comment_replacements: {"# paquette_license_info" => "TEST-LICENSE-456"})
 
-    # Move the repacked gem to our personalized location
-    temp_personalized = File.join(Dir.tmpdir, "minuscule_test-0.1.0-repacked.gem")
-    if File.exist?(temp_personalized)
-      FileUtils.mv(temp_personalized, personalized_path)
-    end
-
+    FileUtils.mv(repacked, personalized_path)
     personalized_path
   end
 

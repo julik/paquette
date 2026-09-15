@@ -125,8 +125,26 @@ module Paquette
         gemspec_path = File.join(@gem_dir, "#{original_spec.name}.gemspec")
         create_gemspec_file(gemspec_path, original_spec)
 
-        # Build the new gem using gem build command
-        _, stderr, status = Open3.capture3("gem", "build", File.basename(gemspec_path), chdir: @gem_dir)
+        # SOURCE_DATE_EPOCH is what makes a repack reproducible, and without it
+        # this method could not be used for anything a checksum is published
+        # for.
+        #
+        # A .gem is a tar of three gzip members, and a gzip header carries the
+        # time it was written. RubyGems takes that time, and the mtimes of the
+        # inner tar entries, from Time.now unless SOURCE_DATE_EPOCH says
+        # otherwise — so the same inputs repacked a second apart came out with
+        # different bytes and a different SHA256 while inflating to exactly the
+        # same content. Anything that published a checksum and then rebuilt the
+        # gem to serve it was therefore publishing a checksum for bytes nobody
+        # would ever receive, and `bundle install` reports that as a mismatch,
+        # which reads to a customer as a tampered gem.
+        #
+        # The epoch is the original gem's own date, so a repack is pinned to the
+        # thing it was made from rather than to a build clock: the same source
+        # gem and the same personalization produce one answer, on any machine,
+        # at any time.
+        build_env = {"SOURCE_DATE_EPOCH" => Gem::Package.new(@gem_path).spec.date.to_i.to_s}
+        _, stderr, status = Open3.capture3(build_env, "gem", "build", File.basename(gemspec_path), chdir: @gem_dir)
         unless status.success?
           raise "Failed to build gem. Error: #{stderr}"
         end
@@ -135,8 +153,13 @@ module Paquette
         gem_name = File.basename(@gem_path, ".gem")
         new_gem_path = File.join(@gem_dir, "#{gem_name}.gem")
 
-        # Move to a more permanent location
-        final_gem_path = File.join(Dir.tmpdir, "#{gem_name}-repacked.gem")
+        # Somewhere of its own, not "#{gem_name}-repacked.gem" in the shared
+        # tmpdir: two repacks of one gem — two licensees, or one licensee and
+        # the checksum pass — were writing over each other, and the caller was
+        # handed whichever finished last. The directory is the caller's to clean
+        # up, which is what `repack` returning the path is for.
+        final_dir = Dir.mktmpdir("gem_repacked")
+        final_gem_path = File.join(final_dir, "#{gem_name}-repacked.gem")
         FileUtils.mv(new_gem_path, final_gem_path)
 
         final_gem_path

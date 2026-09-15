@@ -5,10 +5,20 @@ require "digest"
 module Paquette
   class GemServer
     class Personalizer < SimpleDelegator
-      def initialize(repository, license_key:, magic_comment_replacements: {})
+      # `files:` is a {path => content} hash written into every gem this
+      # personalizer serves, exactly as GemRepacker takes it. It is what a
+      # per-licensee LICENSE file arrives through: the content is rendered by
+      # the caller, which is the only party that knows who the licensee is, and
+      # handed over already finished.
+      #
+      # Unlike `magic_comment_replacements`, which rewrites a line inside
+      # **/*.rb, this puts whole files in and adds them to spec.files — so it
+      # can carry a .txt, which a magic comment never could.
+      def initialize(repository, license_key:, magic_comment_replacements: {}, files: {})
         super(repository)
         @license_key = license_key
         @magic_comment_replacements = magic_comment_replacements
+        @files = files
       end
 
       def gem_file_path(gem_name, version)
@@ -42,24 +52,46 @@ module Paquette
 
       private
 
+      # Keyed by everything that goes INTO the gem, not by the gem alone.
+      #
+      # It used to be "#{gem_name}-#{version}-personalized.gem", which is the
+      # same path for every licensee: two of them racing on one download meant
+      # one customer receiving the other's copy, and what is personalized into
+      # it is by definition the other customer's. The digest below is what makes
+      # the cache a cache rather than a collision — same inputs, same file;
+      # different licensee, different file.
+      #
+      # It is also the reason repacking twice is cheap: identical inputs produce
+      # a byte-identical gem, so the second request for the same licensee finds
+      # the file already there and the checksum in the compact index still
+      # describes it.
       def personalize_gem(original_gem_path, gem_name, version)
-        # Create a unique path for the personalized gem
         personalized_dir = File.join(Dir.tmpdir, "paquette_personalized")
         FileUtils.mkdir_p(personalized_dir)
 
-        personalized_path = File.join(personalized_dir, "#{gem_name}-#{version}-personalized.gem")
+        personalized_path = File.join(personalized_dir, "#{gem_name}-#{version}-#{personalization_digest}.gem")
+        return personalized_path if File.exist?(personalized_path)
 
-        Paquette::GemServer::GemRepacker.repack(original_gem_path,
+        # The repacker says where it put the gem. Guessing that path instead —
+        # which this did — is how a miss turned into somebody else's file being
+        # returned rather than an error.
+        repacked = Paquette::GemServer::GemRepacker.repack(original_gem_path,
           gemspec_extras: {"paquette.license_key" => @license_key},
-          magic_comment_replacements: @magic_comment_replacements)
+          magic_comment_replacements: @magic_comment_replacements,
+          files: @files)
 
-        # Move the repacked gem to our personalized location
-        temp_personalized = File.join(Dir.tmpdir, "#{gem_name}-#{version}-repacked.gem")
-        if File.exist?(temp_personalized)
-          FileUtils.mv(temp_personalized, personalized_path)
-        end
-
+        FileUtils.mv(repacked, personalized_path)
         personalized_path
+      end
+
+      # Everything this personalizer would write into a gem, as one short hash.
+      # Stable across processes, so a restart does not orphan the cache.
+      def personalization_digest
+        @personalization_digest ||= Digest::SHA256.hexdigest([
+          @license_key,
+          @magic_comment_replacements.sort.inspect,
+          @files.sort.inspect
+        ].join("\0"))[0, 16]
       end
     end
   end

@@ -7,11 +7,32 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # A skip is indistinguishable from a pass; these make missing tools fail.
+      PAQUETTE_REQUIRE_NPM: "1"
+      PAQUETTE_REQUIRE_DOCKER: "1"
     steps:
       - uses: actions/checkout@v4
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
           bundler-cache: true
+
+      # Pinned so an npm behaviour change arrives when this file changes.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Makes an environment failure legible in the log.
+      - name: Show tooling versions
+        run: |
+          ruby --version
+          node --version
+          npm --version
+          docker --version
+          docker info --format 'Docker: {{.ServerVersion}} on {{.OperatingSystem}}'
+
       - run: bundle exec rake test
+
       - run: bundle exec rake standard

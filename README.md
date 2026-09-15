@@ -50,9 +50,11 @@ Each line adds one capability:
 - `ReadGatedRepository` wraps a repository and filters every name/version through the block — unauthorized gems simply stop existing as far as the server is concerned. It also refuses writes outright: if you gate reads, you are saying this caller is not the right party to mutate the corpus, so `add_gem`/`yank_gem` raise `WriteNotAllowed` (which the server turns into a 403).
 - `Personalizer` wraps a repository and rewrites each served `.gem` on the fly to embed the user's license key.
 
+The NPM server is assembled exactly the same way, out of the same kind of parts - see [Usage for NPM packages](#usage-for-npm-packages).
+
 Because the wrappers are plain Ruby objects composed at the call site, per-user state (the `user` variable) is captured by ordinary closures. Drop a wrapper to disable that layer; add another by slotting in one more constructor. Whether the server will accept pushes and yanks is decided by what you build — wrap the base repo in `ReadGatedRepository` and writes are blocked; hand the server a bare `DirectoryGemRepository` (or your own wrapper that permits writes) and they go through.
 
-The server will run on `http://localhost:9292` by default. Note that the NPM registry and the Rubygems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gems.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gems.whatever.localhost:9292` and it will respond.
+The server will run on `http://localhost:9292` by default. Note that the NPM registry and the Rubygems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
 
 ## Usage for gems
 
@@ -63,7 +65,7 @@ Paquette contains a gem server. This is a separate Rack app which you can use wi
 You can publish gems two ways. 
 
 1. Place `.gem` files in the `gems/` directory. The filename should follow the format: `gemname-version.gem`
-2. Actually do a `gem push` - from your shell, do `gem push --host http://gems.localhost:9292 pkg/your-gem-0.1.0.gem` 
+2. Actually do a `gem push` - from your shell, do `gem push --host http://gem.localhost:9292 pkg/your-gem-0.1.0.gem` 
 
 Note that Paquette will use whichever auth you wrap it with - that is to say, in the default dev setup - _none._ I told you it is slightly unhinged.
 
@@ -72,10 +74,10 @@ Note that Paquette will use whichever auth you wrap it with - that is to say, in
 To install gems from Paquette, set it as source in your Gemfile - and provide auth for whichever auth mechanism you wrap it with:
 
 ```ruby
-gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gems.paquette.acme.com"
+gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gem.paquette.acme.com"
 ```
 
-### API Endpoints
+### Gem API Endpoints
 
 - `GET /` - Repository info
 - `GET /api/v1/dependencies` - Gem dependencies
@@ -84,6 +86,103 @@ gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gems.paquet
 - `GET /api/v1/search.json` - Search gems
 - `GET /gems/{gemname-version.gem}` - Download gem file
 - `POST /api/v1/gems` - Upload gem (basic implementation)
+
+## Usage for NPM packages
+
+The NPM server is built the same way as the gem server and out of the same kind of parts: one repository object, wrapped in as many layers as you want, handed to a Rack app.
+
+```ruby
+def call(env)
+  username = env["REMOTE_USER"]
+  user = User.where(login: username).first!
+  packages_dir = Rails.root.join("packages", "npm").to_s
+
+  repo = Paquette::NpmServer::DirectoryNpmRepository.new(packages_dir)
+
+  repo_with_gating = Paquette::NpmServer::ReadGatedRepository.new(repo) do |name:, version: nil|
+    user.license.package_names.include?(name)
+  end
+
+  repo_with_gating_and_personalization = Paquette::NpmServer::Personalizer.new(
+    repo_with_gating,
+    license_key: user.license_key,
+    magic_comment_replacements: {"// paquette_license_info" => user.license_key},
+    files: {"LICENSE.txt" => user.rendered_license}
+  )
+
+  Paquette::NpmServer.new(repo_with_gating_and_personalization).call(env)
+end
+```
+
+The layers mean the same things they do for gems. `DirectoryNpmRepository` reads `.tgz` files from disk and accepts publishes and unpublishes; `ReadGatedRepository` filters every name/version through the block and refuses writes; `Personalizer` rewrites each served tarball on the fly.
+
+Two npm-specific notes:
+
+- A gated `latest` follows the newest version the caller is entitled to, not the newest version that exists. Otherwise `npm install pkg` would resolve to a version the very next request refuses to serve.
+- `latest` never points at a prerelease while a stable release exists, which is what npm's own registry does.
+
+### Where packages live on disk
+
+One directory per package, with a scope as an ordinary directory above it:
+
+```
+packages/npm/lodash/lodash-4.17.21.tgz
+packages/npm/@acme/widgets/widgets-1.0.0.tgz
+```
+
+The scope stays on the package name but is dropped from the filename, exactly as in the tarball URLs npm follows (`/@acme/widgets/-/widgets-1.0.0.tgz`).
+
+### Personalization and integrity
+
+npm records a `dist.integrity` hash for every version and refuses to install a tarball whose bytes do not match. A registry that rebuilds a tarball to serve it therefore has to rebuild it to *the same bytes* it published a hash for — so `Paquette::Tarball` writes archives that are byte-reproducible: entries sorted, mtimes carried over from the input, no build timestamp in the gzip header. `NpmRepacker` and `Personalizer` are built on that, and the published hashes are always taken from the personalized tarball rather than the original.
+
+Magic comment replacements swap one whole comment line for another. A sourcemap restarts its column counter at every line, so rewriting a line cannot disturb the mappings on any other line — only on the line that changed, and keeping that line a comment means no mapped token was sitting on it. Changing the line *count*, or putting the license text on a line with real code, is what would misalign a customer's stack traces.
+
+Because of that, the one-line rule is enforced rather than assumed. A replacement (or marker) containing a linebreak is refused when you build the stack — it used to have its newlines flattened to spaces, which published something other than what you wrote. And a marker the line match cannot reach is an error rather than a silent pass. `esbuild --minify` pulls a legal comment onto the end of a code line; the package would otherwise be served with no license key in it and nothing to say so — and `package.json` would still carry the key, so it would look personalized from the outside. A package with no marker at all is ordinary and repacks untouched.
+
+### Publishing packages into Paquette
+
+1. Place `.tgz` files in the layout above. The filename should be `name-version.tgz`, scope excluded.
+2. Actually do an `npm publish` - from your shell, do `npm publish --registry http://npm.localhost:9292`.
+
+`npm unpublish` works too. An unpublished version leaves a `.tgz.tomb` behind, which stops that exact version being republished with different contents later - the same trick the gem side uses for yanks.
+
+### Consuming packages provided by a Paquette server
+
+Point npm at it and provide auth for whichever mechanism you wrapped it with:
+
+```
+# .npmrc
+@acme:registry=https://npm.paquette.acme.com
+//npm.paquette.acme.com/:_authToken=tok_998218907784
+```
+
+### NPM API Endpoints
+
+- `GET /` - Repository info
+- `GET /-/ping` - Liveness
+- `GET /-/whoami` - The identity your auth wrapper resolved
+- `GET /{package}` - Package metadata document
+- `GET /{package}/-/{name-version.tgz}` - Download tarball
+- `GET /-/package/{package}/dist-tags` - Read dist-tags
+- `PUT /-/package/{package}/dist-tags/{tag}` - Point a dist-tag at a version
+- `PUT /{package}` - Publish
+- `PUT /{package}/-rev/{rev}` - Document update (how `npm unpublish` removes versions)
+- `DELETE /{package}/-rev/{rev}` - Unpublish a package
+- `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
+
+## Running the tests
+
+```bash
+bundle exec rake test
+```
+
+Most of it is ordinary Ruby, but two parts drive real tooling, because a package registry that only ever answers its own test suite can be perfectly self-consistent and still serve something no client will accept:
+
+- `test/npm_server/npm_install_test.rb` runs the **npm CLI** on this machine against a Paquette booted on a loopback port.
+- `test/npm_server/docker_client_test.rb` runs npm **inside a container** (`test/docker/Dockerfile`) talking to a Paquette on the host through `host.docker.internal`. Nothing of Paquette's is in that container — it installs, verifies integrity, publishes and unpublishes the way a customer's machine would.
+
+Both skip themselves when node or docker is missing. That is convenient locally and dangerous in CI, where a skip looks exactly like a pass, so the workflow sets `PAQUETTE_REQUIRE_NPM=1` and `PAQUETTE_REQUIRE_DOCKER=1` — with those set, missing tooling fails the run instead of quietly removing the coverage.
 
 ## License
 

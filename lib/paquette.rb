@@ -2,9 +2,12 @@ module Paquette
   require_relative "paquette/version"
 
   require_relative "paquette/routes"
+  require_relative "paquette/tarball"
   require_relative "paquette/gem_server/gem_repository"
   require_relative "paquette/gem_server/directory_gem_repository"
   require_relative "paquette/gem_server"
+  require_relative "paquette/npm_server/npm_repository"
+  require_relative "paquette/npm_server/directory_npm_repository"
   require_relative "paquette/npm_server"
   require_relative "paquette/subdomain_router"
   require_relative "paquette/gem_server/gem_repacker"

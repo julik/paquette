@@ -95,11 +95,30 @@ module Paquette
         # served as a real package that happens to be uninstallable.
         return nil if entitled.empty?
 
+        # The repository contract does not promise these keys, so a custom
+        # NpmRepository that renders a leaner document is filtered rather than
+        # crashed on.
+        versions = metadata["versions"].is_a?(Hash) ? metadata["versions"].slice(*entitled) : {}
+
         metadata.merge(
-          "versions" => metadata["versions"].slice(*entitled),
-          "time" => metadata["time"].slice(*entitled, "created", "modified"),
+          "versions" => versions,
+          "time" => entitled_times(metadata["time"], entitled),
           "dist-tags" => dist_tags(package_name)
         )
+      end
+
+      # created/modified describe the corpus, and the corpus is not what this
+      # caller can see — carried over unchanged they report the publication
+      # dates of versions being withheld. They are recomputed from the entitled
+      # versions instead.
+      def entitled_times(times, entitled)
+        return {} unless times.is_a?(Hash)
+
+        entitled_times = times.slice(*entitled)
+        return entitled_times if entitled_times.empty?
+
+        stamps = entitled_times.values.sort
+        entitled_times.merge("created" => stamps.first, "modified" => stamps.last)
       end
 
       def add_package(*, **)

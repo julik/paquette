@@ -189,7 +189,12 @@ module Paquette
           FileUtils.mv(tmp.path, destination)
           FileUtils.chmod(0o644, destination)
 
-          write_dist_tags(name, read_dist_tags(name).merge(dist_tags.select { |_tag, v| v == version }))
+          # "latest" is never stored, on the same reasoning write_dist_tag
+          # refuses to set it: it follows the newest release on disk. npm
+          # publish always sends one, and storing it would pin latest to
+          # whichever version was published first and leave it there.
+          published_tags = dist_tags.select { |tag, tagged| tagged == version && tag.to_s != "latest" }
+          write_dist_tags(name, read_dist_tags(name).merge(published_tags))
 
           info
         ensure
@@ -282,7 +287,9 @@ module Paquette
             candidate.name.count("/") == 1 &&
               File.basename(candidate.name).match?(/\AREADME(\.md|\.markdown|\.txt)?\z/i)
           end
-          entry&.content
+          # as_text, because this string ends up in a JSON document and a
+          # README is the one file in a package most likely to carry an accent.
+          entry && Tarball.as_text(entry.content)
         end
       end
 

@@ -82,7 +82,7 @@ module Paquette
         personalized_dir = File.join(Dir.tmpdir, "paquette_personalized_npm")
         FileUtils.mkdir_p(personalized_dir)
 
-        filename = "#{File.basename(package_name)}-#{version}-#{personalization_digest}-#{source_digest(original_path)}.tgz"
+        filename = "#{File.basename(package_name)}-#{version}-#{cache_digest(package_name, version, original_path)}.tgz"
         personalized_path = File.join(personalized_dir, filename)
         return personalized_path if File.exist?(personalized_path)
 
@@ -102,19 +102,32 @@ module Paquette
         personalized_path
       end
 
-      # The identity of the tarball being personalized, so that replacing one on
-      # disk — which the README offers as a way to publish — invalidates what
-      # was built from it. Without this the cache would keep serving a repack of
-      # a file that is no longer there, and the integrity published alongside it
-      # would describe neither.
+      # Everything that decides which bytes belong at this cache path.
       #
-      # Taken from the stat rather than from the contents because this runs on
-      # every download and on every version of a metadata request, and re-hashing
-      # a whole corpus of tarballs to discover that none of them moved is a poor
-      # trade for a case that a tomb already prevents through the API.
-      def source_digest(path)
-        stat = File.stat(path)
-        Digest::SHA256.hexdigest("#{stat.mtime.to_f}-#{stat.size}")[0, 12]
+      # The full package name is in here, not just the basename the filename is
+      # built from. "@alpha/util" and "@bravo/util" share a basename, and two
+      # tarballs of the same size and mtime are not unusual — a `cp -p`, a
+      # restore from tar, a deploy that stamps mtimes. Keying on the basename
+      # alone meant a request for one scope's package could be answered with the
+      # other scope's code, personalized for this licensee and served under the
+      # name they asked for. That is the one mistake this cache exists to avoid,
+      # made across packages rather than across licensees.
+      #
+      # The source tarball's identity is included so that replacing one on disk
+      # — which the README offers as a way to publish — invalidates what was
+      # built from it. It is taken from the stat rather than the contents
+      # because this runs on every download and on every version of a metadata
+      # request, and re-hashing a whole corpus to discover that none of it moved
+      # is a poor trade for a case a tomb already prevents through the API.
+      def cache_digest(package_name, version, original_path)
+        stat = File.stat(original_path)
+        Digest::SHA256.hexdigest([
+          package_name,
+          version,
+          personalization_digest,
+          stat.mtime.to_f,
+          stat.size
+        ].join("\0"))[0, 24]
       end
 
       # Everything this personalizer would write into a package, as one short

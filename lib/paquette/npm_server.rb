@@ -103,8 +103,16 @@ module Paquette
       route = @@routes.match(request)
       return not_found("Not Found") unless route
 
-      @request = request
-      @@routes.perform_action(route, self, request)
+      # One NpmServer is built at boot and Rack calls it from several threads at
+      # once, so the request cannot be stored on it: two overlapping requests
+      # would overwrite each other's, and a publish would read the other one's
+      # body while a metadata response stamped the other one's host into every
+      # tarball URL. The handlers get a copy of this server that belongs to this
+      # request alone; @repository is set in the constructor and never written,
+      # so sharing it is safe.
+      handler = clone
+      handler.instance_variable_set(:@request, request)
+      @@routes.perform_action(route, handler, request)
     end
 
     private
@@ -181,8 +189,15 @@ module Paquette
       document ||= parse_json_body
       return bad_request("Request body is not valid JSON") unless document
 
-      kept = (document["versions"] || {}).keys
-      removed = @repository.versions_for_package(package_name) - kept
+      # A document with no `versions` key is not a request to remove every
+      # version — it is a request that says nothing about them. npm sends
+      # exactly that for `npm owner add` and `npm owner rm`, and treating it as
+      # "keep nothing" unpublished the whole package and tombstoned every
+      # version, so nobody could put it back.
+      kept = document["versions"]
+      return json_ok({success: true, id: package_name, rev: revision_for(package_name)}) unless kept.is_a?(Hash)
+
+      removed = @repository.versions_for_package(package_name) - kept.keys
       removed.each { |version| @repository.yank_package(package_name, version) }
 
       json_ok({success: true, id: package_name, rev: revision_for(package_name)})
@@ -221,6 +236,10 @@ module Paquette
     end
 
     def handle_dist_tag_put(package_name, tag)
+      # Rewound first, like every other body reader here: Routes calls
+      # request.params on the way in, and Rack consumes the body there for a
+      # form-encoded content type.
+      @request.body.rewind if @request.body.respond_to?(:rewind)
       version = @request.body.read.to_s.delete('"').strip
       return bad_request("Request body is not a version") if version.empty?
       return not_found("Package not found") unless @repository.package_exists?(package_name, version)
@@ -229,6 +248,11 @@ module Paquette
       json_ok(@repository.dist_tags(package_name))
     rescue ReadGatedRepository::WriteNotAllowed => e
       forbidden(e.message)
+    rescue DirectoryNpmRepository::InvalidPackage => e
+      # `npm dist-tag add pkg@x latest` lands here, and a refusal is an answer.
+      bad_request(e.message)
+    rescue DirectoryNpmRepository::PackageNotFound => e
+      not_found(e.message)
     end
 
     def version_from_tarball_name(package_name, tarball_name)

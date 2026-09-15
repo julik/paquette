@@ -68,12 +68,12 @@ module Paquette
 
       # Dynamic endpoints with parameters
       r.get "/info/:gem_name" do |gem_name:|
-        info_lines = @repository.compact_info(gem_name)
+        body = compact_info_body(gem_name)
 
-        if info_lines.empty?
+        if body.nil?
           not_found("Not Found")
         else
-          text_ok(info_lines.join("\n"))
+          text_ok(body)
         end
       end
 
@@ -291,21 +291,42 @@ module Paquette
       lines << "created_at: #{Time.now.utc.iso8601}"
       lines << "---"
 
-      # Add each gem with its versions and checksum
+      # The third column is the MD5 of this gem's /info/ file, not of anything
+      # about the version list. Bundler compares it against the MD5 of the info
+      # file it already has on disk and re-fetches when they differ — so a
+      # checksum derived from the versions alone can never tell a client that a
+      # gem's *dependencies* changed, and a client would keep resolving against
+      # a stale info file. Verified against rubygems.org: the md5 of
+      # https://rubygems.org/info/rake is byte-for-byte the third column of the
+      # `rake` row in https://rubygems.org/versions.
+      #
+      # This costs a pass over every gem in the corpus, because the only honest
+      # way to checksum what /info/ would return is to render it. That is also
+      # what makes it correct under a Personalizer, where each licensee's info
+      # file carries their own gem checksums.
       gem_versions.sort.each do |name, versions|
         versions_str = versions.join(",")
-        # Create a checksum for this gem's versions
-        version_data = "#{name} #{versions.join(" ")}"
-        checksum = Digest::MD5.hexdigest(version_data)
+        checksum = Digest::MD5.hexdigest(compact_info_body(name).to_s)
         lines << "#{name} #{versions_str} #{checksum}"
       end
 
       content = lines.join("\n")
 
-      # Calculate overall checksum for the entire content
-      overall_checksum = Digest::MD5.hexdigest(content)
+      [200, {"Content-Type" => "text/plain"}, [content]]
+    end
 
-      [200, {"Content-Type" => "text/plain", "X-Checksum-Sha256" => overall_checksum}, [content]]
+    # The body of an /info/ file, or nil when the gem is unknown here.
+    #
+    # The leading "---" is what rubygems.org serves and what the compact index
+    # format describes. Bundler's parser tolerates its absence — it takes
+    # everything after the marker only if it finds one — but other clients read
+    # these files too, and the byte-exact body is what /versions checksums, so
+    # there is one renderer and both endpoints go through it.
+    def compact_info_body(gem_name)
+      info_lines = @repository.compact_info(gem_name)
+      return nil if info_lines.nil? || info_lines.empty?
+
+      (["---"] + info_lines).join("\n") + "\n"
     end
 
     def generate_specs_array

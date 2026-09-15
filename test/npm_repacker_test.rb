@@ -3,115 +3,172 @@ require_relative "test_helper"
 class NpmRepackerTest < Minitest::Test
   def setup
     @test_package_path = File.join(FIXTURE_NPM_DIR, "react-dropzone", "react-dropzone-14.3.8.tgz")
+    @work_dir = Dir.mktmpdir("npm_repacker_test")
+  end
+
+  def teardown
+    FileUtils.rm_rf(@work_dir) if @work_dir
+  end
+
+  def into(name = "out.tgz")
+    File.join(@work_dir, name)
+  end
+
+  def fixture_package(**options)
+    path = File.join(@work_dir, "source.tgz")
+    File.binwrite(path, npm_tarball_bytes(name: "widget", version: "1.0.0", **options))
+    path
   end
 
   def test_repack_with_text_replacement
     skip "Test package not found" unless File.exist?(@test_package_path)
 
-    # Replace the first occurrence of 'Dropzone' with 'Liftzone' in JS/TS files
-    new_package_path = Paquette::NpmRepacker.repack(@test_package_path) do |input_file, output_file, file_path|
+    new_package_path = Paquette::NpmRepacker.repack(@test_package_path, into: into) do |input_file, output_file, file_path|
       unless File.extname(file_path).match?(/\.(ts|js|mjs|jsx|tsx)$/)
         IO.copy_stream(input_file, output_file)
         next
       end
 
-      # Read the entire content
-      content = input_file.read
-
-      # Replace ALL occurrences of 'Dropzone' with 'Liftzone'
-      if content.include?("Dropzone")
-        content = content.gsub("Dropzone", "Liftzone")
-      end
-
-      # Write the processed content
-      output_file.write(content)
+      output_file.write(input_file.read.gsub("Dropzone", "Liftzone"))
     end
 
-    assert File.exist?(new_package_path)
-    assert new_package_path.end_with?("-repacked.tgz")
+    assert_path_exists new_package_path
 
-    # Unpack the produced package and verify the replacement
-    verify_repacking(new_package_path)
+    sources = Paquette::Tarball.entries(new_package_path).select do |entry|
+      File.extname(entry.name).match?(/\.(ts|js|mjs|jsx|tsx)$/)
+    end
 
-    # Clean up
-    File.delete(new_package_path) if File.exist?(new_package_path)
+    assert sources.any? { |entry| entry.content.include?("Liftzone") }
+    sources.each { |entry| refute_includes entry.content, "Dropzone" }
   end
 
-  def test_repack_requires_block
-    skip "Test package not found" unless File.exist?(@test_package_path)
-
-    assert_raises(ArgumentError) do
-      Paquette::NpmRepacker.repack(@test_package_path)
+  # The block sees paths relative to the package root, not the "package/" prefix
+  # the tarball happens to store them under.
+  def test_the_block_sees_paths_relative_to_the_package_root
+    seen = []
+    Paquette::NpmRepacker.repack(fixture_package, into: into) do |input_file, output_file, file_path|
+      seen << file_path
+      IO.copy_stream(input_file, output_file)
     end
+
+    assert_includes seen, "package.json"
+    assert_includes seen, "index.js"
+    refute seen.any? { |path| path.start_with?("package/") }
   end
 
   def test_repack_with_nonexistent_package
-    nonexistent_path = "/nonexistent/path.tgz"
-
     assert_raises(ArgumentError) do
-      Paquette::NpmRepacker.repack(nonexistent_path) { |input_file, output_file, file_path| }
+      Paquette::NpmRepacker.repack("/nonexistent/path.tgz") { |input_file, output_file, file_path| }
     end
   end
 
-  def test_repack_creates_new_package_with_different_checksum
-    skip "Test package not found" unless File.exist?(@test_package_path)
+  # The options alone are enough; the block is for anything they do not cover.
+  def test_repack_without_a_block
+    path = Paquette::NpmRepacker.repack(fixture_package,
+      package_json_extras: {"paquette" => {"licenseKey" => "LIC-1"}}, into: into)
 
-    original_checksum = Digest::SHA256.file(@test_package_path).hexdigest
-
-    new_package_path = Paquette::NpmRepacker.repack(@test_package_path) do |input_file, output_file, file_path|
-      unless File.extname(file_path).match?(/\.(ts|js|mjs|jsx|tsx)$/)
-        IO.copy_stream(input_file, output_file)
-        next
-      end
-
-      content = input_file.read
-      content = content.gsub("Dropzone", "Liftzone") if content.include?("Dropzone")
-      output_file.write(content)
-    end
-
-    new_checksum = Digest::SHA256.file(new_package_path).hexdigest
-
-    assert File.exist?(new_package_path)
-    refute_equal original_checksum, new_checksum
-
-    # Clean up
-    File.delete(new_package_path) if File.exist?(new_package_path)
+    package_json = JSON.parse(tarball_file(path, "package/package.json"))
+    assert_equal({"licenseKey" => "LIC-1"}, package_json["paquette"])
+    assert_equal "widget", package_json["name"]
   end
 
-  private
+  def test_magic_comment_replacement
+    source = fixture_package(files: {"index.js" => "// paquette_license_info\nexport const x = 1;\n"})
+    path = Paquette::NpmRepacker.repack(source,
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
 
-  def verify_repacking(package_path)
-    # Create a temporary directory to unpack the new package
-    temp_dir = Dir.mktmpdir("verify_npm_repacking")
-    unpacked_dir = File.join(temp_dir, "unpacked")
-    FileUtils.mkdir_p(unpacked_dir)
+    content = tarball_file(path, "package/index.js")
+    assert_equal "// licensed to Acme\nexport const x = 1;\n", content
+  end
 
-    begin
-      # Unpack the new package
-      result = system("tar -xzf #{package_path} -C #{unpacked_dir}")
-      assert result, "Failed to unpack the repacked package"
+  # npm packages ship sourcemaps, which address generated code by line. A
+  # replacement that added or removed a line would silently misalign every
+  # mapping below it, so a marker line is always replaced by exactly one line.
+  def test_replacement_preserves_the_line_count
+    source = fixture_package(files: {
+      "index.js" => "// paquette_license_info\nexport const x = 1;\n//# sourceMappingURL=index.js.map\n",
+      "index.js.map" => JSON.generate({"version" => 3, "sources" => ["index.ts"], "mappings" => "AAAA"})
+    })
 
-      # Find the unpacked package directory
-      package_dir = Dir.glob(File.join(unpacked_dir, "*")).find { |path| File.directory?(path) }
-      assert package_dir, "Could not find unpacked package directory"
+    path = Paquette::NpmRepacker.repack(source,
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme\nand a second line"},
+      into: into)
 
-      # Check JS/TS files for the replacement
-      found_replacement = false
-      extensions = %w[.ts .js .mjs .jsx .tsx]
-      extensions.each do |ext|
-        Dir.glob(File.join(package_dir, "**", "*#{ext}")).each do |js_file|
-          content = File.read(js_file)
-          if content.include?("Liftzone")
-            found_replacement = true
-          end
-          # Ensure the original word is gone (all occurrences)
-          refute content.include?("Dropzone"), "Original word 'Dropzone' still present in #{js_file}"
-        end
-      end
+    content = tarball_file(path, "package/index.js")
+    assert_equal 3, content.lines.length
+    assert_equal "// licensed to Acme and a second line\n", content.lines.first
+    # The sourcemap is carried through untouched, which is only correct because
+    # the line count did not move.
+    assert_equal 3, JSON.parse(tarball_file(path, "package/index.js.map"))["version"]
+  end
 
-      assert found_replacement, "Replacement word 'Liftzone' not found in any JS/TS file"
-    ensure
-      FileUtils.rm_rf(temp_dir)
-    end
+  def test_binary_files_are_left_alone
+    png = "\x89PNG\r\n\x1a\n\x00\x01\x02\xff".b
+    source = fixture_package(files: {"logo.png" => png})
+
+    path = Paquette::NpmRepacker.repack(source,
+      magic_comment_replacements: {"// paquette_license_info" => "licensed"}, into: into)
+
+    assert_equal png, tarball_file(path, "package/logo.png").b
+  end
+
+  def test_injected_files
+    path = Paquette::NpmRepacker.repack(fixture_package,
+      files: {"LICENSE.txt" => "Licensed to Acme", "docs/USAGE.md" => "# Usage"}, into: into)
+
+    assert_equal "Licensed to Acme", tarball_file(path, "package/LICENSE.txt")
+    assert_equal "# Usage", tarball_file(path, "package/docs/USAGE.md")
+  end
+
+  def test_an_injected_file_replaces_one_already_there
+    path = Paquette::NpmRepacker.repack(fixture_package,
+      files: {"README.md" => "replaced"}, into: into)
+
+    assert_equal "replaced", tarball_file(path, "package/README.md")
+    assert_equal 1, Paquette::Tarball.entries(path).count { |entry| entry.name == "package/README.md" }
+  end
+
+  def test_repack_changes_the_checksum
+    source = fixture_package
+    original = Digest::SHA256.file(source).hexdigest
+
+    path = Paquette::NpmRepacker.repack(source, package_json_extras: {"paquette" => {}}, into: into)
+
+    refute_equal original, Digest::SHA256.file(path).hexdigest
+  end
+
+  # What makes the Personalizer's published integrity hashes true.
+  def test_repacking_is_reproducible
+    source = fixture_package
+    options = {
+      package_json_extras: {"paquette" => {"licenseKey" => "LIC-1"}},
+      magic_comment_replacements: {"// paquette_license_info" => "licensed"},
+      files: {"LICENSE.txt" => "Licensed to Acme"}
+    }
+
+    first = Paquette::NpmRepacker.repack(source, into: into("first.tgz"), **options)
+    sleep 1.1
+    second = Paquette::NpmRepacker.repack(source, into: into("second.tgz"), **options)
+
+    assert_equal Digest::SHA256.file(first).hexdigest, Digest::SHA256.file(second).hexdigest
+  end
+
+  # `into:` is how a caller says where the result should land, so that cleaning
+  # up is its own business rather than ours.
+  def test_into_places_the_result_where_the_caller_asked
+    destination = File.join(@work_dir, "nested", "here.tgz")
+    path = Paquette::NpmRepacker.repack(fixture_package, into: destination)
+
+    assert_equal destination, path
+    assert_path_exists destination
+  end
+
+  def test_without_into_the_result_lands_somewhere_of_ours
+    path = Paquette::NpmRepacker.repack(fixture_package)
+
+    assert_path_exists path
+    assert path.end_with?("-repacked.tgz")
+  ensure
+    FileUtils.rm_rf(File.dirname(path)) if path
   end
 end

@@ -1,0 +1,160 @@
+require_relative "../test_helper"
+
+class NpmPersonalizerTest < Minitest::Test
+  include Rack::Test::Methods
+
+  LICENSED_SOURCE = <<~JS
+    // paquette_license_info
+    export function greet() {
+      return "hello";
+    }
+  JS
+
+  def setup
+    @dir = Dir.mktmpdir("paquette_npm_personalizer_test")
+    @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@dir)
+
+    write_npm_package(@dir, name: "widget", version: "1.0.0",
+      files: {"index.js" => LICENSED_SOURCE}, dependencies: {"left-pad" => "^1.3.0"})
+    write_npm_package(@dir, name: "@acme/gadget", version: "2.0.0",
+      files: {"index.js" => LICENSED_SOURCE})
+  end
+
+  def teardown
+    FileUtils.rm_rf(@dir) if @dir
+  end
+
+  def personalized(license_key: "LIC-123", **options)
+    Paquette::NpmServer::Personalizer.new(
+      @repository,
+      license_key: license_key,
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to #{license_key}"},
+      **options
+    )
+  end
+
+  def test_the_license_key_lands_in_the_served_tarball
+    path = personalized.package_file_path("widget", "1.0.0")
+
+    assert_includes tarball_file(path, "package/index.js"), "licensed to LIC-123"
+    refute_includes tarball_file(path, "package/index.js"), "paquette_license_info"
+  end
+
+  def test_the_license_key_lands_in_package_json
+    path = personalized.package_file_path("widget", "1.0.0")
+    package_json = JSON.parse(tarball_file(path, "package/package.json"))
+
+    assert_equal({"licenseKey" => "LIC-123"}, package_json["paquette"])
+    # Everything npm reads has to survive the rewrite.
+    assert_equal({"left-pad" => "^1.3.0"}, package_json["dependencies"])
+    assert_equal "widget", package_json["name"]
+  end
+
+  def test_injected_files_are_carried_into_the_package
+    repo = personalized(files: {"LICENSE.txt" => "Licensed to Acme Inc."})
+    path = repo.package_file_path("widget", "1.0.0")
+
+    assert_equal "Licensed to Acme Inc.", tarball_file(path, "package/LICENSE.txt")
+  end
+
+  def test_the_original_is_left_alone
+    original = File.binread(@repository.package_file_path("widget", "1.0.0"))
+    personalized.package_file_path("widget", "1.0.0")
+
+    assert_equal original, File.binread(@repository.package_file_path("widget", "1.0.0"))
+  end
+
+  # This is the whole reason the repacker is deterministic: the integrity npm is
+  # told to expect has to describe the bytes it is handed.
+  def test_published_integrity_describes_the_personalized_tarball
+    repo = personalized
+    metadata = repo.package_metadata("widget")
+    dist = metadata["versions"]["1.0.0"]["dist"]
+
+    served = repo.package_file_path("widget", "1.0.0")
+    assert_equal Digest::SHA1.file(served).hexdigest, dist["shasum"]
+    assert_equal "sha512-" + [Digest::SHA512.file(served).digest].pack("m0"), dist["integrity"]
+  end
+
+  def test_personalization_changes_the_hashes
+    original_dist = @repository.dist_for("widget", "1.0.0")
+    personalized_dist = personalized.dist_for("widget", "1.0.0")
+
+    refute_equal original_dist["integrity"], personalized_dist["integrity"]
+    # The package did not move, only its contents changed.
+    assert_equal original_dist["tarball"], personalized_dist["tarball"]
+  end
+
+  def test_repacking_twice_produces_the_same_bytes
+    first = personalized.package_file_path("widget", "1.0.0")
+    digest = Digest::SHA256.file(first).hexdigest
+    File.unlink(first)
+
+    second = personalized.package_file_path("widget", "1.0.0")
+    assert_equal digest, Digest::SHA256.file(second).hexdigest
+  end
+
+  # Two licensees downloading at the same moment must not share one file — what
+  # is personalized into it is by definition the other licensee's.
+  def test_two_licensees_get_different_files
+    one = personalized(license_key: "LIC-111").package_file_path("widget", "1.0.0")
+    two = personalized(license_key: "LIC-222").package_file_path("widget", "1.0.0")
+
+    refute_equal one, two
+    assert_includes tarball_file(one, "package/index.js"), "LIC-111"
+    assert_includes tarball_file(two, "package/index.js"), "LIC-222"
+  end
+
+  def test_scoped_packages_are_personalized_too
+    path = personalized.package_file_path("@acme/gadget", "2.0.0")
+
+    assert_includes tarball_file(path, "package/index.js"), "licensed to LIC-123"
+  end
+
+  def test_metadata_still_describes_the_package_itself
+    metadata = personalized.package_metadata("widget")
+
+    assert_equal "widget", metadata["name"]
+    assert_equal({"left-pad" => "^1.3.0"}, metadata["versions"]["1.0.0"]["dependencies"])
+  end
+
+  # The wrapper chain the README describes: gate first, personalize on top.
+  def test_stacked_on_a_gated_repository
+    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "widget" }
+    stack = Paquette::NpmServer::Personalizer.new(gated,
+      license_key: "LIC-999",
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to LIC-999"})
+
+    assert_nil stack.package_metadata("@acme/gadget")
+
+    path = stack.package_file_path("widget", "1.0.0")
+    assert_includes tarball_file(path, "package/index.js"), "LIC-999"
+  end
+
+  # End to end: what the server publishes is what the server serves.
+  def test_served_bytes_match_published_integrity
+    stack = personalized
+    @app = Paquette::NpmServer.new(stack)
+
+    get "/widget"
+    dist = JSON.parse(last_response.body)["versions"]["1.0.0"]["dist"]
+
+    get URI.parse(dist["tarball"]).path
+    assert_equal 200, last_response.status
+    assert_equal dist["shasum"], Digest::SHA1.hexdigest(last_response.body)
+    assert_equal dist["integrity"], "sha512-" + [Digest::SHA512.digest(last_response.body)].pack("m0")
+    assert_includes tarball_file_from_bytes(last_response.body, "package/index.js"), "LIC-123"
+  end
+
+  attr_reader :app
+
+  private
+
+  def tarball_file_from_bytes(bytes, name)
+    Dir.mktmpdir("served") do |dir|
+      path = File.join(dir, "served.tgz")
+      File.binwrite(path, bytes)
+      tarball_file(path, name)
+    end
+  end
+end

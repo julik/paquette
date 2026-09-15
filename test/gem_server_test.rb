@@ -332,6 +332,48 @@ class GemServerTest < Minitest::Test
     end
   end
 
+  # Serving /versions writes derived-metadata sidecars into .paquette-cache
+  # directories next to the gems. Every endpoint that lists the tree — the
+  # compact index, the legacy Marshal indexes, the JSON API — must stay
+  # blind to them: a cache file that shows up as a gem name or a version is
+  # a cache file a Bundler will try to install.
+  def test_sidecar_cache_never_surfaces_in_any_listing_endpoint
+    Dir.mktmpdir do |dir|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app_with_writable_dir = Paquette::GemServer.new(repo)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
+
+      binary = File.binread(MINUSCULE_FIXTURE)
+      session.post "/api/v1/gems", binary, "CONTENT_TYPE" => "application/octet-stream"
+
+      # Warm the cache, then check every listing against the same one gem
+      session.get "/versions"
+      assert Dir.exist?(File.join(dir, "minuscule_test", ".paquette-cache"))
+
+      session.get "/names"
+      assert_equal ["minuscule_test"], session.last_response.body.split("\n")
+
+      session.get "/versions"
+      gem_rows = session.last_response.body.split("\n")[2..]
+      assert_equal ["minuscule_test"], gem_rows.map { |row| row.split(" ")[0] }
+
+      session.get "/api/v1/names"
+      assert_equal ["minuscule_test"], JSON.parse(session.last_response.body)
+
+      session.get "/api/v1/versions"
+      versions = JSON.parse(session.last_response.body)
+      assert_equal [["minuscule_test", "0.1.0"]], versions.map { |v| [v["name"], v["number"]] }
+
+      session.get "/specs.4.8"
+      specs = Marshal.load(session.last_response.body)
+      assert_equal [["minuscule_test", "0.1.0", "ruby"]], specs
+
+      session.get "/latest_specs.4.8"
+      specs = Marshal.load(session.last_response.body)
+      assert_equal [["minuscule_test", "0.1.0", "ruby"]], specs
+    end
+  end
+
   def test_compact_info_returns_404_for_gated_gem
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }

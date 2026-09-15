@@ -72,21 +72,22 @@ module Paquette
         personalized_path = File.join(personalized_dir, "#{gem_name}-#{version}-#{personalization_digest}.gem")
         return personalized_path if File.exist?(personalized_path)
 
-        # The repacker says where it put the gem. Guessing that path instead —
-        # which this did — is how a miss turned into somebody else's file being
-        # returned rather than an error.
-        repacked = Paquette::GemServer::GemRepacker.repack(original_gem_path,
-          gemspec_extras: {"paquette.license_key" => @license_key},
-          magic_comment_replacements: @magic_comment_replacements,
-          files: @files)
+        # A directory we make here and give back here. The block form removes
+        # exactly what it created, so nothing in this method ever deletes a path
+        # somebody else chose — which is the only safe rule when the path came
+        # out of another object. Reaching for File.dirname of whatever you were
+        # handed and deleting it recursively is how a tidy-up ends up walking
+        # the system temp directory.
+        Dir.mktmpdir("paquette_personalize") do |workdir|
+          built = Paquette::GemServer::GemRepacker.repack(original_gem_path,
+            gemspec_extras: {"paquette.license_key" => @license_key},
+            magic_comment_replacements: @magic_comment_replacements,
+            files: @files,
+            into: File.join(workdir, File.basename(personalized_path)))
 
-        FileUtils.mv(repacked, personalized_path)
-        # The repacker builds into a directory of its own and hands the caller
-        # the path — which makes the directory ours to take away. Moving the gem
-        # out and leaving the directory behind would drop one empty directory in
-        # the tmpdir per cache miss, which is per licensee, per gem, per version,
-        # forever.
-        FileUtils.remove_entry(File.dirname(repacked))
+          FileUtils.mv(built, personalized_path)
+        end
+
         personalized_path
       end
 

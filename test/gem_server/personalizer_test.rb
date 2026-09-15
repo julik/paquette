@@ -138,6 +138,35 @@ class PersonalizerTest < Minitest::Test
     assert_equal published, downloaded
   end
 
+  # Nothing this does may reach outside a directory it made itself.
+  #
+  # The tidy-up here used to be FileUtils.remove_entry(File.dirname(repacked)) —
+  # a recursive delete of whatever directory the repacker happened to choose. In
+  # the shop that surfaced as Errno::EPERM on /var/folders/…/T/com.apple.…,
+  # which is macOS declining to let one process delete another's files out of
+  # the shared temp directory. It only failed loudly because it was refused.
+  def test_personalizing_leaves_nothing_behind_and_takes_nothing_it_did_not_make
+    skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
+
+    # A directory that is not ours, sitting in the same tmpdir, with something
+    # in it that has to still be there afterwards.
+    bystander = Dir.mktmpdir("bystander")
+    File.write(File.join(bystander, "somebody-elses.txt"), "not ours\n")
+    before = Dir.children(Dir.tmpdir)
+
+    personalizer_for("ST-CCCCCCC", "Cleanup Ltd").gem_file_path("minuscule_test", "0.1.0")
+
+    assert File.exist?(File.join(bystander, "somebody-elses.txt")),
+      "a personalize deleted a file belonging to something else"
+
+    # The cache directory may appear — that is the point of it. A working
+    # directory may not: those are made per repack and have to go with it.
+    orphans = (Dir.children(Dir.tmpdir) - before).grep(/\Agem_repack|\Apaquette_personalize\d/)
+    assert_empty orphans, "a personalize left working directories behind"
+  ensure
+    FileUtils.remove_entry(bystander) if bystander && File.exist?(bystander)
+  end
+
   private
 
   def personalizer_for(license_ref, licensee)

@@ -9,15 +9,26 @@ require "open3"
 module Paquette
   class GemServer
     class GemRepacker
-      def self.repack(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, &block)
-        new(gem_path, gemspec_extras: gemspec_extras, magic_comment_replacements: magic_comment_replacements, files: files).repack(&block)
+      # `into:` is a file path the caller has somewhere it owns — a directory it
+      # made and will take away again. Given one, the finished gem is written
+      # there and this leaves nothing behind at all.
+      #
+      # Without it the gem lands in a fresh directory of ours and the caller is
+      # handed the path, which makes cleaning that directory the caller's
+      # problem. That is a bad bargain and `into:` is how a caller declines it:
+      # nobody should be deleting a directory somebody else chose, and a caller
+      # that tries ends up calling a recursive delete on whatever it was given —
+      # the system temp directory included.
+      def self.repack(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block)
+        new(gem_path, gemspec_extras: gemspec_extras, magic_comment_replacements: magic_comment_replacements, files: files, into: into).repack(&block)
       end
 
-      def initialize(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {})
+      def initialize(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil)
         @gem_path = gem_path
         @gemspec_extras = gemspec_extras
         @magic_comment_replacements = magic_comment_replacements
         @files = files
+        @into = into
         @temp_dir = nil
         @unpacked_gem_dir = nil
       end
@@ -153,13 +164,12 @@ module Paquette
         gem_name = File.basename(@gem_path, ".gem")
         new_gem_path = File.join(@gem_dir, "#{gem_name}.gem")
 
-        # Somewhere of its own, not "#{gem_name}-repacked.gem" in the shared
-        # tmpdir: two repacks of one gem — two licensees, or one licensee and
-        # the checksum pass — were writing over each other, and the caller was
-        # handed whichever finished last. The directory is the caller's to clean
-        # up, which is what `repack` returning the path is for.
-        final_dir = Dir.mktmpdir("gem_repacked")
-        final_gem_path = File.join(final_dir, "#{gem_name}-repacked.gem")
+        # Where the caller asked for it, or somewhere of its own. Not
+        # "#{gem_name}-repacked.gem" in the shared tmpdir, which is what two
+        # repacks of one gem — two licensees, or one licensee and the checksum
+        # pass — used to overwrite each other in.
+        final_gem_path = @into || File.join(Dir.mktmpdir("gem_repacked"), "#{gem_name}-repacked.gem")
+        FileUtils.mkdir_p(File.dirname(final_gem_path))
         FileUtils.mv(new_gem_path, final_gem_path)
 
         final_gem_path

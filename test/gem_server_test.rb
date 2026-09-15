@@ -103,10 +103,6 @@ class GemServerTest < Minitest::Test
     assert_equal 200, last_response.status
     assert_equal "text/plain", last_response.content_type
 
-    # Check for checksum header
-    assert last_response.headers["X-Checksum-Sha256"]
-    refute_nil last_response.headers["X-Checksum-Sha256"]
-
     lines = last_response.body.split("\n")
 
     # Check for timestamp header
@@ -128,12 +124,28 @@ class GemServerTest < Minitest::Test
     assert_equal ["minuscule_test", "zip_kit"], gem_names.sort
   end
 
+  # Bundler skips re-fetching /info/NAME when this column matches the MD5 of the
+  # info file it already has, so the column has to be that MD5 and nothing else.
+  # rubygems.org does the same: md5(/info/rake) == the rake row's third column.
+  def test_versions_checksum_is_the_md5_of_the_info_file
+    get "/versions"
+    row = last_response.body.split("\n").find { |line| line.start_with?("zip_kit ") }
+
+    get "/info/zip_kit"
+    assert_equal Digest::MD5.hexdigest(last_response.body), row.split(" ").last
+  end
+
   def test_compact_index_info
     get "/info/zip_kit"
     assert_equal 200, last_response.status
     assert_equal "text/plain", last_response.content_type
 
-    info_lines = last_response.body.split("\n")
+    lines = last_response.body.split("\n")
+
+    # The format's own header, as rubygems.org serves it
+    assert_equal "---", lines[0]
+
+    info_lines = lines[1..]
     assert_equal 2, info_lines.length
 
     # Check that each line has the format "version |checksum:sha256_checksum,ruby:required_ruby_version"

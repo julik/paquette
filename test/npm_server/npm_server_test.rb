@@ -65,8 +65,6 @@ class NpmServerTest < Minitest::Test
     assert_equal "Package not found", JSON.parse(last_response.body)["error"]
   end
 
-  # The metadata is read out of the tarball rather than invented, which is the
-  # difference between a document npm can install from and one it cannot.
   def test_version_document_carries_the_real_package_json
     get "/test-package"
     version = JSON.parse(last_response.body)["versions"]["1.1.0"]
@@ -79,8 +77,7 @@ class NpmServerTest < Minitest::Test
     assert_equal "test-package@1.1.0", version["_id"]
   end
 
-  # npm checks these against the bytes it downloads, so they have to describe
-  # the tarball this server actually serves.
+  # npm checks these against the bytes it downloads.
   def test_dist_hashes_match_the_served_tarball
     get "/test-package"
     dist = JSON.parse(last_response.body)["versions"]["1.1.0"]["dist"]
@@ -133,7 +130,7 @@ class NpmServerTest < Minitest::Test
     assert_equal last_response.body.bytesize.to_s, last_response.headers["Content-Length"]
   end
 
-  # A lockfile written against an older Paquette records the pre-convention URL.
+  # Old lockfiles record the pre-convention URL.
   def test_package_download_through_the_legacy_path
     get "/test-package/test-package-1.0.0.tgz"
     assert_equal 200, last_response.status
@@ -168,8 +165,6 @@ class NpmServerTest < Minitest::Test
     assert_equal "@acme/widgets", JSON.parse(last_response.body)["name"]
   end
 
-  # The scope stays on the package but is dropped from the filename, which is
-  # what every registry serves and what npm follows.
   def test_scoped_tarball_url_and_download
     get "/@acme/widgets"
     dist = JSON.parse(last_response.body)["versions"]["3.1.0"]["dist"]
@@ -180,8 +175,7 @@ class NpmServerTest < Minitest::Test
     assert_equal Digest::SHA1.hexdigest(last_response.body), dist["shasum"]
   end
 
-  # npm appends ?write=true when it is about to publish or unpublish. A query
-  # parameter a route did not ask for must not reach the route block.
+  # npm appends ?write=true before a publish or unpublish.
   def test_unexpected_query_parameters_are_tolerated
     get "/test-package?write=true"
     assert_equal 200, last_response.status
@@ -244,8 +238,7 @@ class NpmServerTest < Minitest::Test
     assert_equal "1.0.0-beta.1", tags["beta"]
   end
 
-  # `npm unpublish pkg@version` PUTs the document back without that version and
-  # then deletes the tarball.
+  # npm PUTs the document back without the version, then deletes the tarball.
   def test_unpublish_one_version
     put "/test-package/-rev/1-abc",
       JSON.generate({"name" => "test-package", "versions" => {"1.0.0" => {}}}),
@@ -276,8 +269,7 @@ class NpmServerTest < Minitest::Test
     assert_equal 403, last_response.status
   end
 
-  # The document carries a _rev because npm's unpublish flow reads one out and
-  # puts it back in the URL.
+  # npm's unpublish flow reads _rev out of the document.
   def test_metadata_carries_a_revision
     get "/test-package"
     assert_match(/\A2-/, JSON.parse(last_response.body)["_rev"])

@@ -6,16 +6,8 @@ require "time"
 
 module Paquette
   class NpmServer
-    # Repository implementation that reads NPM packages from a directory.
-    #
-    # Layout mirrors the gem side — one directory per package, tarballs inside
-    # it — with one addition for scopes: "@acme/widgets" lives at
-    # packages/npm/@acme/widgets/, so a scope is an ordinary directory holding
-    # the packages that belong to it.
-    #
-    #   packages/npm/lodash/lodash-4.17.21.tgz
+    # Reads NPM packages from a directory; a scope is an ordinary directory:
     #   packages/npm/@acme/widgets/widgets-1.0.0.tgz
-    #   packages/npm/@acme/widgets/dist-tags.json
     class DirectoryNpmRepository < NpmRepository
       class PackageAlreadyExists < StandardError; end
 
@@ -89,11 +81,7 @@ module Paquette
         info["dependencies"] || {}
       end
 
-      # The dist-tag map. Tags published alongside a tarball are persisted, but
-      # "latest" is always recomputed from what is actually on disk: a tag file
-      # naming a version that has since been yanked would point npm at a 404,
-      # and dropping a tarball into the directory by hand — which the README
-      # offers as a way to publish — never writes one at all.
+      # "latest" is recomputed from disk: a stored tag can outlive its version.
       def dist_tags(package_name)
         versions = versions_for_package(package_name)
         return {} if versions.empty?
@@ -116,10 +104,6 @@ module Paquette
           docs[version] = NpmRepository.version_doc(info, package_name, version, dist_for(package_name, version))
         end
 
-        # The document-level fields npm and the registry UI read are taken from
-        # the latest version's package.json, which is what a real registry does:
-        # they describe the package as it stands now, not as its oldest release
-        # described itself.
         {
           "_id" => package_name,
           "name" => package_name,
@@ -138,9 +122,7 @@ module Paquette
         }.compact
       end
 
-      # The `dist` block for one version, computed from the bytes on disk. The
-      # hashes are what npm checks the download against, so they are taken from
-      # the file rather than from anything the publisher asserted.
+      # Hashes are computed from the file, never taken from the publisher.
       def dist_for(package_name, version)
         path = package_file_path(package_name, version)
         return {} unless path && File.exist?(path)
@@ -152,13 +134,7 @@ module Paquette
         end
       end
 
-      # Stores a tarball from its raw binary contents. Returns the parsed
-      # package.json. Raises InvalidPackage when the payload is not a readable
-      # npm tarball, PackageYanked when that version was unpublished before, and
-      # PackageAlreadyExists when it is already on disk — npm's own registry
-      # refuses a republish of an existing version, and a client that silently
-      # got a different tarball for a version it already has in a lockfile would
-      # have no way to notice.
+      # A republished version must never silently carry different bytes.
       def add_package(binary_data, dist_tags: {})
         raise InvalidPackage, "Empty package payload" if binary_data.nil? || binary_data.empty?
 
@@ -189,10 +165,7 @@ module Paquette
           FileUtils.mv(tmp.path, destination)
           FileUtils.chmod(0o644, destination)
 
-          # "latest" is never stored, on the same reasoning write_dist_tag
-          # refuses to set it: it follows the newest release on disk. npm
-          # publish always sends one, and storing it would pin latest to
-          # whichever version was published first and leave it there.
+          # Storing npm's always-sent "latest" would pin it to the first publish.
           published_tags = dist_tags.select { |tag, tagged| tagged == version && tag.to_s != "latest" }
           write_dist_tags(name, read_dist_tags(name).merge(published_tags))
 
@@ -203,9 +176,7 @@ module Paquette
         end
       end
 
-      # Unpublishes one version by renaming its tarball to .tgz.tomb, exactly as
-      # the gem side yanks. The tomb is what stops the same version being
-      # republished with different contents later.
+      # The tomb stops the version being republished with different contents.
       def yank_package(package_name, version)
         path = package_file_path(package_name, version)
         raise PackageNotFound, "#{package_name}@#{version} not found" unless path && File.exist?(path)
@@ -215,10 +186,7 @@ module Paquette
         nil
       end
 
-      # Points one dist-tag at a version, as `npm dist-tag add` and
-      # `npm publish --tag` do. "latest" is not stored — it is always the newest
-      # version on disk — so pointing it elsewhere is refused rather than
-      # silently ignored.
+      # "latest" follows the newest release on disk; pointing it elsewhere is refused.
       def write_dist_tag(package_name, tag, version)
         raise InvalidPackage, "latest always follows the newest published version" if tag.to_s == "latest"
         raise PackageNotFound, "#{package_name}@#{version} not found" unless package_exists?(package_name, version)
@@ -239,8 +207,7 @@ module Paquette
 
       private
 
-      # nil for anything that is not a package name, so that a request for
-      # "../../etc" resolves to no package rather than to a path.
+      # nil for a non-name, so "../../etc" resolves to no package, not a path.
       def package_dir(package_name)
         return nil unless NpmRepository.valid_package_name?(package_name)
 
@@ -256,10 +223,7 @@ module Paquette
         nil
       end
 
-      # Publication times come from the tarball's mtime. It is the only honest
-      # answer a directory of files can give, and unlike Time.now it does not
-      # make every request return a different document — which would defeat any
-      # caching a client does and make the metadata look perpetually changed.
+      # mtimes, unlike Time.now, keep the document stable between requests.
       def times_for(package_name, versions)
         times = {}
         mtimes = versions.filter_map do |version|
@@ -287,8 +251,6 @@ module Paquette
             candidate.name.count("/") == 1 &&
               File.basename(candidate.name).match?(/\AREADME(\.md|\.markdown|\.txt)?\z/i)
           end
-          # as_text, because this string ends up in a JSON document and a
-          # README is the one file in a package most likely to carry an accent.
           entry && Tarball.as_text(entry.content)
         end
       end
@@ -324,19 +286,14 @@ module Paquette
         write_dist_tags(package_name, tags)
       end
 
-      # Opening a tarball to read one file out of it is the expensive part of
-      # rendering metadata, and a metadata request does it once per version. The
-      # cache is keyed on the identity of the file rather than its path alone,
-      # so a republished or personalized tarball at a path we have seen before
-      # is read again rather than answered from a stale entry.
+      # Keyed on mtime + size so a replaced tarball is not served stale.
       def cached(path, aspect = :info)
         stat = File.stat(path)
         key = [path, aspect, stat.mtime.to_f, stat.size]
         @cache ||= {}
         return @cache[key] if @cache.key?(key)
 
-        # Bounded, because a long-lived server serving a large corpus would
-        # otherwise hold every package.json it has ever read.
+        # Bounded, or a long-lived server would hold every package.json ever read.
         @cache.shift if @cache.size >= 1024
         @cache[key] = yield
       end

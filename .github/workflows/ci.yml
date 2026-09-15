@@ -8,12 +8,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      # Two parts of this suite drive tooling that is not Ruby: the npm CLI, and
-      # a container running it against a Paquette on the host. Both skip
-      # themselves when the tooling is missing, which is right on a laptop and
-      # wrong here — a skip is indistinguishable from a pass in the summary, so
-      # the day a runner image drops docker or node the registry stops being
-      # tested and nothing says so. These turn that skip into a failure.
+      # A skip is indistinguishable from a pass; these make missing tools fail.
       PAQUETTE_REQUIRE_NPM: "1"
       PAQUETTE_REQUIRE_DOCKER: "1"
     steps:
@@ -24,17 +19,12 @@ jobs:
           ruby-version: "3.4"
           bundler-cache: true
 
-      # ubuntu-latest ships a node, but which one moves with the runner image.
-      # Pinning it means an npm behaviour change arrives when this file changes.
+      # Pinned so an npm behaviour change arrives when this file changes.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      # The container talks to the host through host.docker.internal, which
-      # Docker on Linux only resolves because the tests pass
-      # --add-host=host.docker.internal:host-gateway. Printing the versions
-      # makes an environment failure legible in the log rather than showing up
-      # as an unexplained npm error further down.
+      # Makes an environment failure legible in the log.
       - name: Show tooling versions
         run: |
           ruby --version

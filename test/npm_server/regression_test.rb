@@ -16,10 +16,7 @@ class NpmRegressionTest < Minitest::Test
 
   attr_reader :app
 
-  # A README is the file in a package most likely to carry an accent, and its
-  # bytes arrive from the tarball as ASCII-8BIT. Unconverted, JSON.generate
-  # raised and the package's metadata endpoint 500'd — so the package could not
-  # be installed at all.
+  # ASCII-8BIT README bytes made JSON.generate raise and the metadata endpoint 500.
   def test_a_non_utf8_readme_does_not_break_the_metadata_endpoint
     write_npm_package(@dir, name: "widgets", version: "1.0.0",
       files: {"README.md" => "# caf\xE8 \xFF\xFE\n".b})
@@ -37,9 +34,7 @@ class NpmRegressionTest < Minitest::Test
     assert_equal "Ünicode ✓ description", JSON.parse(last_response.body)["description"]
   end
 
-  # `npm owner add` and `npm owner rm` PUT a document with no `versions` key.
-  # Read as "keep nothing", that unpublished the whole package and tombstoned
-  # every version, so nobody could put it back.
+  # `npm owner add/rm` PUT no `versions` key; "keep nothing" unpublished everything.
   def test_a_document_put_without_versions_changes_nothing
     write_npm_package(@dir, name: "widgets", version: "1.0.0")
     write_npm_package(@dir, name: "widgets", version: "2.0.0")
@@ -53,8 +48,7 @@ class NpmRegressionTest < Minitest::Test
     refute @repository.tomb_exists?("widgets", "1.0.0")
   end
 
-  # A document that does carry versions still yanks the ones left out of it,
-  # which is how npm unpublishes.
+  # A document that does carry versions still yanks the ones left out.
   def test_a_document_put_with_versions_still_yanks
     write_npm_package(@dir, name: "widgets", version: "1.0.0")
     write_npm_package(@dir, name: "widgets", version: "2.0.0")
@@ -66,17 +60,12 @@ class NpmRegressionTest < Minitest::Test
     assert_equal %w[1.0.0], @repository.versions_for_package("widgets")
   end
 
-  # Two packages under different scopes share a basename, and two tarballs of
-  # equal size and mtime are ordinary. Keyed on the basename, one licensee's
-  # request was answered with the other package's code under the name they
-  # asked for.
+  # Basename-keyed caching answered @alpha/util with @bravo/util's code.
   def test_two_scopes_sharing_a_basename_do_not_share_a_personalized_file
     write_npm_package(@dir, name: "@alpha/util", version: "1.0.0", files: {"index.js" => "ALPHA_SECRET\n"})
     write_npm_package(@dir, name: "@bravo/util", version: "1.0.0", files: {"index.js" => "BRAVO_SECRET\n"})
 
-    # Equal mtimes, because the rest of the old key was mtime and size — and
-    # size is the only thing left that might differ, which is exactly the
-    # coincidence this must not depend on.
+    # Equal mtimes: the rest of the old cache key was mtime and size.
     stamp = Time.at(1_000_000_000)
     ["@alpha", "@bravo"].each do |scope|
       File.utime(stamp, stamp, @repository.package_file_path("#{scope}/util", "1.0.0"))
@@ -92,13 +81,10 @@ class NpmRegressionTest < Minitest::Test
     assert_equal "ALPHA_SECRET\n", tarball_file(alpha, "package/index.js")
   end
 
-  # The same property stated directly: the cache path must depend on the whole
-  # package name, with everything else about the two packages identical.
+  # Byte-identical tarballs at identical mtimes; only the name differs.
   def test_the_personalized_cache_path_depends_on_the_full_package_name
     write_npm_package(@dir, name: "@alpha/util", version: "1.0.0")
     FileUtils.mkdir_p(File.join(@dir, "@bravo", "util"))
-    # Byte-identical tarballs at identical mtimes: only the name they are asked
-    # for differs.
     FileUtils.cp(@repository.package_file_path("@alpha/util", "1.0.0"),
       File.join(@dir, "@bravo", "util", "util-1.0.0.tgz"))
     stamp = Time.at(1_000_000_000)
@@ -112,8 +98,7 @@ class NpmRegressionTest < Minitest::Test
       personalizer.package_file_path("@bravo/util", "1.0.0")
   end
 
-  # `npm dist-tag add pkg@1.0.0 latest` is a normal command, and the refusal
-  # was escaping as an exception rather than an answer.
+  # `npm dist-tag add pkg@1.0.0 latest` escaped as an exception, not a 400.
   def test_pointing_latest_elsewhere_is_refused_rather_than_raised
     write_npm_package(@dir, name: "widgets", version: "1.0.0")
 
@@ -129,8 +114,7 @@ class NpmRegressionTest < Minitest::Test
     assert_equal 404, last_response.status
   end
 
-  # Rack consumes the body when it parses params for a form-encoded request,
-  # and this handler was the one body reader that did not rewind first.
+  # The one body reader that did not rewind after Rack consumed the body.
   def test_a_dist_tag_put_works_whatever_the_content_type
     write_npm_package(@dir, name: "widgets", version: "1.0.0")
 
@@ -141,8 +125,7 @@ class NpmRegressionTest < Minitest::Test
     assert_equal "1.0.0", JSON.parse(last_response.body)["beta"]
   end
 
-  # npm publish always sends {"latest": version}. Stored, it pinned latest to
-  # whatever was published first and left it there.
+  # Storing npm's always-sent "latest" tag pinned it to the first publish.
   def test_publishing_does_not_pin_latest_to_the_first_version_published
     put "/widgets", npm_publish_body(name: "widgets", version: "1.0.0"), {"CONTENT_TYPE" => "application/json"}
     put "/widgets", npm_publish_body(name: "widgets", version: "2.0.0"), {"CONTENT_TYPE" => "application/json"}
@@ -171,8 +154,7 @@ class NpmRegressionTest < Minitest::Test
     refute_includes times.values, recent.iso8601
   end
 
-  # A repository satisfying the documented interface but rendering a leaner
-  # document must be filtered, not crashed on.
+  # A leaner custom repository must be filtered, not crashed on.
   def test_gating_tolerates_a_document_without_versions_or_time
     lean = Class.new do
       def package_metadata(name) = {"name" => name}
@@ -189,9 +171,7 @@ class NpmRegressionTest < Minitest::Test
     assert_equal({}, metadata["time"])
   end
 
-  # A path too long for a ustar header gets a PAX record. The reader has to
-  # honour one too — Gem::Package::TarReader does not — or a repack silently
-  # stores the package with truncated filenames.
+  # TarReader ignores PAX records, so a repack stored truncated filenames.
   def test_a_path_too_long_for_ustar_survives_a_repack
     long_name = "src/" + ("deeply-generated-component-name" * 4) + ".js"
     write_npm_package(@dir, name: "widgets", version: "1.0.0",
@@ -218,8 +198,7 @@ class NpmRegressionTest < Minitest::Test
     assert_includes listing, long_name
   end
 
-  # The app object is shared across threads; the request must not be stored on
-  # it. Two concurrent requests for different hosts must not see each other's.
+  # The app object is shared across threads; the request must not be stored on it.
   def test_concurrent_requests_do_not_share_request_state
     write_npm_package(@dir, name: "widgets", version: "1.0.0")
 

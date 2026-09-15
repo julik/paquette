@@ -3,12 +3,7 @@ require "socket"
 require "puma"
 require "puma/server"
 
-# Drives the real `npm` CLI against a running Paquette, which is the only test
-# that can tell us the registry is correct rather than merely self-consistent.
-#
-# npm verifies `dist.integrity` against the bytes it downloads and refuses the
-# install if they disagree — so an install that completes is proof that what the
-# metadata promised is what the server served, personalization and all.
+# A completing real-npm install proves the registry correct, not merely self-consistent.
 class NpmInstallTest < Minitest::Test
   def setup
     require_tool "npm", !`which npm`.strip.empty?, "PAQUETTE_REQUIRE_NPM"
@@ -58,9 +53,7 @@ class NpmInstallTest < Minitest::Test
     assert_equal "1.0.0", installed["version"]
   end
 
-  # The one that matters: npm checks the integrity of a tarball this server
-  # built on the fly for one licensee. If the repack were not reproducible, or
-  # the hashes were taken from the original, npm would refuse this install.
+  # Were the repack not reproducible, npm would refuse this install.
   def test_npm_installs_a_personalized_package
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0",
       files: {"index.js" => "// paquette_license_info\nmodule.exports = 1;\n"})
@@ -80,8 +73,7 @@ class NpmInstallTest < Minitest::Test
       JSON.parse(File.read(File.join(installed_dir, "package.json")))["paquette"]["licenseKey"]
   end
 
-  # A gated corpus must not merely hide a package from the listing — the install
-  # itself has to fail.
+  # The install itself has to fail, not merely the listing hide the package.
   def test_npm_cannot_install_a_package_outside_the_entitlement
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     write_npm_package(@packages_dir, name: "secret", version: "1.0.0")
@@ -99,10 +91,7 @@ class NpmInstallTest < Minitest::Test
     app = Paquette::NpmServer.new(repository)
     @port = find_free_port
 
-    # A real Rack server rather than a mock, because what is under test is
-    # partly how the response reaches npm — a streamed tarball body, a
-    # Content-Length that matches it, a Host header the tarball URLs are built
-    # from.
+    # A real Rack server: how the response reaches npm is part of the test.
     @server = Puma::Server.new(app, nil, {log_writer: Puma::LogWriter.strings})
     @server.add_tcp_listener("127.0.0.1", @port)
     @server.run
@@ -142,8 +131,7 @@ class NpmInstallTest < Minitest::Test
       "--cache", File.join(@home_dir, "cache"),
       "--userconfig", File.join(@home_dir, "npmrc"),
       "--loglevel", "error",
-      # Two of these tests assert that an install *fails*, and npm retries a
-      # failed fetch for over two minutes before giving up.
+      # npm retries a failed fetch for minutes, and two tests assert failure.
       "--fetch-retries", "0"
     ]
 

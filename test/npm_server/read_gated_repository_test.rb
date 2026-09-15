@@ -60,13 +60,10 @@ class NpmReadGatedRepositoryTest < Minitest::Test
   end
 
   # A package whose every version is gated away does not exist for this caller.
-  # An empty versions map would otherwise be served as a real package that
-  # happens to be uninstallable.
   def test_a_fully_gated_package_is_absent_rather_than_empty
     assert_nil allowing_nothing.package_metadata("allowed")
   end
 
-  # latest has to keep pointing at something this caller may actually download.
   def test_latest_falls_back_to_the_newest_entitled_version
     repo = gated { |name:, version: nil| version.nil? || version != "2.0.0" }
 

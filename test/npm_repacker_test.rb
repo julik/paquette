@@ -42,8 +42,6 @@ class NpmRepackerTest < Minitest::Test
     sources.each { |entry| refute_includes entry.content, "Dropzone" }
   end
 
-  # The block sees paths relative to the package root, not the "package/" prefix
-  # the tarball happens to store them under.
   def test_the_block_sees_paths_relative_to_the_package_root
     seen = []
     Paquette::NpmRepacker.repack(fixture_package, into: into) do |input_file, output_file, file_path|
@@ -62,7 +60,6 @@ class NpmRepackerTest < Minitest::Test
     end
   end
 
-  # The options alone are enough; the block is for anything they do not cover.
   def test_repack_without_a_block
     path = Paquette::NpmRepacker.repack(fixture_package,
       package_json_extras: {"paquette" => {"licenseKey" => "LIC-1"}}, into: into)
@@ -81,9 +78,8 @@ class NpmRepackerTest < Minitest::Test
     assert_equal "// licensed to Acme\nexport const x = 1;\n", content
   end
 
-  # npm packages ship sourcemaps, which address generated code by line. A
-  # replacement that added or removed a line would silently misalign every
-  # mapping below it, so a marker line is always replaced by exactly one line.
+  # Sourcemaps address generated code by line, so a marker line must be
+  # replaced by exactly one line or every mapping below it misaligns.
   def test_replacement_preserves_the_line_count
     source = fixture_package(files: {
       "index.js" => "// paquette_license_info\nexport const x = 1;\n//# sourceMappingURL=index.js.map\n",
@@ -97,8 +93,6 @@ class NpmRepackerTest < Minitest::Test
     content = tarball_file(path, "package/index.js")
     assert_equal 3, content.lines.length
     assert_equal "// licensed to Acme and a second line\n", content.lines.first
-    # The sourcemap is carried through untouched, which is only correct because
-    # the line count did not move.
     assert_equal 3, JSON.parse(tarball_file(path, "package/index.js.map"))["version"]
   end
 
@@ -153,8 +147,6 @@ class NpmRepackerTest < Minitest::Test
     assert_equal Digest::SHA256.file(first).hexdigest, Digest::SHA256.file(second).hexdigest
   end
 
-  # `into:` is how a caller says where the result should land, so that cleaning
-  # up is its own business rather than ours.
   def test_into_places_the_result_where_the_caller_asked
     destination = File.join(@work_dir, "nested", "here.tgz")
     path = Paquette::NpmRepacker.repack(fixture_package, into: destination)

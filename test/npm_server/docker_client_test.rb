@@ -3,16 +3,8 @@ require "socket"
 require "puma"
 require "puma/server"
 
-# The npm client, in a container, talking to a Paquette on the host.
-#
-# The rest of the suite constructs requests in Ruby and checks Paquette's own
-# answers, which cannot catch a registry that is merely self-consistent. Here a
-# real npm does the resolving, the downloading, the integrity check and the
-# unpacking, over a real socket, on a machine that has none of Paquette's code
-# on it. If npm is happy, a customer will be.
-#
-# The container reaches the host through host.docker.internal, which Docker
-# Desktop provides and which --add-host wires up on plain Linux dockers.
+# A real npm in a container against a Paquette on the host — none of
+# Paquette's code in the client process.
 class DockerNpmClientTest < Minitest::Test
   IMAGE = "paquette-npm-test".freeze
   TOKEN = "pqt_test_token".freeze
@@ -66,9 +58,7 @@ class DockerNpmClientTest < Minitest::Test
     assert_includes output, '"version": "2.1.0"'
   end
 
-  # npm refuses a tarball whose bytes do not match the integrity it was given,
-  # so an install that completes here proves the personalized tarball Paquette
-  # built on the fly is the one it published a hash for.
+  # A completing install proves the personalized tarball matches its hash.
   def test_npm_installs_a_personalized_package
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0",
       files: {"index.js" => "// paquette_license_info\nmodule.exports = 1;\n"})
@@ -101,8 +91,6 @@ class DockerNpmClientTest < Minitest::Test
     assert_npm_ok run_npm("npm install widget --loglevel error")
   end
 
-  # `npm publish` PUTs the metadata document with the tarball inlined, which is
-  # a shape no test of ours would think to build by hand.
   def test_npm_publishes_a_package
     serve(@repository)
 
@@ -134,9 +122,7 @@ class DockerNpmClientTest < Minitest::Test
     assert_path_exists File.join(@packages_dir, "@acme", "pushed", "pushed-0.1.0.tgz")
   end
 
-  # The round trip: what npm pushed is what npm can pull back, integrity and
-  # all. Paquette derives the hashes itself rather than trusting the ones the
-  # publisher sent, so this is not circular.
+  # Not circular: Paquette derives the hashes itself.
   def test_a_published_package_can_be_installed_again
     serve(@repository)
 
@@ -185,9 +171,7 @@ class DockerNpmClientTest < Minitest::Test
     assert_empty @repository.package_names
   end
 
-  # The licensing story end to end: npm sends the token it was configured with,
-  # the middleware turns it into an identity, and the entitlement built from
-  # that identity decides what npm is allowed to see.
+  # End to end: token -> identity -> entitlement.
   def test_a_token_gated_registry
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     repository = @repository
@@ -231,8 +215,7 @@ class DockerNpmClientTest < Minitest::Test
   def serve_app(app)
     @port = find_free_port
 
-    # 0.0.0.0 rather than 127.0.0.1: the client is in a container, so the
-    # loopback the other tests bind to is not an address it can reach.
+    # 0.0.0.0: the client is in a container and cannot reach the host loopback.
     @server = Puma::Server.new(app, nil, {log_writer: Puma::LogWriter.strings})
     @server.add_tcp_listener("0.0.0.0", @port)
     @server.run
@@ -243,14 +226,8 @@ class DockerNpmClientTest < Minitest::Test
     "http://host.docker.internal:#{@port}"
   end
 
-  # An .npmrc naming this registry, and a token for it unless the caller wants
-  # to be anonymous. npm declines to publish to a registry it has no credentials
-  # for even when the registry does not ask for any, so the token is normally
-  # configured and only sometimes checked.
-  #
-  # The registry line is never optional. Without it npm falls back to
-  # registry.npmjs.org and installs whatever real package shares the name — a
-  # green test that never touched Paquette at all.
+  # Without the registry line npm falls back to registry.npmjs.org and installs
+  # the real package of the same name — a green test that never touched Paquette.
   def npmrc(token: TOKEN)
     lines = [%(registry=#{registry})]
     lines << %(//host.docker.internal:#{@port}/:_authToken=#{token}) if token
@@ -268,10 +245,7 @@ class DockerNpmClientTest < Minitest::Test
 
   def run_npm(script, expect_failure: false, npmrc: nil)
     preamble = npmrc.nil? ? self.npmrc : npmrc
-    # The probe asks only whether something answered. A token-gated registry
-    # replies 401 to an unauthenticated ping and is perfectly reachable; only a
-    # curl that got no HTTP response at all (code 000) means the container
-    # cannot see the host, which is the case worth telling apart from a bug.
+    # Only curl code 000 means the container cannot see the host; 401 is reachable.
     full_script = <<~SH
       set -e
       status=$(curl -sS -o /dev/null -w '%{http_code}' #{registry}/-/ping || echo 000)
@@ -286,10 +260,7 @@ class DockerNpmClientTest < Minitest::Test
     command = [
       "docker", "run", "--rm",
       "--add-host=host.docker.internal:host-gateway",
-      # Belt and braces over the .npmrc: if a test ever manages not to configure
-      # the registry, npm quietly resolves against registry.npmjs.org and
-      # installs whatever real package shares the name, which passes without
-      # having tested Paquette at all. This has already happened once.
+      # Belt and braces over the .npmrc — see npmrc above.
       "-e", "npm_config_registry=#{registry}",
       IMAGE, "sh", "-c", full_script
     ]
@@ -320,8 +291,7 @@ class DockerNpmClientTest < Minitest::Test
     port
   end
 
-  # Any answer means the socket is listening, which is all this is waiting for.
-  # A token-gated registry answers 401 here and is no less started for it.
+  # Any answer (a 401 included) means the socket is listening.
   def wait_for_server
     50.times do
       begin

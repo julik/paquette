@@ -90,8 +90,7 @@ class DirectoryNpmRepositoryTest < Minitest::Test
     assert_nil @repository.package_metadata("nope")
   end
 
-  # A package name is also a path, so a name that is not a name must not resolve
-  # to one.
+  # A package name is also a path.
   def test_a_traversing_name_resolves_to_nothing
     assert_nil @repository.package_file_path("../../etc", "1.0.0")
     refute @repository.package_exists?("../../etc", "1.0.0")
@@ -186,8 +185,6 @@ class DirectoryNpmRepositoryTest < Minitest::Test
     end
   end
 
-  # The metadata cache is keyed on the file's identity, so a tarball replaced on
-  # disk is read again rather than answered from the previous one.
   def test_replacing_a_tarball_is_noticed
     write_npm_package(@dir, name: "widget", version: "1.0.0", description: "first")
     assert_equal "first", @repository.package_info("widget", "1.0.0")["description"]

@@ -45,7 +45,6 @@ class NpmPersonalizerTest < Minitest::Test
     package_json = JSON.parse(tarball_file(path, "package/package.json"))
 
     assert_equal({"licenseKey" => "LIC-123"}, package_json["paquette"])
-    # Everything npm reads has to survive the rewrite.
     assert_equal({"left-pad" => "^1.3.0"}, package_json["dependencies"])
     assert_equal "widget", package_json["name"]
   end
@@ -64,8 +63,7 @@ class NpmPersonalizerTest < Minitest::Test
     assert_equal original, File.binread(@repository.package_file_path("widget", "1.0.0"))
   end
 
-  # This is the whole reason the repacker is deterministic: the integrity npm is
-  # told to expect has to describe the bytes it is handed.
+  # The integrity npm is told to expect must describe the bytes it is handed.
   def test_published_integrity_describes_the_personalized_tarball
     repo = personalized
     metadata = repo.package_metadata("widget")
@@ -81,7 +79,6 @@ class NpmPersonalizerTest < Minitest::Test
     personalized_dist = personalized.dist_for("widget", "1.0.0")
 
     refute_equal original_dist["integrity"], personalized_dist["integrity"]
-    # The package did not move, only its contents changed.
     assert_equal original_dist["tarball"], personalized_dist["tarball"]
   end
 
@@ -94,8 +91,7 @@ class NpmPersonalizerTest < Minitest::Test
     assert_equal digest, Digest::SHA256.file(second).hexdigest
   end
 
-  # Two licensees downloading at the same moment must not share one file — what
-  # is personalized into it is by definition the other licensee's.
+  # Two licensees must never share one personalized file.
   def test_two_licensees_get_different_files
     one = personalized(license_key: "LIC-111").package_file_path("widget", "1.0.0")
     two = personalized(license_key: "LIC-222").package_file_path("widget", "1.0.0")
@@ -118,7 +114,6 @@ class NpmPersonalizerTest < Minitest::Test
     assert_equal({"left-pad" => "^1.3.0"}, metadata["versions"]["1.0.0"]["dependencies"])
   end
 
-  # The wrapper chain the README describes: gate first, personalize on top.
   def test_stacked_on_a_gated_repository
     gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "widget" }
     stack = Paquette::NpmServer::Personalizer.new(gated,
@@ -131,7 +126,6 @@ class NpmPersonalizerTest < Minitest::Test
     assert_includes tarball_file(path, "package/index.js"), "LIC-999"
   end
 
-  # End to end: what the server publishes is what the server serves.
   def test_served_bytes_match_published_integrity
     stack = personalized
     @app = Paquette::NpmServer.new(stack)

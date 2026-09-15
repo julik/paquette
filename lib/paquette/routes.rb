@@ -20,20 +20,14 @@ module Paquette
       end
 
       def perform_action(instance, request)
-        # Extract params and pass them as keyword arguments
         route_params = params(request)
-        # Also include query parameters
         query_params = request.params
-        # Convert string keys to symbols for keyword arguments
         symbol_params = route_params.merge(query_params).transform_keys(&:to_sym)
         instance.instance_exec(**acceptable(symbol_params), &@block)
       end
 
-      # A route block declares the parameters it wants, and a query string is
-      # written by whoever is calling us — npm asks for `/:package/?write=true`
-      # during an unpublish, Bundler appends its own. Passing every query
-      # parameter through as a keyword means any such caller can crash a route
-      # with ArgumentError, so the block is only given what it said it takes.
+      # The block only gets the keywords it declares: a client's stray query
+      # parameter (npm sends ?write=true) must not crash it with ArgumentError.
       def acceptable(params)
         parameters = @block.parameters
         return params if parameters.any? { |type, _| type == :keyrest }

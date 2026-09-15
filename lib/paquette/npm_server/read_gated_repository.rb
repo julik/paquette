@@ -3,16 +3,8 @@ require_relative "npm_repository"
 
 module Paquette
   class NpmServer
-    # Wraps an NPM repository and filters every read through an entitler block.
-    # The block receives `name:` (and optionally `version:`) and returns truthy
-    # when the caller is allowed to see that package/version. Non-entitled
-    # packages disappear from listings, return nil paths, and report as
-    # non-existent.
-    #
-    # Writes (add_package, yank_package) always raise WriteNotAllowed, on the
-    # same reasoning as the gem side's ReadGatedRepository: gating a read path
-    # says this caller is not the right party to mutate the corpus. A more
-    # nuanced policy belongs in a different wrapper.
+    # Filters every read through an entitler block; non-entitled packages do
+    # not exist. Writes always raise: a gated caller may not mutate the corpus.
     class ReadGatedRepository < SimpleDelegator
       class WriteNotAllowed < StandardError; end
 
@@ -45,9 +37,7 @@ module Paquette
         end
       end
 
-      # false rather than nil. The callers treat this as a boolean and one of
-      # them puts it straight into a response, so a nil here is a nil the rest
-      # of the server has to keep apologising for.
+      # false rather than nil: callers treat this as a boolean.
       def package_exists?(package_name, version)
         if @entitler.call(name: package_name, version: version)
           !!super
@@ -75,10 +65,7 @@ module Paquette
 
         entitled = versions_for_package(package_name)
         tags = super.select { |_tag, version| entitled.include?(version) }
-        # "latest" has to keep pointing somewhere installable: if the newest
-        # release is outside this caller's entitlement, their latest is the
-        # newest one that is inside it. Without this, `npm install pkg` resolves
-        # to a version the very next request refuses to serve.
+        # "latest" must point at a version this caller may actually download.
         tags = tags.merge("latest" => NpmRepository.max_release_version(entitled)) if entitled.any?
         tags
       end
@@ -90,14 +77,10 @@ module Paquette
         return metadata unless metadata
 
         entitled = versions_for_package(package_name)
-        # A package whose every version is gated away does not exist as far as
-        # this caller is concerned — an empty `versions` map would otherwise be
-        # served as a real package that happens to be uninstallable.
+        # A fully gated package does not exist for this caller.
         return nil if entitled.empty?
 
-        # The repository contract does not promise these keys, so a custom
-        # NpmRepository that renders a leaner document is filtered rather than
-        # crashed on.
+        # A leaner custom repository is filtered, not crashed on.
         versions = metadata["versions"].is_a?(Hash) ? metadata["versions"].slice(*entitled) : {}
 
         metadata.merge(
@@ -107,10 +90,7 @@ module Paquette
         )
       end
 
-      # created/modified describe the corpus, and the corpus is not what this
-      # caller can see — carried over unchanged they report the publication
-      # dates of versions being withheld. They are recomputed from the entitled
-      # versions instead.
+      # Recomputed so created/modified do not leak withheld publication dates.
       def entitled_times(times, entitled)
         return {} unless times.is_a?(Hash)
 
@@ -134,8 +114,7 @@ module Paquette
       end
     end
 
-    # The name this wrapper had before it grew a write policy and a matching
-    # name on the gem side. Kept so existing stacks keep building.
+    # Former name, kept so existing stacks keep building.
     GatedNpmRepository = ReadGatedRepository
   end
 end

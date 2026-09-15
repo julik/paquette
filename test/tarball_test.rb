@@ -66,9 +66,8 @@ class TarballTest < Minitest::Test
     end
   end
 
-  # The guarantee everything else rests on: npm checks the bytes it downloads
-  # against a hash we published earlier, so the same entries must always pack to
-  # the same file.
+  # npm checks downloaded bytes against a previously published hash, so the
+  # same entries must always pack to the same file.
   def test_output_is_byte_reproducible
     Dir.mktmpdir do |dir|
       first = Paquette::Tarball.write(File.join(dir, "a.tgz"), entries)
@@ -79,8 +78,7 @@ class TarballTest < Minitest::Test
     end
   end
 
-  # Entry order comes out of a Hash, and before that out of a directory
-  # listing, so it must not reach the bytes.
+  # Entry order comes out of a Hash, so it must not reach the bytes.
   def test_entry_order_does_not_change_the_output
     Dir.mktmpdir do |dir|
       forwards = Paquette::Tarball.write(File.join(dir, "a.tgz"), entries)
@@ -100,7 +98,6 @@ class TarballTest < Minitest::Test
     end
   end
 
-  # A tarball nobody else can open is not a tarball.
   def test_system_tar_can_read_what_we_write
     skip "No tar available" if `which tar`.strip.empty?
 
@@ -114,8 +111,6 @@ class TarballTest < Minitest::Test
     end
   end
 
-  # ustar splits a long path across a prefix and a name field; npm packages do
-  # reach that length.
   def test_long_paths_survive
     long_name = "package/" + (["a-reasonably-long-directory-name"] * 4).join("/") + "/index.js"
 

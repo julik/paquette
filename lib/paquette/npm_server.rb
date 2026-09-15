@@ -10,12 +10,8 @@ require_relative "npm_server/personalizer"
 
 module Paquette
   class NpmServer
-    # A scoped package reaches us two ways. npm asks for metadata with the
-    # separator percent-encoded — /@acme%2Fwidgets — but follows tarball URLs
-    # with it left alone, and other clients encode neither. Normalizing to the
-    # encoded form here means the routes below can treat a package name as one
-    # path segment, which is the only way `/:package_name/-/:tarball_name` can
-    # be written at all.
+    # npm sends the scope separator percent-encoded for metadata but plain in
+    # tarball URLs; normalizing makes a package name one path segment.
     SCOPED_PATH = %r{\A(/(?:-/package/)?)(@[^/%]+)/([^/]+)(/.*)?\z}
 
     @@routes = Routes.draw do |r|
@@ -44,10 +40,8 @@ module Paquette
         handle_dist_tag_put(package_name, tag)
       end
 
-      # npm unpublishes in three steps: fetch the document, PUT it back without
-      # the versions being removed, then DELETE the tarball. The rev in the path
-      # is part of CouchDB's optimistic locking, which this registry does not
-      # implement — see `revision_for`.
+      # npm unpublishes via a document PUT then a tarball DELETE; the rev is
+      # CouchDB locking, which this registry does not do — see revision_for.
       r.put "/:package_name/-rev/:rev" do |package_name:, rev: nil|
         handle_document_put(package_name)
       end
@@ -68,8 +62,7 @@ module Paquette
         handle_tarball(package_name, tarball_name)
       end
 
-      # The shape Paquette served before it followed the registry convention.
-      # Kept so a lockfile written against an older Paquette still resolves.
+      # Pre-registry-convention path, kept so old lockfiles still resolve.
       r.get "/:package_name/:tarball_name" do |package_name:, tarball_name:|
         handle_tarball(package_name, tarball_name)
       end
@@ -79,14 +72,6 @@ module Paquette
       end
     end
 
-    # Build an NPM server backed by `repository`. Reads, publishes, and
-    # unpublishes all flow through this one object — whether writes are accepted
-    # depends on the wrapper chain the caller assembled, exactly as on the gem
-    # side. A ReadGatedRepository refuses add_package and yank_package; a bare
-    # DirectoryNpmRepository accepts both.
-    #
-    # A directory path is still accepted, and means "an ungated repository over
-    # this directory" — the shorthand this server used to be built with.
     def initialize(repository)
       @repository = if repository.is_a?(String)
         DirectoryNpmRepository.new(repository)
@@ -103,13 +88,7 @@ module Paquette
       route = @@routes.match(request)
       return not_found("Not Found") unless route
 
-      # One NpmServer is built at boot and Rack calls it from several threads at
-      # once, so the request cannot be stored on it: two overlapping requests
-      # would overwrite each other's, and a publish would read the other one's
-      # body while a metadata response stamped the other one's host into every
-      # tarball URL. The handlers get a copy of this server that belongs to this
-      # request alone; @repository is set in the constructor and never written,
-      # so sharing it is safe.
+      # Shared across Rack threads: the request lives on a per-request clone.
       handler = clone
       handler.instance_variable_set(:@request, request)
       @@routes.perform_action(route, handler, request)
@@ -147,28 +126,20 @@ module Paquette
       [200, headers, File.open(path, "rb")]
     end
 
-    # `npm publish` PUTs the whole metadata document with the tarball inlined as
-    # base64 under `_attachments`. Everything else in the document — the version
-    # doc, the dist hashes the client computed — is ignored: the tarball is the
-    # only thing the publisher can assert that we cannot derive ourselves, and
-    # deriving the rest is what keeps the metadata honest about the bytes on
-    # disk.
+    # Only the `_attachments` tarball is used; the rest is derived from it.
     def handle_publish(package_name)
       document = parse_json_body
       return bad_request("Request body is not valid JSON") unless document
 
       attachments = document["_attachments"]
-      # A PUT with no attachment is a document update, which is how npm's
-      # unpublish flow removes versions.
+      # A PUT with no attachment is a document update (npm's unpublish flow).
       return handle_document_put(package_name, document) if attachments.nil? || attachments.empty?
 
       _, attachment = attachments.first
       data = attachment.is_a?(Hash) ? attachment["data"] : nil
       return bad_request("Attachment carries no data") if data.nil?
 
-      # unpack1("m") rather than the base64 library, which stopped being a
-      # default gem in Ruby 3.4, and in its lenient form because npm has been
-      # known to send line-wrapped base64.
+      # unpack1("m"): base64 stopped being a default gem in Ruby 3.4.
       tarball = data.to_s.unpack1("m")
 
       info = @repository.add_package(tarball, dist_tags: document["dist-tags"] || {})
@@ -183,17 +154,11 @@ module Paquette
       bad_request(e.message)
     end
 
-    # The document PUT of npm's unpublish flow: whatever versions the client
-    # left out of the document are the ones it wants gone.
     def handle_document_put(package_name, document = nil)
       document ||= parse_json_body
       return bad_request("Request body is not valid JSON") unless document
 
-      # A document with no `versions` key is not a request to remove every
-      # version — it is a request that says nothing about them. npm sends
-      # exactly that for `npm owner add` and `npm owner rm`, and treating it as
-      # "keep nothing" unpublished the whole package and tombstoned every
-      # version, so nobody could put it back.
+      # `npm owner add/rm` PUT no `versions` key; "keep nothing" would tombstone all.
       kept = document["versions"]
       return json_ok({success: true, id: package_name, rev: revision_for(package_name)}) unless kept.is_a?(Hash)
 
@@ -219,10 +184,7 @@ module Paquette
       not_found(e.message)
     end
 
-    # The tarball DELETE that ends npm's unpublish flow. The version is usually
-    # gone already, removed by the document PUT that preceded this — so a
-    # missing version is success rather than a 404, which is what lets
-    # `npm unpublish` finish without reporting an error it cannot act on.
+    # The preceding document PUT usually removed the version, so missing is success.
     def handle_unpublish_version(package_name, tarball_name)
       version = version_from_tarball_name(package_name, tarball_name)
       return not_found("Invalid package filename") unless version
@@ -236,9 +198,7 @@ module Paquette
     end
 
     def handle_dist_tag_put(package_name, tag)
-      # Rewound first, like every other body reader here: Routes calls
-      # request.params on the way in, and Rack consumes the body there for a
-      # form-encoded content type.
+      # Rack consumed the body if Routes parsed form-encoded params.
       @request.body.rewind if @request.body.respond_to?(:rewind)
       version = @request.body.read.to_s.delete('"').strip
       return bad_request("Request body is not a version") if version.empty?
@@ -249,7 +209,6 @@ module Paquette
     rescue ReadGatedRepository::WriteNotAllowed => e
       forbidden(e.message)
     rescue DirectoryNpmRepository::InvalidPackage => e
-      # `npm dist-tag add pkg@x latest` lands here, and a refusal is an answer.
       bad_request(e.message)
     rescue DirectoryNpmRepository::PackageNotFound => e
       not_found(e.message)
@@ -261,11 +220,7 @@ module Paquette
       match && match[1]
     end
 
-    # `dist.tarball` must be a URL npm can fetch, and the repository has no idea
-    # what host it is being served under — so it renders a path and the absolute
-    # form is built here, from the request. Rack resolves the forwarded headers,
-    # so this stays correct behind a TLS-terminating proxy, where the scheme the
-    # client used is not the scheme we were spoken to in.
+    # The request's forwarded headers keep the URLs correct behind a TLS proxy.
     def with_absolute_tarballs(metadata)
       base = @request.base_url
       versions = (metadata["versions"] || {}).each_with_object({}) do |(version, doc), acc|
@@ -280,11 +235,7 @@ module Paquette
       metadata.merge("versions" => versions, "_rev" => revision_for(metadata["name"]))
     end
 
-    # npm's unpublish flow reads `_rev` out of the document and puts it back in
-    # the URL, so one has to be there. It is derived from what is on disk rather
-    # than stored: this registry does not do optimistic locking — a directory of
-    # files has nothing to lock against — and a rev that changes when the corpus
-    # changes is the honest version of that.
+    # npm's unpublish flow needs a `_rev`; derived, since nothing is locked.
     def revision_for(package_name)
       versions = @repository.versions_for_package(package_name)
       "#{versions.length}-#{Digest::MD5.hexdigest(versions.join(","))}"
@@ -313,9 +264,7 @@ module Paquette
       [200, {"Content-Type" => "text/plain"}, [data]]
     end
 
-    # npm surfaces the `error` key of a JSON body to the user, so an error that
-    # says what went wrong reaches the person running the install rather than
-    # being flattened into "404 Not Found".
+    # npm surfaces the `error` key of a JSON body to the user.
     def json_error(status, message)
       [status, {"Content-Type" => "application/json"}, [JSON.pretty_generate({error: message})]]
     end

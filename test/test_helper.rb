@@ -12,11 +12,7 @@ require_relative "../lib/paquette"
 FIXTURE_GEMS_DIR = File.expand_path("fixtures/gems", __dir__)
 FIXTURE_NPM_DIR = File.expand_path("fixtures/npm", __dir__)
 
-# Tests that drive a real npm, or a container, skip themselves when the tooling
-# is not installed — which is right on a laptop and wrong in CI, where a skip
-# looks exactly like a pass and the test quietly stops running. Setting the
-# matching environment variable turns the skip into a failure, so a runner that
-# loses its docker or its node says so.
+# In CI a skip looks like a pass; the env var turns a missing tool into a failure.
 module ExternalTooling
   def require_tool(name, available, env_var)
     return if available
@@ -30,14 +26,11 @@ module ExternalTooling
 end
 
 module NpmTarballHelpers
-  # The mtime npm itself stamps on every file it packs (1985-10-26), used here
-  # for the same reason: it keeps a built fixture identical from run to run.
+  # The mtime npm itself stamps on every file it packs (1985-10-26).
   NPM_EPOCH = 499162500
 
-  # Builds a real npm tarball — a gzipped tar with everything under package/ —
-  # because the NPM server now reads package.json out of the tarball rather than
-  # inventing metadata, so a fixture of arbitrary bytes named .tgz no longer
-  # stands in for a package.
+  # The server reads package.json out of the tarball, so arbitrary bytes
+  # named .tgz cannot stand in for a package.
   def npm_tarball_bytes(name:, version:, files: {}, **package_json)
     contents = {
       "package.json" => JSON.pretty_generate({
@@ -66,8 +59,6 @@ module NpmTarballHelpers
     end
   end
 
-  # Writes a package into a packages directory the way the repository expects to
-  # find one, scope included.
   def write_npm_package(packages_dir, name:, version:, files: {}, **package_json)
     package_dir = File.join(packages_dir, *name.split("/"))
     FileUtils.mkdir_p(package_dir)
@@ -77,8 +68,6 @@ module NpmTarballHelpers
     path
   end
 
-  # The body `npm publish` sends: the metadata document with the tarball inlined
-  # as base64 under _attachments.
   def npm_publish_body(name:, version:, dist_tags: {"latest" => nil}, **package_json)
     tarball = npm_tarball_bytes(name: name, version: version, **package_json)
     tags = dist_tags.transform_values { |tagged| tagged || version }

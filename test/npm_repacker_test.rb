@@ -92,6 +92,34 @@ class NpmRepackerTest < Minitest::Test
     assert_includes error.message, "index.js"
   end
 
+  # A multi-line replacement used to have its newlines flattened to spaces,
+  # publishing something other than what the caller wrote.
+  def test_a_replacement_spanning_several_lines_is_refused
+    error = assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
+      Paquette::NpmRepacker.repack(fixture_package,
+        magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme\nand a second line"},
+        into: into)
+    end
+
+    assert_includes error.message, "single line"
+  end
+
+  # A marker spanning lines could never match, and would look like a package
+  # that simply had no marker in it.
+  def test_a_marker_spanning_several_lines_is_refused
+    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
+      Paquette::NpmRepacker.repack(fixture_package,
+        magic_comment_replacements: {"// first\n// second" => "licensed"}, into: into)
+    end
+  end
+
+  def test_a_replacement_with_a_bare_carriage_return_is_refused
+    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
+      Paquette::NpmRepacker.repack(fixture_package,
+        magic_comment_replacements: {"// paquette_license_info" => "licensed\rto Acme"}, into: into)
+    end
+  end
+
   # Most packages in a corpus carry no marker; that is not a failure.
   def test_a_package_without_the_marker_repacks_normally
     source = fixture_package(files: {"index.js" => "export const x = 1;\n"})
@@ -112,22 +140,25 @@ class NpmRepackerTest < Minitest::Test
     assert_equal "/* // paquette_license_info */\n", tarball_file(path, "package/styles.css")
   end
 
-  # Sourcemaps address generated code by line, so a marker line must be
-  # replaced by exactly one line or every mapping below it misaligns.
-  def test_replacement_preserves_the_line_count
+  # The line count is what sourcemaps are sensitive to: a mapping's generated
+  # column restarts each line, so a longer line disturbs nothing below it, but
+  # an extra line shifts every mapping after it. The map rides along untouched.
+  def test_replacement_preserves_the_line_count_and_the_sourcemap
     source = fixture_package(files: {
       "index.js" => "// paquette_license_info\nexport const x = 1;\n//# sourceMappingURL=index.js.map\n",
       "index.js.map" => JSON.generate({"version" => 3, "sources" => ["index.ts"], "mappings" => "AAAA"})
     })
 
     path = Paquette::NpmRepacker.repack(source,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme\nand a second line"},
+      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme, at some length"},
       into: into)
 
     content = tarball_file(path, "package/index.js")
     assert_equal 3, content.lines.length
-    assert_equal "// licensed to Acme and a second line\n", content.lines.first
-    assert_equal 3, JSON.parse(tarball_file(path, "package/index.js.map"))["version"]
+    assert_equal "// licensed to Acme, at some length\n", content.lines.first
+    assert_equal "export const x = 1;\n", content.lines[1]
+    assert_equal "//# sourceMappingURL=index.js.map\n", content.lines[2]
+    assert_equal "AAAA", JSON.parse(tarball_file(path, "package/index.js.map"))["mappings"]
   end
 
   def test_binary_files_are_left_alone

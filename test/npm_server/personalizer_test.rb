@@ -52,6 +52,15 @@ class NpmPersonalizerTest < Minitest::Test
     end
   end
 
+  # Refused where the stack is built, not on the first customer download.
+  def test_a_multiline_replacement_is_refused_when_the_stack_is_built
+    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
+      Paquette::NpmServer::Personalizer.new(@repository,
+        license_key: "LIC-123",
+        magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme\nand more"})
+    end
+  end
+
   # A package with no marker at all is ordinary, not a failure.
   def test_a_package_without_the_marker_is_served
     write_npm_package(@dir, name: "unmarked", version: "1.0.0",

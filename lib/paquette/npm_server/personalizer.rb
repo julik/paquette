@@ -11,7 +11,10 @@ module Paquette
     # Rewrites each served tarball on the fly to embed the licensee's key;
     # counterpart of GemServer::Personalizer.
     class Personalizer < SimpleDelegator
+      # Checked here as well as in the repacker so a bad pair is refused where
+      # the stack is built, rather than on the first customer download.
       def initialize(repository, license_key:, magic_comment_replacements: {}, files: {}, package_json_extras: nil)
+        NpmRepacker.check_replacements!(magic_comment_replacements)
         super(repository)
         @license_key = license_key
         @magic_comment_replacements = magic_comment_replacements

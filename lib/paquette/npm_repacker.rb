@@ -12,8 +12,30 @@ module Paquette
   class NpmRepacker
     class MarkerNotApplied < StandardError; end
 
+    class MultilineReplacement < StandardError; end
+
     # Binary assets and sourcemaps are copied through untouched.
     SOURCE_EXTENSIONS = %w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze
+
+    # One line in, one line out — the rule the whole personalization scheme
+    # rests on, so a pair that cannot honour it is refused rather than bent to
+    # fit. A replacement carrying newlines used to have them flattened to
+    # spaces, which quietly published something other than what the caller
+    # wrote; a marker carrying newlines could never match a single line and
+    # would look like a package that simply had no marker in it.
+    def self.check_replacements!(replacements)
+      replacements.each do |marker, replacement|
+        if marker.to_s.match?(/[\r\n]/)
+          raise MultilineReplacement, "Marker #{marker.inspect} spans several lines; a marker must be one whole line"
+        end
+
+        if replacement.to_s.match?(/[\r\n]/)
+          raise MultilineReplacement,
+            "Replacement for #{marker.inspect} spans several lines. Changing the line count shifts every sourcemap " \
+            "mapping below it, so a replacement must be a single line"
+        end
+      end
+    end
 
     def self.repack(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block)
       new(
@@ -26,6 +48,7 @@ module Paquette
     end
 
     def initialize(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil)
+      self.class.check_replacements!(magic_comment_replacements)
       @npm_path = npm_path
       @package_json_extras = package_json_extras
       @magic_comment_replacements = magic_comment_replacements
@@ -95,7 +118,7 @@ module Paquette
         next line unless replacement
 
         ending = line.end_with?("\n") ? "\n" : ""
-        "// #{replacement[1].to_s.tr("\r\n", " ")}#{ending}"
+        "// #{replacement[1]}#{ending}"
       end.join
 
       verify_markers_applied(replaced, relative_path)

@@ -1,6 +1,7 @@
 require "delegate"
 require "fileutils"
 require "digest"
+require "measurometer"
 
 module Paquette
   class GemServer
@@ -34,20 +35,27 @@ module Paquette
         versions = __getobj__.versions_for_gem(gem_name)
         return [] if versions.empty?
 
-        versions.map do |version|
-          spec = __getobj__.gem_spec(gem_name, version)
-          next unless spec
+        # Every version has to be repacked and re-hashed before a single line
+        # can be rendered — the personalized index is a whole-corpus cost where
+        # the plain one is a sidecar read.
+        Measurometer.instrument("paquette.gem_personalizer.compact_info") do
+          versions.map do |version|
+            spec = __getobj__.gem_spec(gem_name, version)
+            next unless spec
 
-          # Use personalized gem file for checksum calculation
-          personalized_gem_file = gem_file_path(gem_name, version)
-          checksum = Digest::SHA256.file(personalized_gem_file).hexdigest
+            # Use personalized gem file for checksum calculation
+            personalized_gem_file = gem_file_path(gem_name, version)
+            checksum = Measurometer.instrument("paquette.gem_personalizer.checksum") do
+              Digest::SHA256.file(personalized_gem_file).hexdigest
+            end
 
-          # The checksum is the personalized gem's, but the dependencies are the
-          # original spec's — repacking never touches them, and a line that
-          # disagreed with the gem it points at is exactly the failure this
-          # format exists to prevent.
-          GemRepository.compact_info_line(version, spec, checksum)
-        end.compact
+            # The checksum is the personalized gem's, but the dependencies are the
+            # original spec's — repacking never touches them, and a line that
+            # disagreed with the gem it points at is exactly the failure this
+            # format exists to prevent.
+            GemRepository.compact_info_line(version, spec, checksum)
+          end.compact
+        end
       end
 
       private
@@ -70,7 +78,11 @@ module Paquette
         FileUtils.mkdir_p(personalized_dir)
 
         personalized_path = File.join(personalized_dir, "#{gem_name}-#{version}-#{personalization_digest}.gem")
-        return personalized_path if File.exist?(personalized_path)
+        if File.exist?(personalized_path)
+          Measurometer.increment_counter("paquette.gem_personalizer.cache_hit")
+          return personalized_path
+        end
+        Measurometer.increment_counter("paquette.gem_personalizer.cache_miss")
 
         # A directory we make here and give back here. The block form removes
         # exactly what it created, so nothing in this method ever deletes a path
@@ -78,14 +90,16 @@ module Paquette
         # out of another object. Reaching for File.dirname of whatever you were
         # handed and deleting it recursively is how a tidy-up ends up walking
         # the system temp directory.
-        Dir.mktmpdir("paquette_personalize") do |workdir|
-          built = Paquette::GemServer::GemRepacker.repack(original_gem_path,
-            gemspec_extras: {"paquette.license_key" => @license_key},
-            magic_comment_replacements: @magic_comment_replacements,
-            files: @files,
-            into: File.join(workdir, File.basename(personalized_path)))
+        Measurometer.instrument("paquette.gem_personalizer.repack") do
+          Dir.mktmpdir("paquette_personalize") do |workdir|
+            built = Paquette::GemServer::GemRepacker.repack(original_gem_path,
+              gemspec_extras: {"paquette.license_key" => @license_key},
+              magic_comment_replacements: @magic_comment_replacements,
+              files: @files,
+              into: File.join(workdir, File.basename(personalized_path)))
 
-          FileUtils.mv(built, personalized_path)
+            FileUtils.mv(built, personalized_path)
+          end
         end
 
         personalized_path

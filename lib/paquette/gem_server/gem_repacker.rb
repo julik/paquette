@@ -5,6 +5,7 @@ require "digest"
 require "tmpdir"
 require "tempfile"
 require "open3"
+require "measurometer"
 
 module Paquette
   class GemServer
@@ -33,15 +34,20 @@ module Paquette
         @unpacked_gem_dir = nil
       end
 
+      # Four subprocess-and-disk stages, each timed separately: a repack that
+      # got slow is almost always one of them, and the whole-repack number on
+      # its own cannot say which.
       def repack
         raise ArgumentError, "Gem file not found: #{@gem_path}" unless File.exist?(@gem_path)
 
-        unpack_gem
-        process_ruby_files
-        inject_files
-        new_gem_path = repackage_gem
-        cleanup
-        new_gem_path
+        Measurometer.instrument("paquette.gem_repacker.repack") do
+          Measurometer.instrument("paquette.gem_repacker.unpack") { unpack_gem }
+          Measurometer.instrument("paquette.gem_repacker.process_ruby_files") { process_ruby_files }
+          Measurometer.instrument("paquette.gem_repacker.inject_files") { inject_files }
+          new_gem_path = Measurometer.instrument("paquette.gem_repacker.repackage") { repackage_gem }
+          cleanup
+          new_gem_path
+        end
       end
 
       private
@@ -52,7 +58,9 @@ module Paquette
         FileUtils.mkdir_p(@unpacked_gem_dir)
 
         # Use gem unpack command to extract the gem
-        _, stderr, status = Open3.capture3("gem unpack #{@gem_path} --target=#{@unpacked_gem_dir}")
+        _, stderr, status = Measurometer.instrument("paquette.gem_repacker.gem_unpack") do
+          Open3.capture3("gem unpack #{@gem_path} --target=#{@unpacked_gem_dir}")
+        end
         unless status.success?
           raise "Failed to unpack gem: #{@gem_path}. Error: #{stderr}"
         end
@@ -63,9 +71,9 @@ module Paquette
       end
 
       def process_ruby_files
-        Dir.glob(File.join(@gem_dir, "**", "*.rb")).each do |rb_file|
-          process_ruby_file(rb_file)
-        end
+        rb_files = Dir.glob(File.join(@gem_dir, "**", "*.rb"))
+        Measurometer.add_distribution_value("paquette.gem_repacker.ruby_files", rb_files.length)
+        rb_files.each { |rb_file| process_ruby_file(rb_file) }
       end
 
       def inject_files
@@ -155,7 +163,9 @@ module Paquette
         # gem and the same personalization produce one answer, on any machine,
         # at any time.
         build_env = {"SOURCE_DATE_EPOCH" => Gem::Package.new(@gem_path).spec.date.to_i.to_s}
-        _, stderr, status = Open3.capture3(build_env, "gem", "build", File.basename(gemspec_path), chdir: @gem_dir)
+        _, stderr, status = Measurometer.instrument("paquette.gem_repacker.gem_build") do
+          Open3.capture3(build_env, "gem", "build", File.basename(gemspec_path), chdir: @gem_dir)
+        end
         unless status.success?
           raise "Failed to build gem. Error: #{stderr}"
         end

@@ -1,5 +1,6 @@
 require "rack/auth/abstract/handler"
 require "rack/auth/abstract/request"
+require "measurometer"
 
 module Paquette
   # Rack authentication handler that extracts an opaque access token from either
@@ -56,11 +57,20 @@ module Paquette
     def call(env)
       auth = Request.new(env)
 
-      if auth.provided? && (token = auth.token) && (identity = @authenticator.call(token))
+      # The authenticator is the caller's, and it usually goes to a database to
+      # resolve the token — on every single request, before any of the work the
+      # request asked for. Timed separately from the app it guards.
+      identity = if auth.provided? && (token = auth.token)
+        Measurometer.instrument("paquette.token_authorization.authenticate") { @authenticator.call(token) }
+      end
+
+      if identity
+        Measurometer.increment_counter("paquette.token_authorization.accepted")
         env["paquette.access_token"] = token
         env["paquette.identity"] = identity
         @app.call(env)
       else
+        Measurometer.increment_counter("paquette.token_authorization.rejected")
         unauthorized
       end
     end

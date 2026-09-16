@@ -3,6 +3,7 @@ require "digest"
 require "tmpdir"
 require "stringio"
 require "json"
+require "measurometer"
 require_relative "tarball"
 
 module Paquette
@@ -61,16 +62,20 @@ module Paquette
     def repack(&block)
       raise ArgumentError, "NPM package not found: #{@npm_path}" unless File.exist?(@npm_path)
 
-      entries = Tarball.entries(@npm_path)
-      raise ArgumentError, "NPM package is empty: #{@npm_path}" if entries.empty?
+      Measurometer.instrument("paquette.npm_repacker.repack") do
+        entries = Tarball.entries(@npm_path)
+        raise ArgumentError, "NPM package is empty: #{@npm_path}" if entries.empty?
 
-      root = entries.first.name.split("/").first
+        root = entries.first.name.split("/").first
 
-      rewritten = entries.map { |entry| rewrite(entry, root, &block) }
-      rewritten = apply_package_json_extras(rewritten, root)
-      rewritten = inject_files(rewritten, root)
+        rewritten = Measurometer.instrument("paquette.npm_repacker.rewrite_entries") do
+          entries.map { |entry| rewrite(entry, root, &block) }
+        end
+        rewritten = apply_package_json_extras(rewritten, root)
+        rewritten = inject_files(rewritten, root)
 
-      Tarball.write(destination, rewritten)
+        Tarball.write(destination, rewritten)
+      end
     end
 
     private
@@ -108,21 +113,26 @@ module Paquette
     # restart their column counter at every line, so rewriting one line cannot
     # disturb the mappings on any other; keeping the line a comment means no
     # mapped token sits on the one line that did change.
+    # Line-wise over every source file in the package: the one part of a repack
+    # whose cost is set by how much code the package ships rather than by how
+    # many files it has.
     def apply_magic_comment_replacements(content, relative_path)
       text = content.dup.force_encoding(Encoding::UTF_8)
       return content unless text.valid_encoding?
 
-      replaced = text.lines.map do |line|
-        stripped = line.chomp
-        replacement = @magic_comment_replacements.find { |marker, _| stripped == marker }
-        next line unless replacement
+      Measurometer.instrument("paquette.npm_repacker.replace_magic_comments") do
+        replaced = text.lines.map do |line|
+          stripped = line.chomp
+          replacement = @magic_comment_replacements.find { |marker, _| stripped == marker }
+          next line unless replacement
 
-        ending = line.end_with?("\n") ? "\n" : ""
-        "// #{replacement[1]}#{ending}"
-      end.join
+          ending = line.end_with?("\n") ? "\n" : ""
+          "// #{replacement[1]}#{ending}"
+        end.join
 
-      verify_markers_applied(replaced, relative_path)
-      replaced.b
+        verify_markers_applied(replaced, relative_path)
+        replaced.b
+      end
     end
 
     # A marker still present after the pass was one the line-wise match could
@@ -147,12 +157,14 @@ module Paquette
     def apply_package_json_extras(entries, root)
       return entries if @package_json_extras.empty?
 
-      package_json_name = "#{root}/package.json"
-      entries.map do |entry|
-        next entry unless entry.name == package_json_name
+      Measurometer.instrument("paquette.npm_repacker.package_json_extras") do
+        package_json_name = "#{root}/package.json"
+        entries.map do |entry|
+          next entry unless entry.name == package_json_name
 
-        parsed = JSON.parse(entry.content)
-        with_content(entry, JSON.pretty_generate(parsed.merge(@package_json_extras)))
+          parsed = JSON.parse(entry.content)
+          with_content(entry, JSON.pretty_generate(parsed.merge(@package_json_extras)))
+        end
       end
     end
 

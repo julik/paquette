@@ -4,6 +4,7 @@ require "tempfile"
 require "fileutils"
 require "digest"
 require "json"
+require "measurometer"
 
 module Paquette
   class GemServer
@@ -28,13 +29,15 @@ module Paquette
       def add_gem(binary_data)
         raise InvalidGem, "Empty gem payload" if binary_data.nil? || binary_data.empty?
 
+        Measurometer.add_distribution_value("paquette.gem_repository.add_gem_bytes", binary_data.bytesize)
+
         tmp = Tempfile.new(["paquette_push", ".gem"])
         tmp.binmode
-        tmp.write(binary_data)
+        Measurometer.instrument("paquette.gem_repository.write_upload") { tmp.write(binary_data) }
         tmp.close
 
         spec = begin
-          Gem::Package.new(tmp.path).spec
+          Measurometer.instrument("paquette.gem_repository.read_uploaded_spec") { Gem::Package.new(tmp.path).spec }
         rescue Gem::Package::Error, StandardError => e
           raise InvalidGem, "Could not read gem: #{e.message}"
         end
@@ -61,13 +64,15 @@ module Paquette
         gem_path = gem_file_path(gem_name, version)
         raise GemNotFound, "#{gem_name}-#{version} not found" unless File.exist?(gem_path)
 
-        FileUtils.mv(gem_path, tomb_file_path(gem_name, version))
+        Measurometer.instrument("paquette.gem_repository.yank_gem") do
+          FileUtils.mv(gem_path, tomb_file_path(gem_name, version))
 
-        # Tidying, not correctness. compact_info trusts the *.gem glob and
-        # never reads a sidecar whose gem file is gone, so a yanked gem
-        # disappears from the index the moment the rename above lands — this
-        # just keeps the cache directory from collecting orphans.
-        FileUtils.rm_f(sidecar_path(gem_name, version))
+          # Tidying, not correctness. compact_info trusts the *.gem glob and
+          # never reads a sidecar whose gem file is gone, so a yanked gem
+          # disappears from the index the moment the rename above lands — this
+          # just keeps the cache directory from collecting orphans.
+          FileUtils.rm_f(sidecar_path(gem_name, version))
+        end
         nil
       end
 
@@ -80,31 +85,40 @@ module Paquette
       end
 
       def gem_names
-        Dir.glob(File.join(@gems_dir, "*")).select { |path| File.directory?(path) }.map do |package_path|
-          File.basename(package_path)
-        end.sort
+        Measurometer.instrument("paquette.gem_repository.gem_names") do
+          Dir.glob(File.join(@gems_dir, "*")).select { |path| File.directory?(path) }.map do |package_path|
+            File.basename(package_path)
+          end.sort
+        end
       end
 
+      # A directory listing per gem in the corpus; every whole-index endpoint
+      # starts here.
       def gem_versions
-        versions = []
-        gem_names.each do |gem_name|
-          versions_for_gem(gem_name).each do |version|
-            versions << [gem_name, version]
+        Measurometer.instrument("paquette.gem_repository.gem_versions") do
+          versions = []
+          gem_names.each do |gem_name|
+            versions_for_gem(gem_name).each do |version|
+              versions << [gem_name, version]
+            end
           end
+          Measurometer.add_distribution_value("paquette.gem_repository.gem_version_count", versions.length)
+          versions.sort
         end
-        versions.sort
       end
 
       def versions_for_gem(gem_name)
         gem_dir = File.join(@gems_dir, gem_name)
         return [] unless Dir.exist?(gem_dir)
 
-        Dir.glob(File.join(gem_dir, "*.gem")).map do |gem_path|
-          filename = File.basename(gem_path, ".gem")
-          if (match = filename.match(/^#{Regexp.escape(gem_name)}-(\d+\.\d+\.\d+.*)$/))
-            match[1]
-          end
-        end.compact.sort
+        Measurometer.instrument("paquette.gem_repository.versions_for_gem") do
+          Dir.glob(File.join(gem_dir, "*.gem")).map do |gem_path|
+            filename = File.basename(gem_path, ".gem")
+            if (match = filename.match(/^#{Regexp.escape(gem_name)}-(\d+\.\d+\.\d+.*)$/))
+              match[1]
+            end
+          end.compact.sort
+        end
       end
 
       def gem_file_path(gem_name, version)
@@ -115,12 +129,16 @@ module Paquette
         File.exist?(gem_file_path(gem_name, version))
       end
 
+      # Opening a .gem to read its spec means a tar walk, a gunzip and a YAML
+      # parse — the single most expensive thing this repository does per gem,
+      # and what the sidecar cache below exists to avoid.
       def gem_spec(gem_name, version)
         gem_file = gem_file_path(gem_name, version)
         return nil unless File.exist?(gem_file)
 
-        pkg = Gem::Package.new(gem_file)
-        pkg.spec
+        Measurometer.instrument("paquette.gem_repository.gem_spec") do
+          Gem::Package.new(gem_file).spec
+        end
       end
 
       def gem_dependencies(gem_name, version)
@@ -149,26 +167,34 @@ module Paquette
         versions = versions_for_gem(gem_name)
         return [] if versions.empty?
 
-        # The *.gem files are the authority on what exists; the sidecars are
-        # only consulted for gems the glob above already vouched for. That
-        # order is what makes yank instant — a renamed-away gem file leaves
-        # its sidecar orphaned, and an orphaned sidecar is simply never read.
-        versions.map do |version|
-          gem_file = gem_file_path(gem_name, version)
+        Measurometer.instrument("paquette.gem_repository.compact_info") do
+          # The *.gem files are the authority on what exists; the sidecars are
+          # only consulted for gems the glob above already vouched for. That
+          # order is what makes yank instant — a renamed-away gem file leaves
+          # its sidecar orphaned, and an orphaned sidecar is simply never read.
+          versions.map do |version|
+            gem_file = gem_file_path(gem_name, version)
 
-          stat = begin
-            File.stat(gem_file)
-          rescue Errno::ENOENT
-            # Yanked between the glob and this stat. The gem is gone, so its
-            # line is too.
-            next
-          end
+            stat = begin
+              File.stat(gem_file)
+            rescue Errno::ENOENT
+              # Yanked between the glob and this stat. The gem is gone, so its
+              # line is too.
+              next
+            end
 
-          fields = read_sidecar(gem_name, version, stat) || derive_sidecar(gem_name, version, gem_file, stat)
-          next unless fields
+            fields = read_sidecar(gem_name, version, stat)
+            if fields
+              Measurometer.increment_counter("paquette.gem_repository.sidecar_hit")
+            else
+              Measurometer.increment_counter("paquette.gem_repository.sidecar_miss")
+              fields = derive_sidecar(gem_name, version, gem_file, stat)
+            end
+            next unless fields
 
-          GemRepository.compact_info_line_from_fields(version, fields)
-        end.compact
+            GemRepository.compact_info_line_from_fields(version, fields)
+          end.compact
+        end
       end
 
       private
@@ -215,10 +241,19 @@ module Paquette
       SIDECAR_FORMAT_VERSION = 1
 
       def derive_sidecar(gem_name, version, gem_file, stat)
+        Measurometer.instrument("paquette.gem_repository.derive_sidecar") do
+          derive_sidecar_fields(gem_name, version, gem_file, stat)
+        end
+      end
+
+      def derive_sidecar_fields(gem_name, version, gem_file, stat)
         spec = gem_spec(gem_name, version)
         return nil unless spec
 
-        checksum = Digest::SHA256.file(gem_file).hexdigest
+        checksum = Measurometer.instrument("paquette.gem_repository.checksum_gem") do
+          Digest::SHA256.file(gem_file).hexdigest
+        end
+
         fields = GemRepository.compact_info_fields(spec, checksum).merge(
           "format_version" => SIDECAR_FORMAT_VERSION,
           "version" => version,
@@ -240,13 +275,19 @@ module Paquette
       # gems directory every write lands in the rescue and the request is
       # served from source, at the old price but served.
       def write_sidecar(gem_name, version, fields)
-        final_path = sidecar_path(gem_name, version)
-        cache_dir = File.dirname(final_path)
-        FileUtils.mkdir_p(cache_dir)
+        # Declared out here so the rescue below can still see it: a local first
+        # assigned inside the block would not exist by the time we tidy up.
+        tmp_path = nil
 
-        tmp_path = File.join(cache_dir, ".#{gem_name}-#{version}.#{Process.pid}.#{rand(2**32).to_s(16)}.tmp")
-        File.write(tmp_path, JSON.pretty_generate(fields))
-        File.rename(tmp_path, final_path)
+        Measurometer.instrument("paquette.gem_repository.write_sidecar") do
+          final_path = sidecar_path(gem_name, version)
+          cache_dir = File.dirname(final_path)
+          FileUtils.mkdir_p(cache_dir)
+
+          tmp_path = File.join(cache_dir, ".#{gem_name}-#{version}.#{Process.pid}.#{rand(2**32).to_s(16)}.tmp")
+          File.write(tmp_path, JSON.pretty_generate(fields))
+          File.rename(tmp_path, final_path)
+        end
         nil
       rescue SystemCallError
         FileUtils.rm_f(tmp_path) if tmp_path

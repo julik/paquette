@@ -2,6 +2,7 @@ require "delegate"
 require "fileutils"
 require "digest"
 require "tmpdir"
+require "measurometer"
 require_relative "npm_repository"
 require_relative "../npm_repacker"
 require_relative "../tarball"
@@ -34,22 +35,29 @@ module Paquette
         original_dist = __getobj__.dist_for(package_name, version)
         return original_dist if original_dist.empty?
 
-        personalized_path = package_file_path(package_name, version)
-        return original_dist unless personalized_path && File.exist?(personalized_path)
+        Measurometer.instrument("paquette.npm_personalizer.dist_for") do
+          personalized_path = package_file_path(package_name, version)
+          next original_dist unless personalized_path && File.exist?(personalized_path)
 
-        original_dist.merge(Tarball.integrity(personalized_path).transform_keys(&:to_s))
+          original_dist.merge(Tarball.integrity(personalized_path).transform_keys(&:to_s))
+        end
       end
 
       # The underlying `dist` hashes would fail every install.
+      # Every version has to be repacked and re-hashed before this document can
+      # be handed out, so a personalized metadata read costs a whole package
+      # where the plain one costs a cache lookup.
       def package_metadata(package_name)
         metadata = __getobj__.package_metadata(package_name)
         return nil unless metadata
 
-        versions = metadata["versions"].each_with_object({}) do |(version, doc), acc|
-          acc[version] = doc.merge("dist" => dist_for(package_name, version))
-        end
+        Measurometer.instrument("paquette.npm_personalizer.package_metadata") do
+          versions = metadata["versions"].each_with_object({}) do |(version, doc), acc|
+            acc[version] = doc.merge("dist" => dist_for(package_name, version))
+          end
 
-        metadata.merge("versions" => versions)
+          metadata.merge("versions" => versions)
+        end
       end
 
       private
@@ -61,16 +69,22 @@ module Paquette
 
         filename = "#{File.basename(package_name)}-#{version}-#{cache_digest(package_name, version, original_path)}.tgz"
         personalized_path = File.join(personalized_dir, filename)
-        return personalized_path if File.exist?(personalized_path)
+        if File.exist?(personalized_path)
+          Measurometer.increment_counter("paquette.npm_personalizer.cache_hit")
+          return personalized_path
+        end
+        Measurometer.increment_counter("paquette.npm_personalizer.cache_miss")
 
-        Dir.mktmpdir("paquette_personalize_npm") do |workdir|
-          built = NpmRepacker.repack(original_path,
-            package_json_extras: @package_json_extras,
-            magic_comment_replacements: @magic_comment_replacements,
-            files: @files,
-            into: File.join(workdir, filename))
+        Measurometer.instrument("paquette.npm_personalizer.repack") do
+          Dir.mktmpdir("paquette_personalize_npm") do |workdir|
+            built = NpmRepacker.repack(original_path,
+              package_json_extras: @package_json_extras,
+              magic_comment_replacements: @magic_comment_replacements,
+              files: @files,
+              into: File.join(workdir, filename))
 
-          FileUtils.mv(built, personalized_path)
+            FileUtils.mv(built, personalized_path)
+          end
         end
 
         personalized_path

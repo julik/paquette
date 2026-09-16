@@ -96,9 +96,25 @@ module NpmTarballHelpers
   end
 end
 
+# Rack::Test cannot build a body that disagrees with its own Content-Length,
+# which is exactly the shape of request these tests are about.
+module MalformedRequestHelpers
+  def malformed_multipart_env(path, body: nil, content_length: nil)
+    env = Rack::MockRequest.env_for(path, "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x")
+    env["rack.input"] = StringIO.new(body.to_s)
+    if content_length
+      env["CONTENT_LENGTH"] = content_length
+    else
+      env.delete("CONTENT_LENGTH")
+    end
+    env
+  end
+end
+
 module Minitest
   class Test
     include NpmTarballHelpers
     include ExternalTooling
+    include MalformedRequestHelpers
   end
 end

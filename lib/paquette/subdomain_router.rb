@@ -1,3 +1,5 @@
+require "measurometer"
+
 require_relative "gem_server"
 require_relative "npm_server"
 
@@ -21,15 +23,21 @@ module Paquette
 
       if subdomain && @mappings[subdomain]
         app = @mappings[subdomain]
-        if app.respond_to?(:call)
-          app.call(env)
-        else
-          # If it's a class, instantiate it
-          app.new.call(env)
+        # Named after the subdomain, which is mapped and therefore bounded —
+        # the host header is attacker-controlled and would be one metric per
+        # probe.
+        Measurometer.instrument("paquette.subdomain_router.#{subdomain}") do
+          if app.respond_to?(:call)
+            app.call(env)
+          else
+            # If it's a class, instantiate it
+            app.new.call(env)
+          end
         end
       elsif @fallback
-        @fallback.call(env)
+        Measurometer.instrument("paquette.subdomain_router.fallback") { @fallback.call(env) }
       else
+        Measurometer.increment_counter("paquette.subdomain_router.unmapped")
         [404, {}, ["Subdomain not found"]]
       end
     end

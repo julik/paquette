@@ -1,6 +1,7 @@
 require "json"
 require "fileutils"
 require "digest"
+require "measurometer"
 
 require_relative "routes"
 require_relative "npm_server/npm_repository"
@@ -81,17 +82,21 @@ module Paquette
     end
 
     def call(env)
-      env = env.dup
-      env["PATH_INFO"] = normalize_scoped_path(env["PATH_INFO"].to_s)
+      Measurometer.instrument("paquette.npm_server.call") do
+        env = env.dup
+        env["PATH_INFO"] = normalize_scoped_path(env["PATH_INFO"].to_s)
 
-      request = Rack::Request.new(env)
-      route = @@routes.match(request)
-      return not_found("Not Found") unless route
+        request = Rack::Request.new(env)
+        route = @@routes.match(request)
+        next not_found("Not Found") unless route
 
-      # Shared across Rack threads: the request lives on a per-request clone.
-      handler = clone
-      handler.instance_variable_set(:@request, request)
-      @@routes.perform_action(route, handler, request)
+        # Shared across Rack threads: the request lives on a per-request clone.
+        handler = clone
+        handler.instance_variable_set(:@request, request)
+        @@routes.perform_action(route, handler, request)
+      end
+    rescue Routes::MalformedRequest => e
+      bad_request(e.message)
     end
 
     private
@@ -104,11 +109,15 @@ module Paquette
       "#{prefix}#{scope}%2F#{name}#{rest}"
     end
 
+    # The hot read path for `npm install`: one document covering every version
+    # of the package, rebuilt per request.
     def handle_metadata(package_name)
-      metadata = @repository.package_metadata(package_name)
-      return not_found("Package not found") unless metadata
+      Measurometer.instrument("paquette.npm_server.metadata") do
+        metadata = @repository.package_metadata(package_name)
+        next not_found("Package not found") unless metadata
 
-      json_ok(with_absolute_tarballs(metadata))
+        json_ok(with_absolute_tarballs(metadata))
+      end
     end
 
     def handle_tarball(package_name, tarball_name)
@@ -116,12 +125,18 @@ module Paquette
       return not_found("Invalid package filename") unless version
       return not_found("Package not found or it is not within your license") unless @repository.package_exists?(package_name, version)
 
-      path = @repository.package_file_path(package_name, version)
+      # Under a Personalizer this call is where the tarball gets repacked, so
+      # it is not the plain path lookup it looks like.
+      path = Measurometer.instrument("paquette.npm_server.tarball_path") do
+        @repository.package_file_path(package_name, version)
+      end
       return not_found("Package not found or it is not within your license") unless path && File.exist?(path)
 
+      size = File.size(path)
+      Measurometer.add_distribution_value("paquette.npm_server.tarball_bytes", size)
       headers = {
         "Content-Type" => "application/octet-stream",
-        "Content-Length" => File.size(path).to_s
+        "Content-Length" => size.to_s
       }
       [200, headers, File.open(path, "rb")]
     end
@@ -140,9 +155,12 @@ module Paquette
       return bad_request("Attachment carries no data") if data.nil?
 
       # unpack1("m"): base64 stopped being a default gem in Ruby 3.4.
-      tarball = data.to_s.unpack1("m")
+      tarball = Measurometer.instrument("paquette.npm_server.decode_attachment") { data.to_s.unpack1("m") }
+      Measurometer.add_distribution_value("paquette.npm_server.publish_bytes", tarball.bytesize)
 
-      info = @repository.add_package(tarball, dist_tags: document["dist-tags"] || {})
+      info = Measurometer.instrument("paquette.npm_server.publish") do
+        @repository.add_package(tarball, dist_tags: document["dist-tags"] || {})
+      end
       json_ok({success: true, id: info["name"], rev: revision_for(info["name"])}, status: 201)
     rescue ReadGatedRepository::WriteNotAllowed => e
       forbidden(e.message)
@@ -162,8 +180,10 @@ module Paquette
       kept = document["versions"]
       return json_ok({success: true, id: package_name, rev: revision_for(package_name)}) unless kept.is_a?(Hash)
 
-      removed = @repository.versions_for_package(package_name) - kept.keys
-      removed.each { |version| @repository.yank_package(package_name, version) }
+      Measurometer.instrument("paquette.npm_server.document_put") do
+        removed = @repository.versions_for_package(package_name) - kept.keys
+        removed.each { |version| @repository.yank_package(package_name, version) }
+      end
 
       json_ok({success: true, id: package_name, rev: revision_for(package_name)})
     rescue ReadGatedRepository::WriteNotAllowed => e
@@ -176,7 +196,9 @@ module Paquette
       versions = @repository.versions_for_package(package_name)
       return not_found("Package not found") if versions.empty?
 
-      versions.each { |version| @repository.yank_package(package_name, version) }
+      Measurometer.instrument("paquette.npm_server.unpublish_all") do
+        versions.each { |version| @repository.yank_package(package_name, version) }
+      end
       json_ok({success: true, id: package_name})
     rescue ReadGatedRepository::WriteNotAllowed => e
       forbidden(e.message)
@@ -222,6 +244,10 @@ module Paquette
 
     # The request's forwarded headers keep the URLs correct behind a TLS proxy.
     def with_absolute_tarballs(metadata)
+      Measurometer.instrument("paquette.npm_server.absolutize_tarballs") { absolutize_tarballs(metadata) }
+    end
+
+    def absolutize_tarballs(metadata)
       base = @request.base_url
       versions = (metadata["versions"] || {}).each_with_object({}) do |(version, doc), acc|
         dist = doc["dist"]
@@ -237,16 +263,21 @@ module Paquette
 
     # npm's unpublish flow needs a `_rev`; derived, since nothing is locked.
     def revision_for(package_name)
-      versions = @repository.versions_for_package(package_name)
-      "#{versions.length}-#{Digest::MD5.hexdigest(versions.join(","))}"
+      Measurometer.instrument("paquette.npm_server.revision_for") do
+        versions = @repository.versions_for_package(package_name)
+        "#{versions.length}-#{Digest::MD5.hexdigest(versions.join(","))}"
+      end
     end
 
+    # A publish body carries the whole tarball base64-encoded, so both the read
+    # and the parse are sized by the package, not by the request.
     def parse_json_body
       @request.body.rewind if @request.body.respond_to?(:rewind)
-      body = @request.body.read.to_s
+      body = Measurometer.instrument("paquette.npm_server.read_body") { @request.body.read.to_s }
       return nil if body.empty?
 
-      JSON.parse(body)
+      Measurometer.add_distribution_value("paquette.npm_server.body_bytes", body.bytesize)
+      Measurometer.instrument("paquette.npm_server.parse_body") { JSON.parse(body) }
     rescue JSON::ParserError
       nil
     end
@@ -256,8 +287,11 @@ module Paquette
       identity.respond_to?(:username) ? identity.username : "paquette"
     end
 
+    # A package document with many versions is the largest thing this server
+    # serializes, and it is serialized on every metadata request.
     def json_ok(data, status: 200)
-      [status, {"Content-Type" => "application/json"}, [JSON.pretty_generate(data)]]
+      body = Measurometer.instrument("paquette.npm_server.generate_json") { JSON.pretty_generate(data) }
+      [status, {"Content-Type" => "application/json"}, [body]]
     end
 
     def text_ok(data)

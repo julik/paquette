@@ -139,4 +139,48 @@ class RoutesTest < Minitest::Test
     result = routes.perform_action(route, test_instance, request)
     assert_equal [200, {}, ["Instance: RoutesTest"]], result
   end
+
+  # A scanner announcing multipart and sending no body at all. Rack tags this
+  # one with Rack::BadRequest.
+  def test_unparseable_body_raises_malformed_request
+    error = assert_raises(Paquette::Routes::MalformedRequest) do
+      perform_root_action(malformed_multipart_env(body: nil))
+    end
+    assert_includes error.message, "EmptyContentError"
+  end
+
+  # A body shorter than the Content-Length that announced it. Rack raises a
+  # bare EOFError for this one, with no marker module on it.
+  def test_truncated_body_raises_malformed_request
+    error = assert_raises(Paquette::Routes::MalformedRequest) do
+      perform_root_action(malformed_multipart_env(body: "", content_length: "10"))
+    end
+    assert_includes error.message, "EOFError"
+  end
+
+  private
+
+  def perform_root_action(env)
+    routes = Paquette::Routes.draw do |r|
+      r.get "/" do
+        [200, {}, ["Root"]]
+      end
+    end
+
+    request = Rack::Request.new(env)
+    route = routes.match(request)
+    assert route
+    routes.perform_action(route, self, request)
+  end
+
+  def malformed_multipart_env(body:, content_length: nil)
+    env = Rack::MockRequest.env_for("/", "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x")
+    env["rack.input"] = StringIO.new(body.to_s)
+    if content_length
+      env["CONTENT_LENGTH"] = content_length
+    else
+      env.delete("CONTENT_LENGTH")
+    end
+    env
+  end
 end

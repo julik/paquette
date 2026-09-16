@@ -1,14 +1,27 @@
 require "mustermann"
+require "measurometer"
 
 module Paquette
   class Routes
+    # A request whose own bytes Rack could not parse — not a routing failure
+    # and not a server fault, so it is raised here and turned into a 400 by
+    # whichever server is dispatching. See Route#query_params.
+    class MalformedRequest < StandardError; end
+
     class Route
       attr_reader :method, :pattern, :block
+
+      # The pattern as written, not as matched: it is the one name for this
+      # route that stays the same across every request, which is exactly what a
+      # metric path needs. Interpolating the matched path instead would open a
+      # new metric per gem name in the corpus.
+      attr_reader :metric_name
 
       def initialize(method, pattern, block)
         @method = method
         @pattern = Mustermann.new(pattern)
         @block = block
+        @metric_name = "#{method} #{pattern}"
       end
 
       def match?(request)
@@ -20,10 +33,31 @@ module Paquette
       end
 
       def perform_action(instance, request)
+        Measurometer.instrument("paquette.route.#{@metric_name}") { call_block(instance, request) }
+      end
+
+      def call_block(instance, request)
         route_params = params(request)
-        query_params = request.params
+        query_params = query_params(request)
         symbol_params = route_params.merge(query_params).transform_keys(&:to_sym)
         instance.instance_exec(**acceptable(symbol_params), &@block)
+      end
+
+      # Rack parses the query string *and* the body to answer #params, and a
+      # request whose body does not match its Content-Type makes it raise —
+      # scanners hitting "/" with a multipart Content-Type and no body do this
+      # routinely, and it used to surface as a 500 for what is squarely the
+      # client's fault.
+      #
+      # Rack::BadRequest is the marker module Rack mixes into the errors it
+      # raises for exactly this. The bare EOFError is caught alongside it
+      # because the multipart parser raises one, untagged, when a body is
+      # shorter than the Content-Length that announced it — the same fault,
+      # only it arrives as a truncated upload rather than an absent one.
+      def query_params(request)
+        request.params
+      rescue Rack::BadRequest, EOFError => e
+        raise MalformedRequest, "Could not parse request parameters: #{e.class}"
       end
 
       # The block only gets the keywords it declares: a client's stray query
@@ -75,7 +109,9 @@ module Paquette
     end
 
     def match(request)
-      @routes.find { |route| route.match?(request) }
+      Measurometer.instrument("paquette.routes.match") do
+        @routes.find { |route| route.match?(request) }
+      end
     end
 
     def perform_action(route, instance, request)

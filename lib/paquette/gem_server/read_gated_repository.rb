@@ -1,4 +1,5 @@
 require "delegate"
+require "measurometer"
 
 module Paquette
   class GemServer
@@ -22,46 +23,54 @@ module Paquette
       end
 
       def gem_names
-        super.select { |name| @entitler.call(name: name) }
+        super.select { |name| entitled?(name: name) }
       end
 
       def gem_versions
         super.select do |gem_name, version|
-          @entitler.call(name: gem_name, version: version)
+          entitled?(name: gem_name, version: version)
         end
       end
 
       def versions_for_gem(gem_name)
-        return [] unless @entitler.call(name: gem_name)
+        return [] unless entitled?(name: gem_name)
         super.select do |version|
-          @entitler.call(name: gem_name, version: version)
+          entitled?(name: gem_name, version: version)
         end
       end
 
       def gem_file_path(gem_name, version)
-        if @entitler.call(name: gem_name, version: version)
+        if entitled?(name: gem_name, version: version)
           super
         end
       end
 
       def compact_info(gem_name)
-        return [] unless @entitler.call(name: gem_name)
+        return [] unless entitled?(name: gem_name)
 
         all_info = super
         return all_info unless all_info.is_a?(Array)
 
         all_info.select do |line|
           version = line.split(" ")[0]
-          @entitler.call(name: gem_name, version: version)
+          entitled?(name: gem_name, version: version)
         end
       end
 
       def gem_exists?(gem_name, version)
-        if @entitler.call(name: gem_name, version: version)
+        if entitled?(name: gem_name, version: version)
           super
         else
           false
         end
+      end
+
+      # The entitler is the caller's, and a listing calls it once per gem in
+      # the corpus — an entitler that reaches for a database on every call is
+      # the usual reason a gated index is slower than an ungated one, and this
+      # is where that shows up.
+      def entitled?(**criteria)
+        Measurometer.instrument("paquette.gem_read_gate.entitled") { @entitler.call(**criteria) }
       end
 
       def add_gem(*)

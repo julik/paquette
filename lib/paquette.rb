@@ -1,4 +1,6 @@
 module Paquette
+  require "measurometer"
+
   require_relative "paquette/version"
 
   require_relative "paquette/routes"

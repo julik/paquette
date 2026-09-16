@@ -171,6 +171,31 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 - `DELETE /{package}/-rev/{rev}` - Unpublish a package
 - `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
 
+## Instrumentation
+
+Everything expensive in Paquette is wrapped in a [Measurometer](https://github.com/julik/measurometer) block: the whole-corpus index renders, the tarball and gem reads under them, personalization repacks and their cache hits and misses, and the entitler a gated repository calls once per package.
+
+Measurometer does nothing until a driver is attached, and adding one is the whole setup — it is API-compatible with Appsignal, so that is usually a single line in an initializer:
+
+```ruby
+Measurometer.drivers << Appsignal
+```
+
+The metric paths are namespaced by layer, so a slow request can be attributed without reading the code:
+
+| Path | What it covers |
+| --- | --- |
+| `paquette.gem_server.*` / `paquette.npm_server.*` | Request dispatch and the work behind each endpoint |
+| `paquette.route.GET /info/:gem_name` | One span per route, named by the pattern rather than the path |
+| `paquette.gem_repository.*` / `paquette.npm_repository.*` | Directory listings, spec reads, publishes and yanks |
+| `paquette.gem_personalizer.*` / `paquette.npm_personalizer.*` | Per-licensee repacks, plus `cache_hit` / `cache_miss` counters |
+| `paquette.gem_repacker.*` / `paquette.npm_repacker.*` | The stages of a repack — unpack, rewrite, rebuild |
+| `paquette.tarball.*` | Inflate, deflate, tar walk and the SHA1/SHA512 integrity pass |
+| `paquette.gem_read_gate.entitled` / `paquette.npm_read_gate.entitled` | Your entitler block, which a listing calls once per package |
+| `paquette.token_authorization.authenticate` | Your token lookup, which runs before anything else on every request |
+
+Two numbers are worth a dashboard from the start. `paquette.gem_repository.sidecar_hit` against `sidecar_miss` says whether the compact index is being served from its cache or re-derived from the gems themselves, and the personalizer's `cache_hit` against `cache_miss` says the same for repacked tarballs — a miss rate that does not fall after warmup means something is invalidating the cache on every request.
+
 ## Running the tests
 
 ```bash

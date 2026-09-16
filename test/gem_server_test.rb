@@ -18,6 +18,19 @@ class GemServerTest < Minitest::Test
     assert_equal "Paquette RubyGems Repository", last_response.body
   end
 
+  # A scanner sending a multipart Content-Type with no body: the client's
+  # mistake, not ours, and it used to come back as a 500.
+  def test_unparseable_request_body_is_a_bad_request
+    status, _headers, body = app.call(malformed_multipart_env("/"))
+    assert_equal 400, status
+    assert_includes body.first, "Could not parse request parameters"
+  end
+
+  def test_truncated_request_body_is_a_bad_request
+    status, = app.call(malformed_multipart_env("/", body: "", content_length: "10"))
+    assert_equal 400, status
+  end
+
   def test_names_endpoint
     get "/api/v1/names"
     assert_equal 200, last_response.status

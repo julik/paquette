@@ -5,6 +5,7 @@ require "zlib"
 require "stringio"
 require "digest"
 require "time"
+require "measurometer"
 
 require_relative "routes"
 require_relative "gem_server/directory_gem_repository"
@@ -86,8 +87,9 @@ module Paquette
             spec = @repository.gem_spec(gem_name, version)
             if spec
               # Marshal the spec and compress it with raw deflate (not gzip)
-              marshaled_spec = Marshal.dump(spec)
-              compressed_spec = Zlib::Deflate.deflate(marshaled_spec)
+              compressed_spec = Measurometer.instrument("paquette.gem_server.marshal_quick_spec") do
+                Zlib::Deflate.deflate(Marshal.dump(spec))
+              end
               [200, {"Content-Type" => "application/octet-stream"}, [compressed_spec]]
             else
               not_found("Spec not found")
@@ -133,12 +135,16 @@ module Paquette
     end
 
     def call(env)
-      request = Rack::Request.new(env)
-      route = @@routes.match(request)
-      return not_found("Not found") unless route
+      Measurometer.instrument("paquette.gem_server.call") do
+        request = Rack::Request.new(env)
+        route = @@routes.match(request)
+        next not_found("Not found") unless route
 
-      @request = request
-      @@routes.perform_action(route, self, request)
+        @request = request
+        @@routes.perform_action(route, self, request)
+      end
+    rescue Routes::MalformedRequest => e
+      bad_request(e.message)
     end
 
     private
@@ -160,16 +166,18 @@ module Paquette
       end
 
       dependencies = []
-      gems.each do |gem_name|
-        gem_versions = @repository.versions_for_gem(gem_name)
-        gem_versions.each do |version|
-          gem_dependencies = @repository.gem_dependencies(gem_name, version)
-          dependencies << {
-            name: gem_name,
-            number: version,
-            platform: "ruby",
-            dependencies: gem_dependencies
-          }
+      Measurometer.instrument("paquette.gem_server.dependencies") do
+        gems.each do |gem_name|
+          gem_versions = @repository.versions_for_gem(gem_name)
+          gem_versions.each do |version|
+            gem_dependencies = @repository.gem_dependencies(gem_name, version)
+            dependencies << {
+              name: gem_name,
+              number: version,
+              platform: "ruby",
+              dependencies: gem_dependencies
+            }
+          end
         end
       end
 
@@ -182,19 +190,23 @@ module Paquette
 
     def handle_versions
       versions = []
-      @repository.gem_versions.each do |name, version|
-        spec = @repository.gem_spec(name, version)
-        versions << {
-          name: name,
-          number: version,
-          platform: spec.platform.to_s,
-          authors: spec.authors,
-          info: spec.description || "",
-          homepage: spec.homepage || "",
-          description: spec.description || "",
-          summary: spec.summary || "",
-          metadata: spec.metadata || {}
-        }
+      # One spec read per version in the corpus — the cost grows with the
+      # corpus, not with the request.
+      Measurometer.instrument("paquette.gem_server.build_versions") do
+        @repository.gem_versions.each do |name, version|
+          spec = @repository.gem_spec(name, version)
+          versions << {
+            name: name,
+            number: version,
+            platform: spec.platform.to_s,
+            authors: spec.authors,
+            info: spec.description || "",
+            homepage: spec.homepage || "",
+            description: spec.description || "",
+            summary: spec.summary || "",
+            metadata: spec.metadata || {}
+          }
+        end
       end
 
       json_ok(versions)
@@ -206,7 +218,8 @@ module Paquette
     end
 
     def handle_push
-      gem_data = @request.body.read
+      gem_data = Measurometer.instrument("paquette.gem_server.read_push_body") { @request.body.read }
+      Measurometer.add_distribution_value("paquette.gem_server.push_bytes", gem_data.to_s.bytesize)
 
       spec = @repository.add_gem(gem_data)
       text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
@@ -239,8 +252,10 @@ module Paquette
       query ||= ""
       results = []
 
-      @repository.gem_versions.each do |name, version|
-        if name.include?(query)
+      Measurometer.instrument("paquette.gem_server.search") do
+        @repository.gem_versions.each do |name, version|
+          next unless name.include?(query)
+
           results << {
             name: name,
             version: version,
@@ -259,7 +274,7 @@ module Paquette
       specs = generate_specs_array
 
       # Use Marshal 4.8 format for compatibility with Bundler
-      specs_data = marshal_dump_4_8(specs)
+      specs_data = Measurometer.instrument("paquette.gem_server.marshal_specs") { marshal_dump_4_8(specs) }
 
       # For .gz requests, compress the data
       if version.include?(".gz")
@@ -276,6 +291,13 @@ module Paquette
     end
 
     def handle_compact_versions
+      Measurometer.instrument("paquette.gem_server.compact_versions") { render_compact_versions }
+    end
+
+    # Rendered per request, and it renders every /info/ file in the corpus to
+    # checksum it — the most expensive read this server serves, and the one
+    # worth watching first when /versions gets slow.
+    def render_compact_versions
       # Group versions by gem name
       gem_versions = {}
       @repository.gem_versions.each do |name, version|
@@ -306,9 +328,13 @@ module Paquette
       # file carries their own gem checksums.
       gem_versions.sort.each do |name, versions|
         versions_str = versions.join(",")
-        checksum = Digest::MD5.hexdigest(compact_info_body(name).to_s)
+        checksum = Measurometer.instrument("paquette.gem_server.compact_info_checksum") do
+          Digest::MD5.hexdigest(compact_info_body(name).to_s)
+        end
         lines << "#{name} #{versions_str} #{checksum}"
       end
+
+      Measurometer.add_distribution_value("paquette.gem_server.compact_versions_gems", gem_versions.size)
 
       content = lines.join("\n")
 
@@ -323,21 +349,25 @@ module Paquette
     # these files too, and the byte-exact body is what /versions checksums, so
     # there is one renderer and both endpoints go through it.
     def compact_info_body(gem_name)
-      info_lines = @repository.compact_info(gem_name)
-      return nil if info_lines.nil? || info_lines.empty?
+      Measurometer.instrument("paquette.gem_server.compact_info_body") do
+        info_lines = @repository.compact_info(gem_name)
+        next nil if info_lines.nil? || info_lines.empty?
 
-      (["---"] + info_lines).join("\n") + "\n"
+        (["---"] + info_lines).join("\n") + "\n"
+      end
     end
 
     def generate_specs_array
       # Generate specs array in the format expected by RubyGems/Bundler
       # Each spec is [gem_name, version, platform]
       # Use only basic Ruby types to ensure Marshal 4.8 compatibility
-      specs = []
-      @repository.gem_versions.each do |name, version|
-        specs << [name.to_s, version.to_s, "ruby"]
+      Measurometer.instrument("paquette.gem_server.generate_specs_array") do
+        specs = []
+        @repository.gem_versions.each do |name, version|
+          specs << [name.to_s, version.to_s, "ruby"]
+        end
+        specs
       end
-      specs
     end
 
     def handle_latest_specs(version)
@@ -345,7 +375,7 @@ module Paquette
       latest_specs = generate_latest_specs_array
 
       # Use Marshal 4.8 format for compatibility with Bundler
-      specs_data = marshal_dump_4_8(latest_specs)
+      specs_data = Measurometer.instrument("paquette.gem_server.marshal_specs") { marshal_dump_4_8(latest_specs) }
 
       # For .gz requests, compress the data
       if version.include?(".gz")
@@ -358,18 +388,20 @@ module Paquette
 
     def generate_latest_specs_array
       # Generate latest specs array - only the latest version of each gem
-      latest_versions = {}
-      @repository.gem_versions.each do |name, version|
-        if !latest_versions[name] || Gem::Version.new(version) > Gem::Version.new(latest_versions[name])
-          latest_versions[name] = version
+      Measurometer.instrument("paquette.gem_server.generate_latest_specs_array") do
+        latest_versions = {}
+        @repository.gem_versions.each do |name, version|
+          if !latest_versions[name] || Gem::Version.new(version) > Gem::Version.new(latest_versions[name])
+            latest_versions[name] = version
+          end
         end
-      end
 
-      specs = []
-      latest_versions.each do |name, version|
-        specs << [name.to_s, version.to_s, "ruby"]
+        specs = []
+        latest_versions.each do |name, version|
+          specs << [name.to_s, version.to_s, "ruby"]
+        end
+        specs
       end
-      specs
     end
 
     def marshal_dump_4_8(obj)
@@ -383,11 +415,13 @@ module Paquette
 
     def gzip_compress(data)
       # Create proper gzip format with headers, checksums, etc.
-      StringIO.open do |io|
-        Zlib::GzipWriter.wrap(io) do |gz|
-          gz.write(data)
+      Measurometer.instrument("paquette.gem_server.gzip_compress") do
+        StringIO.open do |io|
+          Zlib::GzipWriter.wrap(io) do |gz|
+            gz.write(data)
+          end
+          io.string
         end
-        io.string
       end
     end
 

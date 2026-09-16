@@ -3,6 +3,7 @@ require_relative "../tarball"
 require "json"
 require "tempfile"
 require "time"
+require "measurometer"
 
 module Paquette
   class NpmServer
@@ -25,34 +26,41 @@ module Paquette
       end
 
       def package_names
-        names = []
-        each_child_dir(@packages_dir) do |path, basename|
-          if NpmRepository.scoped?(basename)
-            each_child_dir(path) { |_, scoped| names << "#{basename}/#{scoped}" }
-          else
-            names << basename
+        Measurometer.instrument("paquette.npm_repository.package_names") do
+          names = []
+          each_child_dir(@packages_dir) do |path, basename|
+            if NpmRepository.scoped?(basename)
+              each_child_dir(path) { |_, scoped| names << "#{basename}/#{scoped}" }
+            else
+              names << basename
+            end
           end
+          names.sort
         end
-        names.sort
       end
 
+      # A directory listing per package in the corpus.
       def package_versions
-        package_names.flat_map do |package_name|
-          versions_for_package(package_name).map { |version| [package_name, version] }
-        end.sort
+        Measurometer.instrument("paquette.npm_repository.package_versions") do
+          package_names.flat_map do |package_name|
+            versions_for_package(package_name).map { |version| [package_name, version] }
+          end.sort
+        end
       end
 
       def versions_for_package(package_name)
         dir = package_dir(package_name)
         return [] unless dir && Dir.exist?(dir)
 
-        basename = File.basename(package_name)
-        versions = Dir.glob(File.join(dir, "*.tgz")).filter_map do |tarball_path|
-          filename = File.basename(tarball_path, ".tgz")
-          match = filename.match(/\A#{Regexp.escape(basename)}-(.+)\z/)
-          match && match[1]
+        Measurometer.instrument("paquette.npm_repository.versions_for_package") do
+          basename = File.basename(package_name)
+          versions = Dir.glob(File.join(dir, "*.tgz")).filter_map do |tarball_path|
+            filename = File.basename(tarball_path, ".tgz")
+            match = filename.match(/\A#{Regexp.escape(basename)}-(.+)\z/)
+            match && match[1]
+          end
+          NpmRepository.sort_versions(versions)
         end
-        NpmRepository.sort_versions(versions)
       end
 
       def package_file_path(package_name, version)
@@ -90,9 +98,18 @@ module Paquette
         {"latest" => NpmRepository.max_release_version(versions)}.merge(stored)
       end
 
+      # Assembling this means reading the package.json out of every version's
+      # tarball and hashing every one of them; the cache below is what keeps a
+      # second request from paying for it again.
       def package_metadata(package_name)
+        Measurometer.instrument("paquette.npm_repository.package_metadata") { build_metadata(package_name) }
+      end
+
+      def build_metadata(package_name)
         versions = versions_for_package(package_name)
         return nil if versions.empty?
+
+        Measurometer.add_distribution_value("paquette.npm_repository.metadata_versions", versions.length)
 
         tags = dist_tags(package_name)
         latest_info = package_info(package_name, tags["latest"]) || {}
@@ -138,10 +155,12 @@ module Paquette
       def add_package(binary_data, dist_tags: {})
         raise InvalidPackage, "Empty package payload" if binary_data.nil? || binary_data.empty?
 
+        Measurometer.add_distribution_value("paquette.npm_repository.add_package_bytes", binary_data.bytesize)
+
         tmp = Tempfile.new(["paquette_publish", ".tgz"])
         begin
           tmp.binmode
-          tmp.write(binary_data)
+          Measurometer.instrument("paquette.npm_repository.write_upload") { tmp.write(binary_data) }
           tmp.close
 
           info = begin
@@ -181,8 +200,10 @@ module Paquette
         path = package_file_path(package_name, version)
         raise PackageNotFound, "#{package_name}@#{version} not found" unless path && File.exist?(path)
 
-        FileUtils.mv(path, tomb_file_path(package_name, version))
-        drop_dist_tags_for(package_name, version)
+        Measurometer.instrument("paquette.npm_repository.yank_package") do
+          FileUtils.mv(path, tomb_file_path(package_name, version))
+          drop_dist_tags_for(package_name, version)
+        end
         nil
       end
 
@@ -291,7 +312,11 @@ module Paquette
         stat = File.stat(path)
         key = [path, aspect, stat.mtime.to_f, stat.size]
         @cache ||= {}
-        return @cache[key] if @cache.key?(key)
+        if @cache.key?(key)
+          Measurometer.increment_counter("paquette.npm_repository.cache_hit.#{aspect}")
+          return @cache[key]
+        end
+        Measurometer.increment_counter("paquette.npm_repository.cache_miss.#{aspect}")
 
         # Bounded, or a long-lived server would hold every package.json ever read.
         @cache.shift if @cache.size >= 1024

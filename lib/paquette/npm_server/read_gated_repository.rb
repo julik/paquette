@@ -1,4 +1,5 @@
 require "delegate"
+require "measurometer"
 require_relative "npm_repository"
 
 module Paquette
@@ -14,32 +15,32 @@ module Paquette
       end
 
       def package_names
-        super.select { |name| @entitler.call(name: name) }
+        super.select { |name| entitled?(name: name) }
       end
 
       def package_versions
         super.select do |package_name, version|
-          @entitler.call(name: package_name, version: version)
+          entitled?(name: package_name, version: version)
         end
       end
 
       def versions_for_package(package_name)
-        return [] unless @entitler.call(name: package_name)
+        return [] unless entitled?(name: package_name)
 
         super.select do |version|
-          @entitler.call(name: package_name, version: version)
+          entitled?(name: package_name, version: version)
         end
       end
 
       def package_file_path(package_name, version)
-        if @entitler.call(name: package_name, version: version)
+        if entitled?(name: package_name, version: version)
           super
         end
       end
 
       # false rather than nil: callers treat this as a boolean.
       def package_exists?(package_name, version)
-        if @entitler.call(name: package_name, version: version)
+        if entitled?(name: package_name, version: version)
           !!super
         else
           false
@@ -47,13 +48,13 @@ module Paquette
       end
 
       def package_info(package_name, version)
-        if @entitler.call(name: package_name, version: version)
+        if entitled?(name: package_name, version: version)
           super
         end
       end
 
       def package_dependencies(package_name, version)
-        if @entitler.call(name: package_name, version: version)
+        if entitled?(name: package_name, version: version)
           super
         else
           {}
@@ -61,7 +62,7 @@ module Paquette
       end
 
       def dist_tags(package_name)
-        return {} unless @entitler.call(name: package_name)
+        return {} unless entitled?(name: package_name)
 
         entitled = versions_for_package(package_name)
         tags = super.select { |_tag, version| entitled.include?(version) }
@@ -71,7 +72,7 @@ module Paquette
       end
 
       def package_metadata(package_name)
-        return nil unless @entitler.call(name: package_name)
+        return nil unless entitled?(name: package_name)
 
         metadata = super
         return metadata unless metadata
@@ -99,6 +100,14 @@ module Paquette
 
         stamps = entitled_times.values.sort
         entitled_times.merge("created" => stamps.first, "modified" => stamps.last)
+      end
+
+      # The entitler is the caller's, and a listing calls it once per package in
+      # the corpus — an entitler that reaches for a database on every call is
+      # the usual reason a gated index is slower than an ungated one, and this
+      # is where that shows up.
+      def entitled?(**criteria)
+        Measurometer.instrument("paquette.npm_read_gate.entitled") { @entitler.call(**criteria) }
       end
 
       def add_package(*, **)

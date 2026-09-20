@@ -95,7 +95,7 @@ module Paquette
         handler.instance_variable_set(:@request, request)
         @@routes.perform_action(route, handler, request)
       end
-    rescue Routes::MalformedRequest => e
+    rescue Routes::BadRequest => e
       bad_request(e.message)
     end
 
@@ -236,10 +236,16 @@ module Paquette
       not_found(e.message)
     end
 
+    # Strip a prefix and a suffix. Interpolating the name into a regexp meant
+    # compiling one per call, and a name Regexp.escape could not make safe —
+    # invalid UTF-8 from a %xx — raised out of the compile itself.
     def version_from_tarball_name(package_name, tarball_name)
-      basename = File.basename(package_name.to_s)
-      match = tarball_name.to_s.match(/\A#{Regexp.escape(basename)}-(.+)\.tgz\z/)
-      match && match[1]
+      prefix = "#{File.basename(package_name.to_s)}-"
+      name = tarball_name.to_s
+      return nil unless name.start_with?(prefix) && name.end_with?(".tgz")
+
+      version = name.delete_suffix(".tgz")[prefix.length..]
+      version unless version.empty?
     end
 
     # The request's forwarded headers keep the URLs correct behind a TLS proxy.

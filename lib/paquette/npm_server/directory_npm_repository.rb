@@ -53,11 +53,10 @@ module Paquette
         return [] unless dir && Dir.exist?(dir)
 
         Measurometer.instrument("paquette.npm_repository.versions_for_package") do
-          basename = File.basename(package_name)
+          prefix = "#{File.basename(package_name)}-"
           versions = Dir.glob(File.join(dir, "*.tgz")).filter_map do |tarball_path|
-            filename = File.basename(tarball_path, ".tgz")
-            match = filename.match(/\A#{Regexp.escape(basename)}-(.+)\z/)
-            match && match[1]
+            version = File.basename(tarball_path, ".tgz").delete_prefix(prefix)
+            version unless version.empty? || version == File.basename(tarball_path, ".tgz")
           end
           NpmRepository.sort_versions(versions)
         end

@@ -111,10 +111,20 @@ module MalformedRequestHelpers
   end
 end
 
+module TimingHelpers
+  # Minitest::Test already has #time, hence the name.
+  def elapsed
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    yield
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+  end
+end
+
 module Minitest
   class Test
     include NpmTarballHelpers
     include ExternalTooling
     include MalformedRequestHelpers
+    include TimingHelpers
   end
 end

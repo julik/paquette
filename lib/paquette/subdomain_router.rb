@@ -57,7 +57,7 @@ module Paquette
       host = host.split(":").first if host.include?(":")
 
       # Extract the first part of the hostname (subdomain)
-      if (match = host.match(/^([a-z\-\d]+)\./))
+      if (match = host.match(/\A([a-z\-\d]+)\./))
         subdomain = match[1]
         # Only return if this subdomain is actually mapped
         @mappings.key?(subdomain) ? subdomain : nil

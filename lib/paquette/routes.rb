@@ -3,10 +3,16 @@ require "measurometer"
 
 module Paquette
   class Routes
-    # A request whose own bytes Rack could not parse — not a routing failure
-    # and not a server fault, so it is raised here and turned into a 400 by
-    # whichever server is dispatching. See Route#query_params.
-    class MalformedRequest < StandardError; end
+    # Raised when the fault is in the request's own bytes rather than in
+    # anything it asked for; whichever server is dispatching turns it into a
+    # 400.
+    class BadRequest < StandardError; end
+
+    # Rack could not parse the request. See Route#query_params.
+    class MalformedRequest < BadRequest; end
+
+    # Route matching ran past its budget. See Routes#match.
+    class MatchBudgetExceeded < BadRequest; end
 
     class Route
       attr_reader :method, :pattern, :block
@@ -28,8 +34,16 @@ module Paquette
         @method == request.request_method && @pattern.match(request.path_info)
       end
 
+      # Mustermann unescapes %xx, so a segment can arrive as bytes that are not
+      # valid UTF-8 — and then every regexp a handler runs on it raises
+      # ArgumentError instead of failing to match. No gem or package is named
+      # in invalid UTF-8, so it is refused at the door.
       def params(request)
-        @pattern.params(request.path_info)
+        @pattern.params(request.path_info).each_value do |value|
+          Array(value).each do |segment|
+            raise MalformedRequest, "Path segment is not valid UTF-8" unless segment.to_s.valid_encoding?
+          end
+        end
       end
 
       def perform_action(instance, request)
@@ -97,25 +111,47 @@ module Paquette
       end
     end
 
-    def self.draw(&block)
+    # Regexp.timeout bounds one match. Nothing bounds a table of them, and the
+    # bound it does give grows every time a route is added. Between candidates
+    # is the only place the router gets control back, so that is where the
+    # clock is checked: total matching costs the budget plus at most one
+    # timeout, whatever the table grows to.
+    DEFAULT_MATCH_BUDGET = 0.1
+
+    def self.draw(match_budget: DEFAULT_MATCH_BUDGET, &block)
       routes = []
       builder = RouteBuilder.new(routes)
       block.call(builder)
-      new(routes)
+      new(routes, match_budget: match_budget)
     end
 
-    def initialize(routes)
+    # For the linear_time? test; the request path does not need it.
+    attr_reader :routes
+
+    def initialize(routes, match_budget: DEFAULT_MATCH_BUDGET)
       @routes = routes
+      @match_budget = match_budget
     end
 
     def match(request)
       Measurometer.instrument("paquette.routes.match") do
-        @routes.find { |route| route.match?(request) }
+        deadline = now + @match_budget
+
+        @routes.find do |route|
+          raise MatchBudgetExceeded, "Route matching took longer than #{@match_budget}s" if now > deadline
+          route.match?(request)
+        end
       end
     end
 
     def perform_action(route, instance, request)
       route.perform_action(instance, request)
+    end
+
+    private
+
+    def now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
   end
 end

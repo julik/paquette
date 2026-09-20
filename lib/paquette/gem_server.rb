@@ -14,6 +14,14 @@ require_relative "gem_server/personalizer"
 
 module Paquette
   class GemServer
+    # \A..\z, not ^..$: Mustermann unescapes %0A into a real newline and line
+    # anchors let the rest of the segment ride along. NAME_CHAR is RubyGems'
+    # own charset for a name. Bounded so the split point cannot slide across a
+    # client-chosen length, which is quadratic on 3.1 — no memoization there.
+    NAME_CHAR = "[A-Za-z0-9_.-]"
+    GEM_SPEC_NAME = /\A(#{NAME_CHAR}{1,255}?)-(\d+\.\d+\.\d+#{NAME_CHAR}{0,255})\z/
+    GEM_FILENAME = /\A(#{NAME_CHAR}{1,255})-(\d+\.\d+\.\d+#{NAME_CHAR}{0,255})\.gem\z/
+
     @@routes = Routes.draw do |r|
       # Root endpoint
       r.get "/" do
@@ -80,7 +88,7 @@ module Paquette
 
       r.get "/quick/Marshal.4.8/:gem_spec_name.gemspec.rz" do |gem_spec_name:|
         # Parse gem name and version from the spec name (e.g., "zip_kit-6.3.2")
-        if (match = gem_spec_name.match(/^(.+?)-(\d+\.\d+\.\d+.*)$/))
+        if (match = gem_spec_name.match(GEM_SPEC_NAME))
           gem_name, version = match[1], match[2]
 
           if @repository.gem_exists?(gem_name, version)
@@ -104,7 +112,7 @@ module Paquette
 
       r.get "/gems/:gem_filename" do |gem_filename:|
         # Extract gem name and version from filename
-        if (match = gem_filename.match(/^(.+)-(\d+\.\d+\.\d+.*)\.gem$/))
+        if (match = gem_filename.match(GEM_FILENAME))
           gem_name, version = match[1], match[2]
 
           if @repository.gem_exists?(gem_name, version)
@@ -143,7 +151,7 @@ module Paquette
         @request = request
         @@routes.perform_action(route, self, request)
       end
-    rescue Routes::MalformedRequest => e
+    rescue Routes::BadRequest => e
       bad_request(e.message)
     end
 

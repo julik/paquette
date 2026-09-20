@@ -87,7 +87,10 @@ module Paquette
     end
 
     def rewrite(entry, root, &block)
-      relative_path = entry.name.sub(/\A#{Regexp.escape(root)}\//, "")
+      # A tar entry name comes from an uploaded tarball, so it reaches here
+      # before anything has vetted its bytes; a regexp built around it would
+      # raise out of its own compile.
+      relative_path = entry.name.delete_prefix("#{root}/")
 
       content = if block
         output = StringIO.new(+"".b)

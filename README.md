@@ -171,6 +171,25 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 - `DELETE /{package}/-rev/{rev}` - Unpublish a package
 - `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
 
+## Regexp timeouts
+
+Every path this server answers goes through a regexp with a client-chosen string on the other side of it — the route patterns Mustermann compiles, then the ones the handlers use to take a gem name and version back out of the segment that matched. None of them backtrack in more than linear time, and `test/regexp_linearity_test.rb` fails the build if someone adds one that does. That is a property of the patterns rather than a guarantee about the runtime, so a middleware puts a ceiling under it:
+
+```ruby
+use Paquette::RegexpTimeout               # 0.25s, per match
+use Paquette::RegexpTimeout, seconds: 0.05
+```
+
+A match that runs out of time becomes a `400`. Two things to know before tuning the number: `Regexp.timeout` is per match rather than per request, and it is process-global rather than per-thread — which is why the middleware counts requests rather than setting and restoring around each one. On Ruby 3.1, which has no `Regexp.timeout`, it stands aside.
+
+Per match is not per request, and the route table holds a dozen or more of them, so `Routes#match` carries a budget of its own. Between candidates is the only point the router gets control back from the regexp engine, so that is where the clock is checked; running past it raises `Routes::MatchBudgetExceeded` and the server answers `400`. Total matching therefore costs the budget plus at most one timeout, and stays there as routes are added:
+
+```ruby
+Paquette::Routes.draw(match_budget: 0.1) { |r| ... }
+```
+
+The two are not redundant. The budget bounds route matching; the middleware's ceiling is what covers the patterns the handlers run afterwards on the segment that matched, and Rack's own parsing.
+
 ## Instrumentation
 
 Everything expensive in Paquette is wrapped in a [Measurometer](https://github.com/julik/measurometer) block: the whole-corpus index renders, the tarball and gem reads under them, personalization repacks and their cache hits and misses, and the entitler a gated repository calls once per package.

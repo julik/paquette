@@ -1,0 +1,62 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# A tiny dev server that serves *only* gems, wide open: anyone who can reach it
+# may push, yank and download. That is deliberate — it is the unwrapped
+# repository, which is what you want on localhost and never anywhere else.
+#
+#   bin/dev [port]
+#
+# Gems live in tmp/gems, which is gitignored, so a dev-time push leaves the
+# checked-in packages/ corpus alone.
+
+$stdout.sync = true
+
+require "bundler/setup"
+require "fileutils"
+require "rack"
+require "puma"
+require_relative "../lib/paquette"
+
+host = ENV.fetch("HOST", "127.0.0.1")
+port = Integer(ARGV[0] || ENV["PORT"] || 9292)
+gems_dir = File.expand_path("../tmp/gems", __dir__)
+
+FileUtils.mkdir_p(gems_dir)
+
+# No ReadGatedRepository, no Personalizer, no TokenAuthorization: a bare
+# repository is readwrite, and the server hands every request straight to it.
+repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+
+app = Rack::Builder.new do
+  use Paquette::RegexpTimeout
+  run Paquette::GemServer.new(repo)
+end.to_app
+
+server = Puma::Server.new(app)
+# Bind before announcing, so a port clash is an error rather than a banner
+# advertising a URL nothing is listening on.
+server.add_tcp_listener(host, port)
+
+url = "http://#{host}:#{port}"
+
+puts <<~BANNER
+  Paquette gem server — readwrite, no auth
+  Gems on disk:  #{gems_dir}
+
+    Push:     gem push --host #{url} pkg/your-gem-0.1.0.gem
+    Yank:     gem yank --host #{url} your-gem -v 0.1.0
+    Install:  gem install your-gem --source #{url}
+    Gemfile:  gem "your-gem", source: "#{url}"
+
+  Listening on #{url} — ^C to stop.
+BANNER
+
+%w[INT TERM].each do |sig|
+  trap(sig) do
+    puts "\nStopping."
+    server.stop
+  end
+end
+
+server.run.join

@@ -108,6 +108,17 @@ module Paquette
         "#{version} #{deps}|checksum:#{fields.fetch("checksum")},ruby:#{fields.fetch("ruby")}"
       end
 
+      # An already-rendered line with only its checksum replaced, for
+      # repositories that serve rewritten gem files. Every other field still
+      # describes the gem — a repack touches neither dependencies nor
+      # requirements — so a wrapper may keep the line a sidecar cache already
+      # paid for instead of re-deriving it from the spec. Lives here because
+      # this class owns the line format: the one place that renders
+      # "checksum:" is the one place allowed to find it again.
+      def self.replace_checksum(line, checksum)
+        line.sub(/checksum:[0-9a-f]+/) { "checksum:#{checksum}" }
+      end
+
       # Gem::Requirement#to_s joins several clauses with ", " — but a comma
       # separates *dependencies* in this format, so within one dependency the
       # clauses are joined with "&" instead: ">= 1.0, < 3" becomes ">= 1.0&< 3".

@@ -1,0 +1,133 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600&family=Archivo+Black&family=Crimson+Pro:ital,wght@0,400;0,600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --sand: #f2e7d3;
+    --cream: #fcf6ea;
+    --ink: #17130f;
+    --ink-soft: #5c5147;
+    --orange: #d9531e;
+    --orange-hover: #c24514;
+    --line-muted: #c9bfae;
+
+    --font-display: "Archivo Black", "Helvetica Neue", Arial, sans-serif;
+    --font-body: "Crimson Pro", Georgia, "Times New Roman", serif;
+    --font-label: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--sand);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: clamp(1.0625rem, 1rem + 0.3vw, 1.125rem);
+    line-height: 1.6;
+  }
+
+  main {
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: clamp(2.5rem, 8vw, 6rem) 1.5rem clamp(2rem, 6vw, 4rem);
+    text-align: center;
+  }
+
+  /* The wordmark is the heading. It sets its own width against the measure,
+     so it stays a mark rather than growing into a banner. */
+  .masthead {
+    /* One source of truth for how wide the mark renders: the width property
+       and the optical correction below are both computed from it, so the two
+       cannot drift apart. */
+    --masthead-width: min(100%, 26rem);
+    /* The ink sits right of the viewBox centre — the trailing flourish of the
+       final "e" runs out further than the "P" reaches back — so a box-centred
+       mark reads as shifted right. This is the fraction of its own width the
+       mark comes back by. */
+    --masthead-optical-shift: 0.1;
+
+    display: block;
+    width: var(--masthead-width);
+    height: auto;
+    /* auto side margins rather than text-align: an inline-block mark would
+       sit on the text baseline and carry its descender gap with it. */
+    margin: 0 auto clamp(2rem, 5vw, 3rem);
+    /* Derived from the rendered width rather than set in pixels, so the
+       correction scales with the mark — the same at the 26rem cap as on a
+       phone, where the mark is half the size and a fixed nudge would be
+       twice the shift.
+
+       The min() is the floor under it: once the viewport is narrow enough
+       that the mark nearly fills it, the full shift would push the mark off
+       the left edge and put a horizontal scrollbar under the page. There the
+       correction gives up whatever it has to and takes the space that is
+       left. Every width with room for the full shift gets the full shift. */
+    transform: translateX(calc(-1 * min(
+      var(--masthead-width) * var(--masthead-optical-shift),
+      (100vw - var(--masthead-width)) / 2
+    )));
+  }
+
+  .masthead path { fill: var(--ink); }
+
+  /* The one line the server templates in. Sized as a lede, because on this
+     page it is the whole of the copy. */
+  .blurb {
+    margin: 0 auto;
+    font-size: clamp(1.125rem, 1rem + 0.7vw, 1.3125rem);
+    line-height: 1.45;
+    max-width: 38rem;
+  }
+
+  .rule {
+    border: 0;
+    border-top: 2px solid var(--ink);
+    margin: clamp(2rem, 5vw, 3rem) 0 1.25rem;
+  }
+
+  footer {
+    font-family: var(--font-label);
+    font-size: 0.875rem;
+    line-height: 1.45;
+    color: var(--ink-soft);
+  }
+
+  a {
+    color: var(--orange);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+
+  a:hover { color: var(--orange-hover); }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --sand: #17130f;
+      --ink: #f2e7d3;
+      --ink-soft: #c9bfb2;
+      --orange: #efa23f;
+      --orange-hover: #f5b862;
+    }
+  }
+</style>
+
+<main>
+  {{masthead}}
+
+  <p class="blurb">{{blurb}}</p>
+
+  <hr class="rule">
+
+  <footer>
+    <!-- No version, here or in a header: naming the build is handing a
+         scanner the list of exploits that work on it. -->
+    <span>Served by <a href="https://github.com/julik/paquette">Paquette</a>, a slightly unhinged package registry. A <a href="https://stanquette.nl">Stanquette</a> joint.</span>
+  </footer>
+</main>

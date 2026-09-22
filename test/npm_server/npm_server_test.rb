@@ -24,7 +24,8 @@ class NpmServerTest < Minitest::Test
   def test_root_endpoint
     get "/"
     assert_equal 200, last_response.status
-    assert_equal "Paquette NPM Repository", last_response.body
+    assert_equal "text/html", last_response.content_type.split(";").first
+    assert_includes last_response.body, Paquette::NpmServer::DEFAULT_BLURB
   end
 
   # A scanner sending a multipart Content-Type with no body: the client's

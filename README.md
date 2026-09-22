@@ -171,6 +171,32 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 - `DELETE /{package}/-rev/{rev}` - Unpublish a package
 - `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
 
+## The index page
+
+`GET /` is the only thing in here a human ever looks at, so it is one HTML page — the wordmark, one sentence, a rule — and both servers serve the same one. The sentence is the only part that differs:
+
+```ruby
+Paquette::GemServer.new(repo)  # "This server provides RubyGems packages..."
+Paquette::NpmServer.new(repo)  # "This server provides npm packages..."
+```
+
+Say something else by handing in your own blurb:
+
+```ruby
+Paquette::GemServer.new(repo, index: Paquette::IndexPage.new("Gems for Stanquette staff. Ask Julik for a token."))
+```
+
+`index:` takes any Rack app, which is the whole of the plug — the default is an `IndexPage`, but a lambda is fine, and so is anything else that answers `#call(env)`:
+
+```ruby
+Paquette::NpmServer.new(repo, index: ->(_env) { [302, {"location" => "https://docs.example.com"}, []] })
+Paquette::NpmServer.new(repo, index: ->(_env) { [404, {}, []] })  # no root at all
+```
+
+The blurb is HTML-escaped on the way in, so it is a sentence and not a template. Wanting markup means wanting your own index app, which is a page you own end to end rather than a hole in this one.
+
+The page names no version, in the body or in a header. A registry that announces its build is handing a scanner the list of exploits that work on it.
+
 ## Regexp timeouts
 
 Every path this server answers goes through a regexp with a client-chosen string on the other side of it — the route patterns Mustermann compiles, then the ones the handlers use to take a gem name and version back out of the segment that matched. None of them backtrack in more than linear time, and `test/regexp_linearity_test.rb` fails the build if someone adds one that does. That is a property of the patterns rather than a guarantee about the runtime, so a middleware puts a ceiling under it:

@@ -183,14 +183,14 @@ Paquette::NpmServer.new(repo)  # "This server provides npm packages..."
 Say something else by handing in your own blurb:
 
 ```ruby
-Paquette::GemServer.new(repo, index: Paquette::IndexPage.new("Gems for Stanquette staff. Ask Julik for a token."))
+Paquette::GemServer.new(repo, placeholder_app: Paquette::IndexPage.new("Gems for Stanquette staff. Ask Julik for a token."))
 ```
 
-`index:` takes any Rack app, which is the whole of the plug — the default is an `IndexPage`, but a lambda is fine, and so is anything else that answers `#call(env)`:
+`placeholder_app:` takes any Rack app — the name says what it has to be — which is the whole of the plug. The default is an `IndexPage`, but a lambda is fine, and so is anything else that answers `#call(env)`:
 
 ```ruby
-Paquette::NpmServer.new(repo, index: ->(_env) { [302, {"location" => "https://docs.example.com"}, []] })
-Paquette::NpmServer.new(repo, index: ->(_env) { [404, {}, []] })  # no root at all
+Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [302, {"location" => "https://docs.example.com"}, []] })
+Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [404, {}, []] })  # no root at all
 ```
 
 The blurb is HTML-escaped on the way in, so it is a sentence and not a template. Wanting markup means wanting your own index app, which is a page you own end to end rather than a hole in this one.

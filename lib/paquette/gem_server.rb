@@ -27,7 +27,7 @@ module Paquette
     @@routes = Routes.draw do |r|
       # Root endpoint
       r.get "/" do
-        @index.call(@request.env)
+        @placeholder_app.call(@request.env)
       end
 
       # API endpoints
@@ -200,9 +200,9 @@ module Paquette
     # IndexPage, which is the default and takes the sentence to print.
     DEFAULT_BLURB = "This server provides RubyGems packages. Point your gem source at it and bundle as usual."
 
-    def initialize(repository, index: IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"))
+    def initialize(repository, placeholder_app: IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"))
       @repository = repository
-      @index = index
+      @placeholder_app = placeholder_app
     end
 
     def call(env)

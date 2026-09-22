@@ -8,11 +8,12 @@ module Paquette
   # is the same page.
   #
   # It is a Rack app, which is the whole of the plug: a server takes whatever
-  # was handed to it as `index:` and calls it. Swap in your own and you get
+  # was handed to it as `placeholder_app:` and calls it — the name says what
+  # it has to be. Swap in your own and you get
   # your own root — a redirect to a docs site, a status page, a bare 404:
   #
-  #   Paquette::GemServer.new(repo, index: IndexPage.new("Gems for staff only."))
-  #   Paquette::NpmServer.new(repo, index: ->(_env) { [302, {"location" => "/docs"}, []] })
+  #   Paquette::GemServer.new(repo, placeholder_app: IndexPage.new("Gems for staff only."))
+  #   Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [302, {"location" => "/docs"}, []] })
   #
   # The blurb is HTML-escaped on the way in, so it is a sentence rather than
   # a template — a caller wanting markup is a caller wanting their own index

@@ -37,8 +37,8 @@ class IndexPageTest < Minitest::Test
     redirect = ->(_env) { [302, {"location" => "/docs"}, []] }
 
     [
-      Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR), index: redirect),
-      Paquette::NpmServer.new(Paquette::NpmServer::DirectoryNpmRepository.new(FIXTURE_NPM_DIR), index: redirect)
+      Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR), placeholder_app: redirect),
+      Paquette::NpmServer.new(Paquette::NpmServer::DirectoryNpmRepository.new(FIXTURE_NPM_DIR), placeholder_app: redirect)
     ].each do |server|
       status, headers, _ = server.call(Rack::MockRequest.env_for("http://example.com/"))
       assert_equal 302, status

@@ -19,7 +19,7 @@ module Paquette
 
     @@routes = Routes.draw do |r|
       r.get "/" do
-        @index.call(@request.env)
+        @placeholder_app.call(@request.env)
       end
 
       r.get "/-/ping" do
@@ -154,13 +154,13 @@ module Paquette
     # IndexPage, which is the default and takes the sentence to print.
     DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
 
-    def initialize(repository, index: IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"))
+    def initialize(repository, placeholder_app: IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"))
       @repository = if repository.is_a?(String)
         DirectoryNpmRepository.new(repository)
       else
         repository
       end
-      @index = index
+      @placeholder_app = placeholder_app
     end
 
     def call(env)

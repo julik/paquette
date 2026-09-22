@@ -1,4 +1,4 @@
-# Paquette
+<img src="img/paquette-wordmark-logo.png" alt="Paquette" width="420">
 
 Paquette is a (sligtly unhinged) Rack-based server for libraries. At the moment it serves gems and NPM packages. It is very basic and is made to serve packages gated by a licensing mechanism, which is supposed to be BYO.
 

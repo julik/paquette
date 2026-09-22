@@ -20,4 +20,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency "rack", "~> 3.0"
   spec.add_dependency "mustermann", "~> 3.0"
   spec.add_dependency "measurometer", "~> 1.3"
+  spec.add_dependency "rotp", "~> 6.3"
 end

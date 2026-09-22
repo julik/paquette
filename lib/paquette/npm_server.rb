@@ -8,6 +8,7 @@ require_relative "npm_server/npm_repository"
 require_relative "npm_server/directory_npm_repository"
 require_relative "npm_server/read_gated_repository"
 require_relative "npm_server/personalizer"
+require_relative "otp_gate"
 
 module Paquette
   class NpmServer
@@ -104,6 +105,41 @@ module Paquette
     # Strip a prefix and a suffix. Interpolating the name into a regexp meant
     # compiling one per call, and a name Regexp.escape could not make safe —
     # invalid UTF-8 from a %xx — raised out of the compile itself.
+    # How npm speaks OTP. The code arrives in npm's own `npm-otp` header; the
+    # plain `OTP` header is accepted as a fallback, which is this registry's
+    # policy for a publish scripted with curl by somebody with the RubyGems
+    # habit — npm itself never sends it. A refusal is a 401 the npm client
+    # recognizes as a challenge — the `www-authenticate: OTP` header and the
+    # phrase "one-time pass" in the body, both, so neither client-side
+    # detection path is load-bearing. A wrong code is challenged again rather
+    # than refused flat, so npm prompts for a fresh code instead of reporting
+    # a failed login.
+    module OtpDialect
+      module_function
+
+      def code_in(env)
+        env["HTTP_NPM_OTP"] || env["HTTP_OTP"]
+      end
+
+      def otp_missing
+        challenge("This registry requires a one-time password. Retry with the npm-otp header.")
+      end
+
+      def otp_rejected
+        challenge("The one-time password was not accepted. Retry with a fresh code.")
+      end
+
+      def challenge(message)
+        [401, {"www-authenticate" => "OTP"}, [message]]
+      end
+    end
+
+    # An OtpGate that reads and refuses the way npm does — see the gem-side
+    # twin.
+    def self.otp_gate(secret:, issuer:, drift: 30)
+      OtpGate.new(secret: secret, issuer: issuer, drift: drift, dialect: OtpDialect)
+    end
+
     def self.version_from_tarball_name(package_name, tarball_name)
       prefix = "#{File.basename(package_name.to_s)}-"
       name = tarball_name.to_s

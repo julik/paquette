@@ -15,5 +15,6 @@ module Paquette
   require_relative "paquette/gem_server/gem_repacker"
   require_relative "paquette/npm_repacker"
   require_relative "paquette/token_authorization"
+  require_relative "paquette/otp_gate"
   require_relative "paquette/regexp_timeout"
 end

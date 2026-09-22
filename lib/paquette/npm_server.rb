@@ -9,6 +9,7 @@ require_relative "npm_server/directory_npm_repository"
 require_relative "npm_server/read_gated_repository"
 require_relative "npm_server/personalizer"
 require_relative "otp_gate"
+require_relative "index_page"
 
 module Paquette
   class NpmServer
@@ -18,7 +19,7 @@ module Paquette
 
     @@routes = Routes.draw do |r|
       r.get "/" do
-        text_ok("Paquette NPM Repository")
+        @placeholder_app.call(@request.env)
       end
 
       r.get "/-/ping" do
@@ -149,12 +150,17 @@ module Paquette
       version unless version.empty?
     end
 
-    def initialize(repository)
+    # The page a browser gets at the root. Any Rack app will do — see
+    # IndexPage, which is the default and takes the sentence to print.
+    DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
+
+    def initialize(repository, placeholder_app: IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"))
       @repository = if repository.is_a?(String)
         DirectoryNpmRepository.new(repository)
       else
         repository
       end
+      @placeholder_app = placeholder_app
     end
 
     def call(env)

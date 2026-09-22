@@ -17,7 +17,7 @@ class SubdomainRouterIntegrationTest < Minitest::Test
   def test_gem_subdomain_routing
     get "/", {}, {"HTTP_HOST" => "gem.example.com"}
     assert_equal 200, last_response.status
-    assert_equal "Paquette RubyGems Repository", last_response.body
+    assert_includes last_response.body, Paquette::GemServer::DEFAULT_BLURB
   end
 
   def test_gem_subdomain_api_endpoints
@@ -46,7 +46,7 @@ class SubdomainRouterIntegrationTest < Minitest::Test
     # Test that requests to npm.example.com are routed to NpmServer
     get "/", {}, {"HTTP_HOST" => "npm.example.com"}
     assert_equal 200, last_response.status
-    assert_equal "Paquette NPM Repository", last_response.body
+    assert_includes last_response.body, Paquette::NpmServer::DEFAULT_BLURB
   end
 
   def test_npm_subdomain_ping_endpoint
@@ -97,14 +97,14 @@ class SubdomainRouterIntegrationTest < Minitest::Test
     # Test that localhost with port works for gem subdomain
     get "/", {}, {"HTTP_HOST" => "gem.localhost:9292"}
     assert_equal 200, last_response.status
-    assert_equal "Paquette RubyGems Repository", last_response.body
+    assert_includes last_response.body, Paquette::GemServer::DEFAULT_BLURB
   end
 
   def test_localhost_with_port_npm_subdomain
     # Test that localhost with port works for npm subdomain
     get "/", {}, {"HTTP_HOST" => "npm.localhost:9292"}
     assert_equal 200, last_response.status
-    assert_equal "Paquette NPM Repository", last_response.body
+    assert_includes last_response.body, Paquette::NpmServer::DEFAULT_BLURB
   end
 
   def test_gem_subdomain_gem_download

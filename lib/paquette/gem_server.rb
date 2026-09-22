@@ -12,6 +12,7 @@ require_relative "gem_server/directory_gem_repository"
 require_relative "gem_server/read_gated_repository"
 require_relative "gem_server/personalizer"
 require_relative "otp_gate"
+require_relative "index_page"
 
 module Paquette
   class GemServer
@@ -26,7 +27,7 @@ module Paquette
     @@routes = Routes.draw do |r|
       # Root endpoint
       r.get "/" do
-        text_ok("Paquette RubyGems Repository")
+        @placeholder_app.call(@request.env)
       end
 
       # API endpoints
@@ -195,8 +196,13 @@ module Paquette
     # accepts both. Callers typically construct the stack per-request so
     # user-specific state (entitlements, license keys) is captured in
     # plain closures rather than stored on the server.
-    def initialize(repository)
+    # The page a browser gets at the root. Any Rack app will do — see
+    # IndexPage, which is the default and takes the sentence to print.
+    DEFAULT_BLURB = "This server provides RubyGems packages. Point your gem source at it and bundle as usual."
+
+    def initialize(repository, placeholder_app: IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"))
       @repository = repository
+      @placeholder_app = placeholder_app
     end
 
     def call(env)

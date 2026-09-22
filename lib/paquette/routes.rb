@@ -148,6 +148,29 @@ module Paquette
       route.perform_action(instance, request)
     end
 
+    # What a request would dispatch to, named. `name` is the route's
+    # metric_name — the pattern as written, one stable string per route — and
+    # `params` is what the pattern extracted from the path, symbol-keyed.
+    Recognition = Data.define(:name, :params)
+
+    # Recognize without performing, for callers that must name a request
+    # before handling it — an instrumentation action, a log field — and may
+    # not touch the body doing so: only the path is read, never the query
+    # parser that reaches into the input. Returns nil for a request no route
+    # wants. A matched path whose segments fail the UTF-8 check still gets its
+    # name, with empty params — the name is knowable, the values are garbage.
+    def recognize(request)
+      route = match(request)
+      return nil unless route
+
+      params = begin
+        route.params(request).transform_keys(&:to_sym)
+      rescue BadRequest
+        {}
+      end
+      Recognition.new(name: route.metric_name, params: params)
+    end
+
     private
 
     def now

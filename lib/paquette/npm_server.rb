@@ -73,6 +73,46 @@ module Paquette
       end
     end
 
+    # What a request would dispatch to, without dispatching it — the npm twin
+    # of GemServer.route_for, with the same purpose: naming a request in front
+    # of a cache without a parallel routing table in the application. The
+    # scoped-name normalization below is applied first, so a package_name
+    # param comes back in one spelling ("@scope/name") whichever way npm sent
+    # it. Only the path is read.
+    def self.route_for(env)
+      env = env.merge("PATH_INFO" => normalize_scoped_path(env["PATH_INFO"].to_s))
+      @@routes.recognize(Rack::Request.new(env))
+    rescue Routes::BadRequest
+      nil
+    end
+
+    # npm sends the scope separator percent-encoded for metadata but plain in
+    # tarball URLs; normalizing makes a package name one path segment.
+    def self.normalize_scoped_path(path)
+      match = SCOPED_PATH.match(path)
+      return path unless match
+
+      prefix, scope, name, rest = match.captures
+      "#{prefix}#{scope}%2F#{name}#{rest}"
+    end
+
+    # "helpers-1.0.0.tgz" under "@stanquette/helpers" is version "1.0.0";
+    # anything not shaped like that is no version at all. The split the
+    # tarball routes perform, exposed for callers turning route_for's params
+    # into a package and a version.
+    #
+    # Strip a prefix and a suffix. Interpolating the name into a regexp meant
+    # compiling one per call, and a name Regexp.escape could not make safe —
+    # invalid UTF-8 from a %xx — raised out of the compile itself.
+    def self.version_from_tarball_name(package_name, tarball_name)
+      prefix = "#{File.basename(package_name.to_s)}-"
+      name = tarball_name.to_s
+      return nil unless name.start_with?(prefix) && name.end_with?(".tgz")
+
+      version = name.delete_suffix(".tgz")[prefix.length..]
+      version unless version.empty?
+    end
+
     def initialize(repository)
       @repository = if repository.is_a?(String)
         DirectoryNpmRepository.new(repository)
@@ -102,11 +142,7 @@ module Paquette
     private
 
     def normalize_scoped_path(path)
-      match = SCOPED_PATH.match(path)
-      return path unless match
-
-      prefix, scope, name, rest = match.captures
-      "#{prefix}#{scope}%2F#{name}#{rest}"
+      self.class.normalize_scoped_path(path)
     end
 
     # The hot read path for `npm install`: one document covering every version
@@ -236,16 +272,8 @@ module Paquette
       not_found(e.message)
     end
 
-    # Strip a prefix and a suffix. Interpolating the name into a regexp meant
-    # compiling one per call, and a name Regexp.escape could not make safe —
-    # invalid UTF-8 from a %xx — raised out of the compile itself.
     def version_from_tarball_name(package_name, tarball_name)
-      prefix = "#{File.basename(package_name.to_s)}-"
-      name = tarball_name.to_s
-      return nil unless name.start_with?(prefix) && name.end_with?(".tgz")
-
-      version = name.delete_suffix(".tgz")[prefix.length..]
-      version unless version.empty?
+      self.class.version_from_tarball_name(package_name, tarball_name)
     end
 
     # The request's forwarded headers keep the URLs correct behind a TLS proxy.

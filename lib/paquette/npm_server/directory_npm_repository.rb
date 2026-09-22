@@ -4,6 +4,7 @@ require "json"
 require "tempfile"
 require "time"
 require "measurometer"
+require "digest"
 
 module Paquette
   class NpmServer
@@ -23,6 +24,21 @@ module Paquette
       def initialize(packages_dir)
         @packages_dir = packages_dir
         FileUtils.mkdir_p(@packages_dir)
+      end
+
+      # A digest of what the corpus holds — see the gem-side twin. Tarball
+      # paths carry publishes and unpublishes (an unpublish renames to a
+      # tomb), but a dist-tag write edits dist-tags.json in place: no path
+      # moves, so the write shows only in the file's own mtime.
+      def fingerprint
+        Measurometer.instrument("paquette.npm_repository.fingerprint") do
+          d = Digest::SHA256.new
+          Dir.glob(File.join(@packages_dir, "**", "*.tgz")).sort.each { |path| d << path }
+          Dir.glob(File.join(@packages_dir, "**", DIST_TAGS_FILE)).sort.each do |path|
+            d << path << File.mtime(path).to_f.to_s
+          end
+          d.base64digest
+        end
       end
 
       def package_names

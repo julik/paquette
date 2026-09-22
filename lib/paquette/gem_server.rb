@@ -131,6 +131,36 @@ module Paquette
       end
     end
 
+    # What a request would dispatch to, without dispatching it: a
+    # Routes::Recognition naming the route and carrying the path params, or
+    # nil for a request no route wants. For the caller that has to name a
+    # request before handling it — set a monitoring action, tag a log line —
+    # and has to do so in front of a cache, where the hit must be filed under
+    # the same name as the miss beneath it. Without this, every application
+    # re-implements the routing table above as a parallel set of regexes that
+    # drift the day a route changes. Only the path is read; a request this
+    # cannot recognize is one the server itself would refuse.
+    def self.route_for(env)
+      @@routes.recognize(Rack::Request.new(env))
+    rescue Routes::BadRequest
+      nil
+    end
+
+    # "zip_kit-6.2.1.gem" into ["zip_kit", "6.2.1"], or nil for a filename
+    # that is not one — the same split the download route performs, exposed
+    # for callers turning route_for's params into a package and a version.
+    # The dash rule is genuinely ambiguous ("a-1-1.0.0.gem"), so nothing
+    # outside this class should be guessing at it with a regex of its own.
+    def self.split_gem_filename(gem_filename)
+      name = gem_filename.to_s
+      # A %xx-mangled segment can arrive as bytes that are not valid UTF-8,
+      # and a regex run over those raises instead of failing to match.
+      return nil unless name.valid_encoding?
+
+      match = GEM_FILENAME.match(name)
+      match && [match[1], match[2]]
+    end
+
     # Build a gem server backed by `repository`. Reads, writes, and yanks
     # all flow through this one object — whether writes are accepted depends
     # on the wrapper chain the caller assembled. A ReadGatedRepository, for

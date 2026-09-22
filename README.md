@@ -3,27 +3,95 @@
   <img src="img/paquette-wordmark-logo.png" alt="Paquette" width="420">
 </picture>
 
-Paquette is a (sligtly unhinged) Rack-based server for libraries. At the moment it serves gems and NPM packages. It is very basic and is made to serve packages gated by a licensing mechanism, which is supposed to be BYO.
+Paquette is a (slightly unhinged) Rack-based server for libraries. At the moment it serves gems and NPM packages. It is designed to be small and embeddable in other Ruby web applications. You allocate a directory with packages and expose it through Paquette, all the while bringing your own authentication, limits, filtering and entitlements.
 
-Things are very in flux at the moment, but it may come in handy.
+In essence, it is a gem/NPM server for distributing commercial packages. I use
+it for https://shop.stanquette.nl and it is pretty neat!
 
-## Setup
+Things are somewhat in flux but Paquette is usable alright.
 
-1. Install dependencies:
-   ```bash
-   bundle install
-   ```
+## Basic setup
 
-2. Start the server:
-   ```bash
-   bundle exec puma
-   ```
+This is a Ruby library so you will need Ruby installed. To try a minimal setup, do a `bundle install` and start `bin/dev`. Try pushing a gem into Paquette and then adding the local server to your `Gemfile` - and then do a `bundle install` in your application for that custom gem.
 
-## Repository gating
+However, that is not how Paquette is primarily meant to be used. It is meant to be integrated into a larger Rails or Rack application. The key Paquette concepts are:
 
-Paquette is built on the premise that you can have a corpus of libraries you offer, and deduce - from the `Authorization` HTTP header or by other means - which packages a user may download. Only the packages they have access to get included in the API responses - version lists, checksum lists and so on.
+- The serving app object - this is what poses as a gem/NPM repo. It's a Rack app.
+- The repository object - that's the frontend for your stored packages.
+- The repository wrappers - that's how you can control fulfillment from Paquette.
 
-`Paquette::GemServer` itself is dumb: it takes one repository object and routes every read, push, and yank through it. You build the stack per request by nesting plain constructors — no DSL, no callbacks registered on the server, just wrappers wrapping wrappers. For example, inside a Rack endpoint:
+A very basic example: in your Rails app, define a Paquette server with gems inside your app's `storage/`:
+
+```ruby
+# routes.rb
+
+gem_dir = Rails.root.join("storage/gems")
+gem_repo = Paquette::GemServer::DirectoryGemRepository.new(gem_dir)
+gem_server = Paquette::GemServer.new(gem_repo)
+
+# Both package servers require a separate hostname
+constraints(->(req) { req.host.start_with?("gem.") }) do
+  mount gem_server, at: "/"
+end
+```
+
+Call your app with `gem.localhost:3000` (or whichever other port you use) and you should see the Paquette placeholder screen. You can then push gems into your Rails app using the `gem.localhost:3000` source URL. Setup for NPM is similar.
+
+The `Paquette::GemServer::DirectoryGemRepository` is a repository. The `Paquette::GemServer` is the Rack app that serves a repository.
+
+## Repository wrappers
+
+You can make your package server do interesting things by wrapping your `repo`. For example, to disallow gem pushes:
+
+```ruby
+# ...the rest as above
+gem_repo = Paquette::GemServer::ReadonlyRepository.new(gem_repo) # forbids yank and push
+gem_server = Paquette::GemServer.new(gem_repo)
+```
+
+You can also create your own entitlement checks. This allows you to customize which gems get offered to a specific user:
+
+```ruby
+# ...the rest as above
+gem_repo = Paquette::GemServer::ReadGatedRepository.new(gem_repo) do |name:, version: nil|
+  lic = Current.license
+  lic.package_names.include?(name)
+end
+gem_server = Paquette::GemServer.new(gem_repo)
+```
+
+Now the holder of the `license` stored in your `ActiveSupport::Current` for the request will only receive the gems included in their license's `package_names` list. And you can limit version access as well. This affects serving the actual packages, serving the indexes and anything else.
+
+Paquette also includes a _personalization_ wrapper.
+
+> [!IMPORTANT]
+> Personalizing a package changes its checksum, and the checksum may become unique for every license. Often, this is exactly what you want. However, if you _change_ how you personalize a package for a specific user, their package manager may detect the changed checksum and assume the package has been tampered with. So - if you do personalize, either let your users know that package checksums will change when you alter the personalization flow, or never change how packages get personalized.
+>
+> Personalizing packages thus has security implications.
+
+```ruby
+# ...the rest as above
+gem_repo = Paquette::GemServer::Personalizer.new(
+    gem_repo,
+
+    # Gets injected into the gemspec metadata as "paquette.license_key"
+    license_key: Current.license.serial,
+
+    # The cache's name for "who this gem is baked for" - anything the
+    # personalized contents depend on has to be part of it, or a cached
+    # artifact will be reused after the personalization has changed
+    personalization_key: Current.license.holder_name,
+
+    # Apply blanket edits to a specific magic comment in all Ruby files
+    magic_comment_replacements: {"# license: " => Current.license.serial},
+
+    # Inject files when repackaging the gem, hash of paths to contents
+    files: {"THANK-YOU.txt" => "Thank you for using this library!"}
+)
+gem_server = Paquette::GemServer.new(gem_repo)
+```
+
+You may want to construct your own Rack application when wiring all that up though:
 
 ```ruby
 def call(env)
@@ -47,28 +115,16 @@ def call(env)
 end
 ```
 
-Each line adds one capability:
-
-- `DirectoryGemRepository` reads `.gem` files from disk and accepts pushes and yanks.
-- `ReadGatedRepository` wraps a repository and filters every name/version through the block — unauthorized gems simply stop existing as far as the server is concerned. It also refuses writes outright: if you gate reads, you are saying this caller is not the right party to mutate the corpus, so `add_gem`/`yank_gem` raise `WriteNotAllowed` (which the server turns into a 403).
-- `Personalizer` wraps a repository and rewrites each served `.gem` on the fly to embed the user's license key.
-
 The NPM server is assembled exactly the same way, out of the same kind of parts - see [Usage for NPM packages](#usage-for-npm-packages).
 
-Because the wrappers are plain Ruby objects composed at the call site, per-user state (the `user` variable) is captured by ordinary closures. Drop a wrapper to disable that layer; add another by slotting in one more constructor. Whether the server will accept pushes and yanks is decided by what you build — wrap the base repo in `ReadGatedRepository` and writes are blocked; hand the server a bare `DirectoryGemRepository` (or your own wrapper that permits writes) and they go through.
+Because the wrappers are plain Ruby objects composed at the call site, per-user state (the `user` variable) is captured by ordinary closures. Drop a wrapper to disable that layer; add another by slotting in one more constructor. Whether the server will accept pushes and yanks is decided by what you build — wrap the base repo in `ReadonlyRepository` and writes are blocked; hand the server a bare `DirectoryGemRepository` (or your own wrapper that permits writes) and they go through.
 
-The server will run on `http://localhost:9292` by default. Note that the NPM registry and the Rubygems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
+The server will run on `http://localhost:9292` by default. Note that the NPM registry and the RubyGems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
 
-## Usage for gems
+You can publish gems two ways.
 
-Paquette contains a gem server. This is a separate Rack app which you can use without the NPM server, for example - inside of your Rails app. You can interact with it using `gem` commands, as if it were any other gem server, or by just placing stuff on the filesystem.
-
-### Publishing gems into Paquette
-
-You can publish gems two ways. 
-
-1. Place `.gem` files in the `gems/` directory. The filename should follow the format: `gemname-version.gem`
-2. Actually do a `gem push` - from your shell, do `gem push --host http://gem.localhost:9292 pkg/your-gem-0.1.0.gem` 
+1. Place `.gem` files in a per-gem directory under `gems/`, as `gems/gemname/gemname-version.gem`
+2. Actually do a `gem push` - from your shell, do `gem push --host http://gem.localhost:9292 pkg/your-gem-0.1.0.gem`
 
 Note that Paquette will use whichever auth you wrap it with - that is to say, in the default dev setup - _none._ I told you it is slightly unhinged.
 
@@ -80,7 +136,7 @@ To install gems from Paquette, set it as source in your Gemfile - and provide au
 gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gem.paquette.acme.com"
 ```
 
-### Gem API Endpoints
+The RubyGems API in Paquette supports the following endpoints:
 
 - `GET /` - Repository info
 - `GET /api/v1/dependencies` - Gem dependencies
@@ -117,9 +173,7 @@ def call(env)
 end
 ```
 
-The layers mean the same things they do for gems. `DirectoryNpmRepository` reads `.tgz` files from disk and accepts publishes and unpublishes; `ReadGatedRepository` filters every name/version through the block and refuses writes; `Personalizer` rewrites each served tarball on the fly.
-
-Two npm-specific notes:
+The layers mean the same things they do for gems, with a few quirks:
 
 - A gated `latest` follows the newest version the caller is entitled to, not the newest version that exists. Otherwise `npm install pkg` would resolve to a version the very next request refuses to serve.
 - `latest` never points at a prerelease while a stable release exists, which is what npm's own registry does.
@@ -135,7 +189,7 @@ packages/npm/@acme/widgets/widgets-1.0.0.tgz
 
 The scope stays on the package name but is dropped from the filename, exactly as in the tarball URLs npm follows (`/@acme/widgets/-/widgets-1.0.0.tgz`).
 
-### Personalization and integrity
+### Personalization and integrity with NPM packages
 
 npm records a `dist.integrity` hash for every version and refuses to install a tarball whose bytes do not match. A registry that rebuilds a tarball to serve it therefore has to rebuild it to *the same bytes* it published a hash for — so `Paquette::Tarball` writes archives that are byte-reproducible: entries sorted, mtimes carried over from the input, no build timestamp in the gzip header. `NpmRepacker` and `Personalizer` are built on that, and the published hashes are always taken from the personalized tarball rather than the original.
 
@@ -143,7 +197,7 @@ Magic comment replacements swap one whole comment line for another. A sourcemap 
 
 Because of that, the one-line rule is enforced rather than assumed. A replacement (or marker) containing a linebreak is refused when you build the stack — it used to have its newlines flattened to spaces, which published something other than what you wrote. And a marker the line match cannot reach is an error rather than a silent pass. `esbuild --minify` pulls a legal comment onto the end of a code line; the package would otherwise be served with no license key in it and nothing to say so — and `package.json` would still carry the key, so it would look personalized from the outside. A package with no marker at all is ordinary and repacks untouched.
 
-### Publishing packages into Paquette
+### Publishing NPM packages into Paquette
 
 1. Place `.tgz` files in the layout above. The filename should be `name-version.tgz`, scope excluded.
 2. Actually do an `npm publish` - from your shell, do `npm publish --registry http://npm.localhost:9292`.
@@ -176,73 +230,25 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 
 ## The index page
 
-`GET /` is the only thing in here a human ever looks at, so it is one HTML page — the wordmark, one sentence, a rule — and both servers serve the same one. The sentence is the only part that differs:
+You can customize the user-visible index page of your package server by supplying a Rack app that will serve it, like so:
 
 ```ruby
-Paquette::GemServer.new(repo)  # "This server provides RubyGems packages..."
-Paquette::NpmServer.new(repo)  # "This server provides npm packages..."
-```
-
-Say something else by handing in your own blurb:
-
-```ruby
+# Serve our index page
 Paquette::GemServer.new(repo, placeholder_app: Paquette::IndexPage.new("Gems for Stanquette staff. Ask Julik for a token."))
-```
 
-`placeholder_app:` takes any Rack app — the name says what it has to be — which is the whole of the plug. The default is an `IndexPage`, but a lambda is fine, and so is anything else that answers `#call(env)`:
-
-```ruby
+# ...or a redirect
 Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [302, {"location" => "https://docs.example.com"}, []] })
 Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [404, {}, []] })  # no root at all
 ```
-
-The blurb is HTML-escaped on the way in, so it is a sentence and not a template. Wanting markup means wanting your own index app, which is a page you own end to end rather than a hole in this one.
-
-The page names no version, in the body or in a header. A registry that announces its build is handing a scanner the list of exploits that work on it.
-
-## Regexp timeouts
-
-Every path this server answers goes through a regexp with a client-chosen string on the other side of it — the route patterns Mustermann compiles, then the ones the handlers use to take a gem name and version back out of the segment that matched. None of them backtrack in more than linear time, and `test/regexp_linearity_test.rb` fails the build if someone adds one that does. That is a property of the patterns rather than a guarantee about the runtime, so a middleware puts a ceiling under it:
-
-```ruby
-use Paquette::RegexpTimeout               # 0.25s, per match
-use Paquette::RegexpTimeout, seconds: 0.05
-```
-
-A match that runs out of time becomes a `400`. Two things to know before tuning the number: `Regexp.timeout` is per match rather than per request, and it is process-global rather than per-thread — which is why the middleware counts requests rather than setting and restoring around each one. On Ruby 3.1, which has no `Regexp.timeout`, it stands aside.
-
-Per match is not per request, and the route table holds a dozen or more of them, so `Routes#match` carries a budget of its own. Between candidates is the only point the router gets control back from the regexp engine, so that is where the clock is checked; running past it raises `Routes::MatchBudgetExceeded` and the server answers `400`. Total matching therefore costs the budget plus at most one timeout, and stays there as routes are added:
-
-```ruby
-Paquette::Routes.draw(match_budget: 0.1) { |r| ... }
-```
-
-The two are not redundant. The budget bounds route matching; the middleware's ceiling is what covers the patterns the handlers run afterwards on the segment that matched, and Rack's own parsing.
-
 ## Instrumentation
 
-Everything expensive in Paquette is wrapped in a [Measurometer](https://github.com/julik/measurometer) block: the whole-corpus index renders, the tarball and gem reads under them, personalization repacks and their cache hits and misses, and the entitler a gated repository calls once per package.
-
-Measurometer does nothing until a driver is attached, and adding one is the whole setup — it is API-compatible with Appsignal, so that is usually a single line in an initializer:
+Everything expensive in Paquette is wrapped in a [Measurometer](https://rubygems.org/gems/measurometer) block, so that you know how long things take. Measurometer does nothing until a driver is attached, so you may need to configure it:
 
 ```ruby
 Measurometer.drivers << Appsignal
 ```
 
-The metric paths are namespaced by layer, so a slow request can be attributed without reading the code:
-
-| Path | What it covers |
-| --- | --- |
-| `paquette.gem_server.*` / `paquette.npm_server.*` | Request dispatch and the work behind each endpoint |
-| `paquette.route.GET /info/:gem_name` | One span per route, named by the pattern rather than the path |
-| `paquette.gem_repository.*` / `paquette.npm_repository.*` | Directory listings, spec reads, publishes and yanks |
-| `paquette.gem_personalizer.*` / `paquette.npm_personalizer.*` | Per-licensee repacks, plus `cache_hit` / `cache_miss` counters |
-| `paquette.gem_repacker.*` / `paquette.npm_repacker.*` | The stages of a repack — unpack, rewrite, rebuild |
-| `paquette.tarball.*` | Inflate, deflate, tar walk and the SHA1/SHA512 integrity pass |
-| `paquette.gem_read_gate.entitled` / `paquette.npm_read_gate.entitled` | Your entitler block, which a listing calls once per package |
-| `paquette.token_authorization.authenticate` | Your token lookup, which runs before anything else on every request |
-
-Two numbers are worth a dashboard from the start. `paquette.gem_repository.sidecar_hit` against `sidecar_miss` says whether the compact index is being served from its cache or re-derived from the gems themselves, and the personalizer's `cache_hit` against `cache_miss` says the same for repacked tarballs — a miss rate that does not fall after warmup means something is invalidating the cache on every request.
+Metric paths that Paquette outputs are all prefixed with `paquette.` - the rest should be fairly self-explanatory.
 
 ## Running the tests
 
@@ -250,13 +256,8 @@ Two numbers are worth a dashboard from the start. `paquette.gem_repository.sidec
 bundle exec rake test
 ```
 
-Most of it is ordinary Ruby, but two parts drive real tooling, because a package registry that only ever answers its own test suite can be perfectly self-consistent and still serve something no client will accept:
-
-- `test/npm_server/npm_install_test.rb` runs the **npm CLI** on this machine against a Paquette booted on a loopback port.
-- `test/npm_server/docker_client_test.rb` runs npm **inside a container** (`test/docker/Dockerfile`) talking to a Paquette on the host through `host.docker.internal`. Nothing of Paquette's is in that container — it installs, verifies integrity, publishes and unpublishes the way a customer's machine would.
-
-Both skip themselves when node or docker is missing. That is convenient locally and dangerous in CI, where a skip looks exactly like a pass, so the workflow sets `PAQUETTE_REQUIRE_NPM=1` and `PAQUETTE_REQUIRE_DOCKER=1` — with those set, missing tooling fails the run instead of quietly removing the coverage.
+Most of it is ordinary Ruby, but we also have a few end-to-end tests, that require Docker and Node. You don't need either for using Paquette though.
 
 ## License
 
-Paquette is offered under the terms of the [O'Sassy license](https://osaasy.dev/) - basically, don't make it into your own product. Use it to sell your libraries. And godspeed!
+Paquette is offered under the terms of the [O'Sassy license](https://osaasy.dev/) - basically, **don't make it into your own product or a service.** Use it to sell your libraries. And godspeed!

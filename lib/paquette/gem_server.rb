@@ -9,6 +9,7 @@ require "measurometer"
 
 require_relative "routes"
 require_relative "gem_server/directory_gem_repository"
+require_relative "gem_server/readonly_repository"
 require_relative "gem_server/read_gated_repository"
 require_relative "gem_server/personalizer"
 require_relative "otp_gate"
@@ -294,7 +295,7 @@ module Paquette
 
       spec = @repository.add_gem(gem_data)
       text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
-    rescue ReadGatedRepository::WriteNotAllowed => e
+    rescue ReadonlyRepository::WriteNotAllowed => e
       [403, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::GemYanked => e
       [403, {"Content-Type" => "text/plain"}, [e.message]]
@@ -313,7 +314,7 @@ module Paquette
 
       @repository.yank_gem(gem_name, version)
       text_ok("Successfully yanked gem: #{gem_name}-#{version}")
-    rescue ReadGatedRepository::WriteNotAllowed => e
+    rescue ReadonlyRepository::WriteNotAllowed => e
       [403, {"Content-Type" => "text/plain"}, [e.message]]
     rescue DirectoryGemRepository::GemNotFound => e
       not_found(e.message)

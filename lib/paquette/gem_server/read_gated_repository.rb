@@ -1,5 +1,6 @@
 require "delegate"
 require "measurometer"
+require_relative "readonly_repository"
 
 module Paquette
   class GemServer
@@ -14,9 +15,7 @@ module Paquette
     # for authenticated admins), write a different wrapper with its own
     # policy. This one is deliberately opinionated: gating reads blocks
     # writes, full stop.
-    class ReadGatedRepository < SimpleDelegator
-      class WriteNotAllowed < StandardError; end
-
+    class ReadGatedRepository < ReadonlyRepository
       def initialize(repository, &entitler)
         super(repository)
         @entitler = entitler
@@ -71,14 +70,6 @@ module Paquette
       # is where that shows up.
       def entitled?(**criteria)
         Measurometer.instrument("paquette.gem_read_gate.entitled") { @entitler.call(**criteria) }
-      end
-
-      def add_gem(*)
-        raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
-      end
-
-      def yank_gem(*)
-        raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
       end
     end
   end

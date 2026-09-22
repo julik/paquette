@@ -23,6 +23,18 @@ module Paquette
         FileUtils.mkdir_p(@gems_dir)
       end
 
+      # A digest of what the corpus holds, for callers building HTTP cache
+      # validators over it. Paths alone are enough: a push adds one, a yank
+      # renames one away to a tomb, and a .gem file at a given path never
+      # changes its bytes.
+      def fingerprint
+        Measurometer.instrument("paquette.gem_repository.fingerprint") do
+          d = Digest::SHA256.new
+          Dir.glob(File.join(@gems_dir, "**", "*.gem")).sort.each { |path| d << path }
+          d.base64digest
+        end
+      end
+
       # Persists a .gem file from its raw binary contents. Returns the parsed
       # spec on success. Raises InvalidGem when the payload can't be opened as
       # a gem, or GemAlreadyExists if the name+version is already on disk.

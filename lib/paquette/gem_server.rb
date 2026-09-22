@@ -11,6 +11,7 @@ require_relative "routes"
 require_relative "gem_server/directory_gem_repository"
 require_relative "gem_server/read_gated_repository"
 require_relative "gem_server/personalizer"
+require_relative "otp_gate"
 
 module Paquette
   class GemServer
@@ -151,6 +152,32 @@ module Paquette
     # for callers turning route_for's params into a package and a version.
     # The dash rule is genuinely ambiguous ("a-1-1.0.0.gem"), so nothing
     # outside this class should be guessing at it with a regex of its own.
+    # How `gem push` speaks OTP: the code arrives in the `OTP` header, and a
+    # refusal is a plain 401 carrying one of the two sentences the client
+    # expects, word for word.
+    module OtpDialect
+      module_function
+
+      def code_in(env)
+        env["HTTP_OTP"]
+      end
+
+      def otp_missing
+        [401, {}, ["You have enabled multifactor authentication"]]
+      end
+
+      def otp_rejected
+        [401, {}, ["OTP verification failed"]]
+      end
+    end
+
+    # An OtpGate that reads and refuses the way this server's publishing
+    # client does. The protocol is this class's knowledge — an application
+    # only brings the secret.
+    def self.otp_gate(secret:, issuer:, drift: 30)
+      OtpGate.new(secret: secret, issuer: issuer, drift: drift, dialect: OtpDialect)
+    end
+
     def self.split_gem_filename(gem_filename)
       name = gem_filename.to_s
       # A %xx-mangled segment can arrive as bytes that are not valid UTF-8,

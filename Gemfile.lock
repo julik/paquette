@@ -5,6 +5,7 @@ PATH
       measurometer (~> 1.3)
       mustermann (~> 3.0)
       rack (~> 3.0)
+      rotp (~> 6.3)
 
 GEM
   remote: https://rubygems.org/
@@ -32,6 +33,7 @@ GEM
     rainbow (3.1.1)
     rake (13.3.0)
     regexp_parser (2.11.3)
+    rotp (6.3.0)
     rubocop (1.80.2)
       json (~> 2.3)
       language_server-protocol (~> 3.17.0.2)

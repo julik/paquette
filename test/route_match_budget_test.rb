@@ -71,14 +71,14 @@ class RouteMatchBudgetTest < Minitest::Test
   end
 
   # A genuinely catastrophic pattern trips the per-match ceiling before the
-  # budget is ever consulted — which is the division of labour: the middleware
+  # budget is ever consulted — which is the division of labour: the ceiling
   # stops one runaway match, the budget stops a table of merely slow ones.
   def test_a_catastrophic_route_pattern_is_a_400_rather_than_a_hang
     routes = Paquette::Routes.draw(match_budget: 0.1) do |r|
       12.times { r.get(CATASTROPHIC) { [200, {}, ["never"]] } }
     end
 
-    session = Rack::Test::Session.new(Paquette::RegexpTimeout.new(dispatcher_for(routes), seconds: 0.05))
+    session = Rack::Test::Session.new(dispatcher_for(routes))
     ran_for = elapsed { session.get(CATASTROPHIC_PATH) }
 
     assert_equal 400, session.last_response.status
@@ -95,6 +95,8 @@ class RouteMatchBudgetTest < Minitest::Test
   # The dispatch both servers do, with nothing else in the way.
   def dispatcher_for(routes)
     Class.new do
+      prepend Paquette::RegexpTimeout
+
       define_method(:initialize) { |table| @routes = table }
 
       def call(env)

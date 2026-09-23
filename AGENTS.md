@@ -19,4 +19,4 @@ Do not build a regexp by interpolating a name into one, even through `Regexp.esc
 
 Prefer bounded quantifiers (`{1,255}`) over `+` wherever the thing being matched has a real-world maximum. Ruby 3.2 memoizes most backtracking away, but the gemspec still allows 3.1, which does not.
 
-`Paquette::RegexpTimeout` is the backstop, not the fix. Keep the patterns linear anyway.
+`Paquette::RegexpTimeout` — prepended into every Rack app here, so it is armed on any request that reaches one — is the backstop, not the fix. Keep the patterns linear anyway.

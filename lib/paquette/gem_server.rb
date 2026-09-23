@@ -14,9 +14,12 @@ require_relative "gem_server/read_gated_repository"
 require_relative "gem_server/personalizer"
 require_relative "otp_gate"
 require_relative "index_page"
+require_relative "regexp_timeout"
 
 module Paquette
   class GemServer
+    prepend RegexpTimeout
+
     # \A..\z, not ^..$: Mustermann unescapes %0A into a real newline and line
     # anchors let the rest of the segment ride along. NAME_CHAR is RubyGems'
     # own charset for a name. Bounded so the split point cannot slide across a

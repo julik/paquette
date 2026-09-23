@@ -10,9 +10,12 @@ require_relative "npm_server/read_gated_repository"
 require_relative "npm_server/personalizer"
 require_relative "otp_gate"
 require_relative "index_page"
+require_relative "regexp_timeout"
 
 module Paquette
   class NpmServer
+    prepend RegexpTimeout
+
     # npm sends the scope separator percent-encoded for metadata but plain in
     # tarball URLs; normalizing makes a package name one path segment.
     SCOPED_PATH = %r{\A(/(?:-/package/)?)(@[^/%]+)/([^/]+)(/.*)?\z}

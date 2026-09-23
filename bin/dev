@@ -29,7 +29,6 @@ FileUtils.mkdir_p(gems_dir)
 repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 
 app = Rack::Builder.new do
-  use Paquette::RegexpTimeout
   run Paquette::GemServer.new(repo)
 end.to_app
 

@@ -66,7 +66,7 @@ class SubdomainRouterTest < Minitest::Test
     # Stub the instance method
     @gem_server.stub :call, ->(env) { gem_server_mock.call(env) } do
       response = @router.call(env)
-      assert_equal [200, {}, ["GemServer response"]], response
+      assert_response [200, {}, ["GemServer response"]], response
     end
 
     gem_server_mock.verify
@@ -82,7 +82,7 @@ class SubdomainRouterTest < Minitest::Test
     # Stub the instance method
     @npm_server.stub :call, ->(env) { npm_server_mock.call(env) } do
       response = @router.call(env)
-      assert_equal [200, {}, ["NpmServer response"]], response
+      assert_response [200, {}, ["NpmServer response"]], response
     end
 
     npm_server_mock.verify
@@ -93,7 +93,7 @@ class SubdomainRouterTest < Minitest::Test
 
     # The router should call the default app
     response = @router.call(env)
-    assert_equal [200, {}, ["Default app response"]], response
+    assert_response [200, {}, ["Default app response"]], response
   end
 
   def test_fallback_behavior
@@ -101,10 +101,20 @@ class SubdomainRouterTest < Minitest::Test
 
     # The router should call the fallback app
     response = @router.call(env)
-    assert_equal [200, {}, ["Default app response"]], response
+    assert_response [200, {}, ["Default app response"]], response
   end
 
   private
+
+  # The router is timeout-capped, so the app's body comes back wrapped in the
+  # proxy that releases the ceiling. Compare what a client would see, and close
+  # it so the release actually happens.
+  def assert_response(expected, actual)
+    status, headers, body = actual
+    assert_equal expected, [status, headers, body.to_a]
+  ensure
+    body.close if body.respond_to?(:close)
+  end
 
   def create_env(host, path)
     {

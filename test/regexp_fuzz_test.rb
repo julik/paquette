@@ -139,16 +139,16 @@ class RegexpFuzzTest < Minitest::Test
     status, _headers, body = app.call(env)
     status
   ensure
-    # Closing is what releases the middleware's ceiling; leaking it would
-    # quietly disarm every later case.
+    # Closing is what releases the ceiling; leaking it would quietly disarm
+    # every later case.
     body&.close if body.respond_to?(:close)
   end
 
   def gem_server
-    Paquette::RegexpTimeout.new(Paquette::GemServer.new(@gems))
+    Paquette::GemServer.new(@gems)
   end
 
   def npm_server
-    Paquette::RegexpTimeout.new(Paquette::NpmServer.new(@npm))
+    Paquette::NpmServer.new(@npm)
   end
 end

@@ -2,9 +2,12 @@ require "measurometer"
 
 require_relative "gem_server"
 require_relative "npm_server"
+require_relative "regexp_timeout"
 
 module Paquette
   class SubdomainRouter
+    prepend RegexpTimeout
+
     def initialize(&block)
       @mappings = {}
       @fallback = nil

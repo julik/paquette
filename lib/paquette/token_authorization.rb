@@ -2,6 +2,8 @@ require "rack/auth/abstract/handler"
 require "rack/auth/abstract/request"
 require "measurometer"
 
+require_relative "regexp_timeout"
+
 module Paquette
   # Rack authentication handler that extracts an opaque access token from either
   # a Bearer header or a Basic auth header (token-as-username). This makes the
@@ -43,6 +45,8 @@ module Paquette
   #   end
   #
   class TokenAuthorization < Rack::Auth::AbstractHandler
+    prepend RegexpTimeout
+
     BEARER_SENTINEL = "x-oauth-token"
 
     # @param app  [#call]   the downstream Rack app

@@ -15,9 +15,6 @@ gems_dir = File.join(packages_dir, "gems")
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 
-# A pathological path segment costs one request, not one worker thread.
-use Paquette::RegexpTimeout
-
 # Uncomment and configure to require token authentication.
 # The block receives the raw token and should return an identity object
 # (stored in env["paquette.identity"]) or nil/false to reject.

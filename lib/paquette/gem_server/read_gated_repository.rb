@@ -1,76 +1,71 @@
 require "delegate"
 require "measurometer"
-require_relative "readonly_repository"
 
-module Paquette
-  class GemServer
-    # Wraps a gem repository and filters every read through an entitler block.
-    # The block receives `name:` (and optionally `version:`) and returns truthy
-    # when the caller is allowed to see that gem/version. Non-entitled gems
-    # disappear from listings, return nil paths, and report as non-existent.
-    #
-    # Writes (add_gem, yank_gem) always raise WriteNotAllowed. Gating a read
-    # path implies the caller is not the right party to mutate the corpus —
-    # if you want a more nuanced story (e.g. read-gated but write-allowed
-    # for authenticated admins), write a different wrapper with its own
-    # policy. This one is deliberately opinionated: gating reads blocks
-    # writes, full stop.
-    class ReadGatedRepository < ReadonlyRepository
-      def initialize(repository, &entitler)
-        super(repository)
-        @entitler = entitler
-      end
+# Wraps a gem repository and filters every read through an entitler block.
+# The block receives `name:` (and optionally `version:`) and returns truthy
+# when the caller is allowed to see that gem/version. Non-entitled gems
+# disappear from listings, return nil paths, and report as non-existent.
+#
+# Writes (add_gem, yank_gem) always raise WriteNotAllowed. Gating a read
+# path implies the caller is not the right party to mutate the corpus —
+# if you want a more nuanced story (e.g. read-gated but write-allowed
+# for authenticated admins), write a different wrapper with its own
+# policy. This one is deliberately opinionated: gating reads blocks
+# writes, full stop.
+class Paquette::GemServer::ReadGatedRepository < Paquette::GemServer::ReadonlyRepository
+  def initialize(repository, &entitler)
+    super(repository)
+    @entitler = entitler
+  end
 
-      def gem_names
-        super.select { |name| entitled?(name: name) }
-      end
+  def gem_names
+    super.select { |name| entitled?(name: name) }
+  end
 
-      def gem_versions
-        super.select do |gem_name, version|
-          entitled?(name: gem_name, version: version)
-        end
-      end
-
-      def versions_for_gem(gem_name)
-        return [] unless entitled?(name: gem_name)
-        super.select do |version|
-          entitled?(name: gem_name, version: version)
-        end
-      end
-
-      def gem_file_path(gem_name, version)
-        if entitled?(name: gem_name, version: version)
-          super
-        end
-      end
-
-      def compact_info(gem_name)
-        return [] unless entitled?(name: gem_name)
-
-        all_info = super
-        return all_info unless all_info.is_a?(Array)
-
-        all_info.select do |line|
-          version = line.split(" ")[0]
-          entitled?(name: gem_name, version: version)
-        end
-      end
-
-      def gem_exists?(gem_name, version)
-        if entitled?(name: gem_name, version: version)
-          super
-        else
-          false
-        end
-      end
-
-      # The entitler is the caller's, and a listing calls it once per gem in
-      # the corpus — an entitler that reaches for a database on every call is
-      # the usual reason a gated index is slower than an ungated one, and this
-      # is where that shows up.
-      def entitled?(**criteria)
-        Measurometer.instrument("paquette.gem_read_gate.entitled") { @entitler.call(**criteria) }
-      end
+  def gem_versions
+    super.select do |gem_name, version|
+      entitled?(name: gem_name, version: version)
     end
+  end
+
+  def versions_for_gem(gem_name)
+    return [] unless entitled?(name: gem_name)
+    super.select do |version|
+      entitled?(name: gem_name, version: version)
+    end
+  end
+
+  def gem_file_path(gem_name, version)
+    if entitled?(name: gem_name, version: version)
+      super
+    end
+  end
+
+  def compact_info(gem_name)
+    return [] unless entitled?(name: gem_name)
+
+    all_info = super
+    return all_info unless all_info.is_a?(Array)
+
+    all_info.select do |line|
+      version = line.split(" ")[0]
+      entitled?(name: gem_name, version: version)
+    end
+  end
+
+  def gem_exists?(gem_name, version)
+    if entitled?(name: gem_name, version: version)
+      super
+    else
+      false
+    end
+  end
+
+  # The entitler is the caller's, and a listing calls it once per gem in
+  # the corpus — an entitler that reaches for a database on every call is
+  # the usual reason a gated index is slower than an ungated one, and this
+  # is where that shows up.
+  def entitled?(**criteria)
+    Measurometer.instrument("paquette.gem_read_gate.entitled") { @entitler.call(**criteria) }
   end
 end

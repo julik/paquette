@@ -1,13 +1,16 @@
 require "rubygems"
 require "rubygems/package"
+require "rubygems/user_interaction"
 require "fileutils"
 require "digest"
 require "tmpdir"
 require "tempfile"
-require "open3"
 require "measurometer"
 
 class Paquette::GemServer::GemRepacker
+  autoload :BuildTime, "#{__dir__}/gem_repacker/build_time"
+  autoload :RootedPackage, "#{__dir__}/gem_repacker/rooted_package"
+
   # `into:` is a file path the caller has somewhere it owns — a directory it
   # made and will take away again. Given one, the finished gem is written
   # there and this leaves nothing behind at all.
@@ -53,22 +56,25 @@ class Paquette::GemServer::GemRepacker
 
   private
 
+  # `gem unpack` in the same process. The CLI did exactly this — extract the
+  # data member into `target/<full_name>/` — around half a second of Ruby and
+  # RubyGems startup, paid per gem. A registry personalizing an index pays it
+  # per version of every gem in the corpus, so on a cold cache the boots were
+  # the larger half of the request. The span keeps its name: what it measures
+  # is the same work, and the graphs that watch it are older than this change.
   def unpack_gem
     @temp_dir = Dir.mktmpdir("gem_repacker")
     @unpacked_gem_dir = File.join(@temp_dir, "unpacked_gem")
-    FileUtils.mkdir_p(@unpacked_gem_dir)
 
-    # Use gem unpack command to extract the gem
-    _, stderr, status = Measurometer.instrument("paquette.gem_repacker.gem_unpack") do
-      Open3.capture3("gem unpack #{@gem_path} --target=#{@unpacked_gem_dir}")
-    end
-    unless status.success?
-      raise "Failed to unpack gem: #{@gem_path}. Error: #{stderr}"
-    end
+    package = Gem::Package.new(@gem_path)
+    @gem_dir = File.join(@unpacked_gem_dir, package.spec.full_name)
+    FileUtils.mkdir_p(@gem_dir)
 
-    # Find the unpacked gem directory - it should be the only directory in unpacked_gem_dir
-    @gem_dir = Dir.glob(File.join(@unpacked_gem_dir, "*")).find { |path| File.directory?(path) }
-    raise "Could not find unpacked gem directory" unless @gem_dir
+    Measurometer.instrument("paquette.gem_repacker.gem_unpack") do
+      package.extract_files(@gem_dir)
+    end
+  rescue Gem::Exception => e
+    raise "Failed to unpack gem: #{@gem_path}. Error: #{e.message}"
   end
 
   def process_ruby_files
@@ -138,72 +144,75 @@ class Paquette::GemServer::GemRepacker
   end
 
   def repackage_gem
-    # Get the original gem specification
     original_spec = Gem::Package.new(@gem_path).spec
-
-    # Create a gemspec file from the original specification
-    gemspec_path = File.join(@gem_dir, "#{original_spec.name}.gemspec")
-    create_gemspec_file(gemspec_path, original_spec)
-
-    # SOURCE_DATE_EPOCH is what makes a repack reproducible, and without it
-    # this method could not be used for anything a checksum is published
-    # for.
-    #
-    # A .gem is a tar of three gzip members, and a gzip header carries the
-    # time it was written. RubyGems takes that time, and the mtimes of the
-    # inner tar entries, from Time.now unless SOURCE_DATE_EPOCH says
-    # otherwise — so the same inputs repacked a second apart came out with
-    # different bytes and a different SHA256 while inflating to exactly the
-    # same content. Anything that published a checksum and then rebuilt the
-    # gem to serve it was therefore publishing a checksum for bytes nobody
-    # would ever receive, and `bundle install` reports that as a mismatch,
-    # which reads to a customer as a tampered gem.
-    #
-    # The epoch is the original gem's own date, so a repack is pinned to the
-    # thing it was made from rather than to a build clock: the same source
-    # gem and the same personalization produce one answer, on any machine,
-    # at any time.
-    build_env = {"SOURCE_DATE_EPOCH" => Gem::Package.new(@gem_path).spec.date.to_i.to_s}
-    _, stderr, status = Measurometer.instrument("paquette.gem_repacker.gem_build") do
-      Open3.capture3(build_env, "gem", "build", File.basename(gemspec_path), chdir: @gem_dir)
-    end
-    unless status.success?
-      raise "Failed to build gem. Error: #{stderr}"
-    end
-
-    # Find the newly created gem file
-    gem_name = File.basename(@gem_path, ".gem")
-    new_gem_path = File.join(@gem_dir, "#{gem_name}.gem")
 
     # Where the caller asked for it, or somewhere of its own. Not
     # "#{gem_name}-repacked.gem" in the shared tmpdir, which is what two
     # repacks of one gem — two licensees, or one licensee and the checksum
     # pass — used to overwrite each other in.
+    gem_name = File.basename(@gem_path, ".gem")
     final_gem_path = @into || File.join(Dir.mktmpdir("gem_repacked"), "#{gem_name}-repacked.gem")
     FileUtils.mkdir_p(File.dirname(final_gem_path))
-    FileUtils.mv(new_gem_path, final_gem_path)
+
+    # The build time is what makes a repack reproducible, and without pinning
+    # it this method could not be used for anything a checksum is published
+    # for.
+    #
+    # A .gem is a tar of three gzip members, and a gzip header carries the
+    # time it was written. RubyGems takes that time, and the mtimes of the
+    # inner tar entries, from the clock unless told otherwise — so the same
+    # inputs repacked a second apart came out with different bytes and a
+    # different SHA256 while inflating to exactly the same content. Anything
+    # that published a checksum and then rebuilt the gem to serve it was
+    # therefore publishing a checksum for bytes nobody would ever receive,
+    # and `bundle install` reports that as a mismatch, which reads to a
+    # customer as a tampered gem.
+    #
+    # The time is the original gem's own date, so a repack is pinned to the
+    # thing it was made from rather than to a build clock: the same source
+    # gem and the same personalization produce one answer, on any machine,
+    # at any time. How it gets there without ENV, which would make two
+    # repacks at once share one timestamp, is BuildTime's business.
+    Measurometer.instrument("paquette.gem_repacker.gem_build") do
+      Paquette::GemServer::GemRepacker::RootedPackage.build(
+        repacked_spec(original_spec), @gem_dir, final_gem_path,
+        build_time: original_spec.date
+      )
+    end
 
     final_gem_path
   end
 
-  def create_gemspec_file(gemspec_path, spec)
-    # Create a new spec with additional metadata
+  # The original spec with this repack's additions, built in memory.
+  #
+  # `gem build` needed a .gemspec file on disk to read, and the round trip
+  # through Gem::Specification#to_ruby and .load is how this used to make one.
+  # Gem::Specification.load memoizes what it loads against the file path it
+  # loaded it from, and every repack writes its gemspec to a path of its own —
+  # so in a long-running server that cache grew by one whole specification per
+  # gem served and never shrank. Building the spec here instead produces the
+  # same archive, minus the leak.
+  def repacked_spec(spec)
     new_spec = spec.dup
 
-    # Add additional metadata keys
-    @gemspec_extras.each do |key, value|
-      new_spec.metadata[key] = value
-    end
+    # dup is shallow and these are the two collections being added to. Left
+    # shared, the additions would also land on the spec the caller may still
+    # be holding.
+    # Sorted, because Gem::Specification#to_ruby sorted it and this used to go
+    # through to_ruby — an unsorted merge writes the same information into a
+    # different YAML document, and "the same information" is not the bar when
+    # the output is hashed.
+    new_spec.metadata = spec.metadata.merge(@gemspec_extras).sort.to_h
+    files = spec.files.dup
+    @files.each_key { |path| files << path unless files.include?(path) }
 
-    # Add injected files to the files list
-    @files.each do |file_path, _content|
-      new_spec.files << file_path unless new_spec.files.include?(file_path)
-    end
+    # What Gem::Specification validation does before a build, asked against
+    # the directory the files are actually in. A source gem whose spec names
+    # a file the archive does not carry stays buildable, which is what it was
+    # before; the difference is that this cannot silently prune everything.
+    new_spec.files = files.select { |path| File.exist?(File.join(@gem_dir, path)) }
 
-    # Use the built-in to_ruby method to safely serialize the specification
-    gemspec_content = new_spec.to_ruby
-
-    File.write(gemspec_path, gemspec_content)
+    new_spec
   end
 
   def cleanup

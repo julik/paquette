@@ -70,6 +70,53 @@ class InstrumentationTest < Minitest::Test
     end
   end
 
+  # The block a caller hands to `files_for:` is the personalizer's hot spot on
+  # a cold cache: it is asked per version of every gem an index covers, and it
+  # is somebody else's code, so how long it takes is not something this library
+  # can reason about — only report. It went unreported for a while, and what
+  # that cost was a 145-second /versions whose profile had a large unexplained
+  # gap in the middle of it and no span to hang the blame on.
+  def test_the_callers_files_for_block_is_timed
+    Dir.mktmpdir("paquette_files_for") do |cache_dir|
+      personalizer = Paquette::GemServer::Personalizer.new(
+        Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
+        license_key: "L-1",
+        files_for: ->(_name, _version, _path) { {"NOTE.txt" => "for one licensee\n"} },
+        cache_dir: cache_dir
+      )
+
+      personalizer.gem_file_path("minuscule_test", "0.1.0")
+
+      assert_includes @driver.spans, "paquette.gem_personalizer.files_for"
+    end
+  end
+
+  # A personalized gem's checksum is what /versions and /info/ publish, and
+  # hashing a multi-megabyte gem per version per request is what the sidecar
+  # beside it exists to avoid. Both halves are counted, because "the cache is
+  # being consulted" and "the cache is answering" are different facts and only
+  # the second one is worth having.
+  def test_a_personalized_gems_checksum_is_hashed_once_and_then_remembered
+    Dir.mktmpdir("paquette_checksums") do |cache_dir|
+      personalizer = lambda do
+        Paquette::GemServer::Personalizer.new(
+          Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
+          license_key: "L-1",
+          files_for: ->(_name, _version, _path) { {"NOTE.txt" => "for one licensee\n"} },
+          cache_dir: cache_dir
+        )
+      end
+
+      personalizer.call.compact_info("minuscule_test")
+      assert_includes @driver.spans, "paquette.gem_personalizer.checksum"
+      assert_includes counter_paths, "paquette.gem_personalizer.checksum_miss"
+      refute_includes counter_paths, "paquette.gem_personalizer.checksum_hit"
+
+      personalizer.call.compact_info("minuscule_test")
+      assert_includes counter_paths, "paquette.gem_personalizer.checksum_hit"
+    end
+  end
+
   def test_npm_metadata_request_is_instrumented_down_to_the_tarball
     app = Paquette::NpmServer.new(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
     app.call(Rack::MockRequest.env_for("/widgets"))

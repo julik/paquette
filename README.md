@@ -238,6 +238,21 @@ Paquette::GemServer.new(repo, placeholder_app: Paquette::IndexPage.new("Gems for
 Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [302, {"location" => "https://docs.example.com"}, []] })
 Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [404, {}, []] })  # no root at all
 ```
+## Mounting under a path prefix (namespaces)
+
+Both servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/) — `source "https://gem.coop/@kaspth"`, with `/@kaspth/versions`, `/@kaspth/info/oaken` and `/@kaspth/gems/oaken-1.0.0.gem` underneath it. In Rack that is `map` and nothing else:
+
+```ruby
+Rack::Builder.new do
+  map("/@acme") { run Paquette::GemServer.new(acme_repo) }
+  map("/@beta") { run Paquette::GemServer.new(beta_repo) }
+end
+```
+
+Bundler is given the prefix as its source and appends to it, and the compact index names gems rather than URLs, so nothing in a gem response has to know where it is mounted. An npm package document does carry its own tarball URL, and that one is built from the request — forwarded scheme and host, plus the mount point — so it comes out right too.
+
+A namespace per repository is also a namespace per wrapper stack: each mount can have its own gating and personalization, since it is its own `GemServer` around its own repository.
+
 ## Instrumentation
 
 Everything expensive in Paquette is wrapped in a [Measurometer](https://rubygems.org/gems/measurometer) block, so that you know how long things take. Measurometer does nothing until a driver is attached, so you may need to configure it:

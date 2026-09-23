@@ -318,12 +318,15 @@ class Paquette::NpmServer
   end
 
   # The request's forwarded headers keep the URLs correct behind a TLS proxy.
+  # SCRIPT_NAME keeps them correct under a mount: a registry served at
+  # /@acme must hand out tarball URLs that still say /@acme, or npm fetches
+  # them from the root and gets whatever else the application runs there.
   def with_absolute_tarballs(metadata)
     Measurometer.instrument("paquette.npm_server.absolutize_tarballs") { absolutize_tarballs(metadata) }
   end
 
   def absolutize_tarballs(metadata)
-    base = @request.base_url
+    base = @request.base_url + @request.script_name
     versions = (metadata["versions"] || {}).each_with_object({}) do |(version, doc), acc|
       dist = doc["dist"]
       acc[version] = if dist.is_a?(Hash) && dist["tarball"].to_s.start_with?("/")

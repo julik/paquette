@@ -30,7 +30,17 @@ class Paquette::Routes
     end
 
     def match?(request)
-      @method == request.request_method && @pattern.match(request.path_info)
+      @method == request.request_method && @pattern.match(path_of(request))
+    end
+
+    # Rack::Builder#map hands the mount point itself over with an empty
+    # PATH_INFO: a gem source of "https://example.com/@acme" — how gem.coop
+    # spells a namespace — asks for "/@acme", and the app underneath sees "".
+    # No router calls that a path, and it is not one; it is the root of the
+    # mount, which is where the index page lives.
+    def path_of(request)
+      path = request.path_info
+      path.empty? ? "/" : path
     end
 
     # Mustermann unescapes %xx, so a segment can arrive as bytes that are not
@@ -38,7 +48,7 @@ class Paquette::Routes
     # ArgumentError instead of failing to match. No gem or package is named
     # in invalid UTF-8, so it is refused at the door.
     def params(request)
-      @pattern.params(request.path_info).each_value do |value|
+      @pattern.params(path_of(request)).each_value do |value|
         Array(value).each do |segment|
           raise MalformedRequest, "Path segment is not valid UTF-8" unless segment.to_s.valid_encoding?
         end

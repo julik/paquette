@@ -191,11 +191,9 @@ The scope stays on the package name but is dropped from the filename, exactly as
 
 ### Personalization and integrity with NPM packages
 
-npm records a `dist.integrity` hash for every version and refuses to install a tarball whose bytes do not match. A registry that rebuilds a tarball to serve it therefore has to rebuild it to *the same bytes* it published a hash for — so `Paquette::Tarball` writes archives that are byte-reproducible: entries sorted, mtimes carried over from the input, no build timestamp in the gzip header. `NpmRepacker` and `Personalizer` are built on that, and the published hashes are always taken from the personalized tarball rather than the original.
+npm records a `dist.integrity` hash for every version and refuses to install a tarball whose bytes do not match. A registry that rebuilds a tarball to serve it therefore has to rebuild it to *the same bytes* it published a hash for. Thus the same restriction applies as for Rubygems packages.
 
-Magic comment replacements swap one whole comment line for another. A sourcemap restarts its column counter at every line, so rewriting a line cannot disturb the mappings on any other line — only on the line that changed, and keeping that line a comment means no mapped token was sitting on it. Changing the line *count*, or putting the license text on a line with real code, is what would misalign a customer's stack traces.
-
-Because of that, the one-line rule is enforced rather than assumed. A replacement (or marker) containing a linebreak is refused when you build the stack — it used to have its newlines flattened to spaces, which published something other than what you wrote. And a marker the line match cannot reach is an error rather than a silent pass. `esbuild --minify` pulls a legal comment onto the end of a code line; the package would otherwise be served with no license key in it and nothing to say so — and `package.json` would still carry the key, so it would look personalized from the outside. A package with no marker at all is ordinary and repacks untouched.
+Magic comment replacements forces replacements to be on one line. This is done so that if your package contains sourcemaps the offsets of the sourcemap do not shift - and the sourcemap thus won't have to be rewritten.
 
 ### Publishing NPM packages into Paquette
 

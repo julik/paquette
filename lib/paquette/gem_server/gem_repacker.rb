@@ -42,10 +42,13 @@ class Paquette::GemServer::GemRepacker
       Measurometer.instrument("paquette.gem_repacker.unpack") { unpack_gem }
       Measurometer.instrument("paquette.gem_repacker.process_ruby_files") { process_ruby_files }
       Measurometer.instrument("paquette.gem_repacker.inject_files") { inject_files }
-      new_gem_path = Measurometer.instrument("paquette.gem_repacker.repackage") { repackage_gem }
-      cleanup
-      new_gem_path
+      Measurometer.instrument("paquette.gem_repacker.repackage") { repackage_gem }
     end
+  ensure
+    # In an ensure, not after the repackage: a repack that raises — a gem
+    # that will not unpack, a full disk — used to leave its working directory
+    # in the system temp directory, one per failure, forever.
+    cleanup
   end
 
   private

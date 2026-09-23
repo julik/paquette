@@ -227,6 +227,24 @@ class GemRepackerTest < Minitest::Test
     assert_equal original, Gem::Package.new(repacked).spec.date
   end
 
+  # The working directory is made before anything can go wrong and removed
+  # after everything has: a repack that raises used to leave it in the system
+  # temp directory, one per failure, with no one left holding the path.
+  def test_a_failed_repack_leaves_no_working_directory_behind
+    sandbox = Dir.mktmpdir("paquette_repacker_test")
+    previous_tmpdir = ENV["TMPDIR"]
+    ENV["TMPDIR"] = sandbox
+
+    not_a_gem = File.join(sandbox, "not-a-gem-1.0.0.gem")
+    File.binwrite(not_a_gem, "this is not a gem\n")
+
+    assert_raises(RuntimeError) { Paquette::GemServer::GemRepacker.repack(not_a_gem) }
+    assert_empty Dir.children(sandbox).grep(/\Agem_repacker/), "a failed repack left its working directory behind"
+  ensure
+    ENV["TMPDIR"] = previous_tmpdir
+    FileUtils.remove_entry(sandbox) if sandbox && File.exist?(sandbox)
+  end
+
   private
 
   def verify_repacking(gem_path, expected_random_chars)

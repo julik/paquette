@@ -148,6 +148,15 @@ class PersonalizerTest < Minitest::Test
   def test_personalizing_leaves_nothing_behind_and_takes_nothing_it_did_not_make
     skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
 
+    # A temp directory of this test's own, because the check below diffs the
+    # whole of Dir.tmpdir: the suite runs a forked process per test class, and
+    # a sibling personalizing at the same moment has working directories of
+    # its own in there. Reading those as ours is how this failed in CI and
+    # never on a laptop.
+    sandbox = Dir.mktmpdir("paquette_personalize_test")
+    previous_tmpdir = ENV["TMPDIR"]
+    ENV["TMPDIR"] = sandbox
+
     # A directory that is not ours, sitting in the same tmpdir, with something
     # in it that has to still be there afterwards.
     bystander = Dir.mktmpdir("bystander")
@@ -165,6 +174,8 @@ class PersonalizerTest < Minitest::Test
     assert_empty orphans, "a personalize left working directories behind"
   ensure
     FileUtils.remove_entry(bystander) if bystander && File.exist?(bystander)
+    ENV["TMPDIR"] = previous_tmpdir
+    FileUtils.remove_entry(sandbox) if sandbox && File.exist?(sandbox)
   end
 
   private

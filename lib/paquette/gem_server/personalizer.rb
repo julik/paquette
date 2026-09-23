@@ -1,9 +1,16 @@
 require "delegate"
 require "fileutils"
 require "digest"
+require "json"
 require "measurometer"
 
 class Paquette::GemServer::Personalizer < SimpleDelegator
+  # Here for the day the checksum sidecar's shape has to change: a file that
+  # says "1" can be told apart from whatever comes after it, and one written
+  # before anybody recorded a version cannot. Checked by nothing today — the
+  # reader keys off the fields it needs — which is what lets it cost nothing.
+  CHECKSUM_SIDECAR_FORMAT_VERSION = 1
+
   # `files:` is a {path => content} hash written into every gem this
   # personalizer serves, exactly as GemRepacker takes it. It is what a
   # per-licensee LICENSE file arrives through: the content is rendered by
@@ -71,10 +78,7 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
         served = gem_file_path(gem_name, version)
         next line if served.nil? || served == original || !File.exist?(served)
 
-        checksum = Measurometer.instrument("paquette.gem_personalizer.checksum") do
-          Digest::SHA256.file(served).hexdigest
-        end
-        Paquette::GemServer::GemRepository.replace_checksum(line, checksum)
+        Paquette::GemServer::GemRepository.replace_checksum(line, served_checksum(served))
       end
     end
   end
@@ -115,7 +119,9 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
       marker = plain_marker_path(gem_name, version, stat)
       return original_gem_path if File.exist?(marker)
 
-      dynamic_files = @files_for.call(gem_name, version, original_gem_path)
+      dynamic_files = Measurometer.instrument("paquette.gem_personalizer.files_for") do
+        @files_for.call(gem_name, version, original_gem_path)
+      end
       if dynamic_files.nil?
         FileUtils.mkdir_p(@cache_dir)
         FileUtils.touch(marker)
@@ -150,6 +156,84 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     end
 
     personalized_path
+  end
+
+  # The SHA256 of a personalized gem, remembered next to it.
+  #
+  # compact_info needs this per version per request, and a personalized gem
+  # is the one thing here that is genuinely large — the corpus this was
+  # written for has versions north of four megabytes, and hashing all of
+  # them again is work whose answer cannot have changed: the file was named
+  # after everything that goes into it, so the bytes at that path are fixed
+  # for as long as the path exists.
+  #
+  # Size and mtime are checked anyway, the same way the repository's own
+  # sidecars check them. A cache directory is a place other things write
+  # too — a half-finished copy, a restored backup — and a stale checksum is
+  # the one failure mode worth spending two stat calls to avoid, because
+  # what it produces is a `bundle install` that reports the gem as tampered.
+  def served_checksum(served)
+    Measurometer.instrument("paquette.gem_personalizer.checksum") do
+      stat = File.stat(served)
+      cached = read_checksum_sidecar(served, stat)
+      if cached
+        Measurometer.increment_counter("paquette.gem_personalizer.checksum_hit")
+        next cached
+      end
+
+      Measurometer.increment_counter("paquette.gem_personalizer.checksum_miss")
+      checksum = Digest::SHA256.file(served).hexdigest
+      write_checksum_sidecar(served, stat, checksum)
+      checksum
+    end
+  end
+
+  # Alongside the gem rather than inside a directory of its own, so the two
+  # are removed together by anything that sweeps this cache by age.
+  def checksum_sidecar_path(served)
+    "#{served}.sha256"
+  end
+
+  def read_checksum_sidecar(served, stat)
+    fields = JSON.parse(File.read(checksum_sidecar_path(served)))
+    return nil unless fields.is_a?(Hash)
+    return nil unless fields["size"] == stat.size && fields["mtime_ns"] == mtime_ns(stat)
+    return nil unless fields["checksum"].is_a?(String)
+
+    fields["checksum"]
+  rescue SystemCallError, JSON::ParserError
+    nil
+  end
+
+  # Written through a tempfile and renamed, because rename within a
+  # directory is atomic and a reader must never see half a digest. Two
+  # writers racing hashed the same immutable file, so the loser's bytes and
+  # the winner's are the same bytes.
+  #
+  # Failure is ignored on purpose. This is an optimization over a directory
+  # the caller chose, and a cache that cannot be written is a cache that
+  # costs a hash per request — not a request that fails.
+  def write_checksum_sidecar(served, stat, checksum)
+    tmp_path = "#{served}.#{Process.pid}.#{rand(2**32).to_s(16)}.sha256.tmp"
+    File.write(tmp_path, JSON.generate(
+      "format_version" => CHECKSUM_SIDECAR_FORMAT_VERSION,
+      "checksum" => checksum,
+      "size" => stat.size,
+      "mtime_ns" => mtime_ns(stat)
+    ))
+    File.rename(tmp_path, checksum_sidecar_path(served))
+  rescue SystemCallError
+    begin
+      File.unlink(tmp_path)
+    rescue SystemCallError
+      nil
+    end
+  end
+
+  # Whole nanoseconds. Float mtimes lose precision on large timestamps, and
+  # this is compared for equality.
+  def mtime_ns(stat)
+    stat.mtime.to_i * 1_000_000_000 + stat.mtime.nsec
   end
 
   # Stat identity in the name, so a replaced source file misses the cache

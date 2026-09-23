@@ -1,5 +1,6 @@
 require_relative "../test_helper"
 require "digest"
+require "rubygems/package"
 require "open3"
 
 class GemRepackerTest < Minitest::Test
@@ -227,6 +228,84 @@ class GemRepackerTest < Minitest::Test
     assert_equal original, Gem::Package.new(repacked).spec.date
   end
 
+  # The timestamp that makes a repack reproducible is something RubyGems will
+  # only take through ENV["SOURCE_DATE_EPOCH"], which is process-wide: two
+  # threads repacking at once through that variable are two builds sharing one
+  # timestamp, and the loser comes out stamped with the winner's date. A server
+  # repacks on request threads, so this is the ordinary case and not the exotic
+  # one. BuildTime is the way around it.
+  #
+  # Both gems are built alone first, so the assertion is against bytes known to
+  # be right rather than against the two threads merely agreeing with each other
+  # — which they would also do if both were wrong.
+  def test_repacking_is_reproducible_when_two_threads_build_at_once
+    other_gem = File.join(FIXTURE_GEMS_DIR, "zip_kit", Dir.children(File.join(FIXTURE_GEMS_DIR, "zip_kit")).grep(/\.gem\z/).min)
+    refute_equal Gem::Package.new(@test_gem_path).spec.date, Gem::Package.new(other_gem).spec.date,
+      "this test needs two gems with different dates to be about anything"
+
+    alone = [@test_gem_path, other_gem].to_h do |path|
+      [path, Digest::SHA256.file(repack_of(path)).hexdigest]
+    end
+
+    # Enough rounds that an unlocked build would land inside somebody else's
+    # ENV window rather than getting lucky.
+    concurrent = 12.times.flat_map do
+      [@test_gem_path, other_gem].map do |path|
+        Thread.new { [path, Digest::SHA256.file(repack_of(path)).hexdigest] }
+      end
+    end.map(&:value)
+
+    concurrent.each do |path, digest|
+      assert_equal alone[path], digest,
+        "#{File.basename(path)} came out of a concurrent repack with different bytes"
+    end
+  end
+
+  # A server's environment is not a build's scratch space. Nothing here may
+  # write SOURCE_DATE_EPOCH even briefly: a concurrent build reading it mid-flight
+  # is the bug BuildTime exists to remove, and code that sets it "just for a
+  # moment" is how that bug comes back.
+  def test_repacking_leaves_the_environment_alone
+    # Watching for a fixed number of iterations races the build and usually
+    # loses, which is a test that passes for the wrong reason. This one watches
+    # until the build says it is done.
+    seen = []
+    building = true
+    watcher = Thread.new do
+      while building
+        seen << ENV["SOURCE_DATE_EPOCH"]
+        # Paced, not spinning: a tight loop here holds the GVL against the
+        # thread doing the work and turns a 60ms build into most of a minute.
+        # The bad version of this sets the variable for the whole build, so
+        # millisecond sampling has tens of chances to see it.
+        sleep 0.001
+      end
+    end
+
+    repack_of(@test_gem_path)
+    building = false
+    watcher.join
+
+    assert_operator seen.length, :>, 1, "the watcher never got to look"
+
+    assert_nil ENV["SOURCE_DATE_EPOCH"], "a repack left SOURCE_DATE_EPOCH behind"
+    assert_equal [nil], seen.uniq, "a repack set SOURCE_DATE_EPOCH while it ran"
+  end
+
+  # And the timestamp still reaches the archive: the whole point of the bypass
+  # is that RubyGems sees the source gem's date, not the clock and not ENV.
+  def test_the_build_time_bypass_reaches_rubygems
+    date = Gem::Package.new(@test_gem_path).spec.date
+
+    Paquette::GemServer::GemRepacker::BuildTime.with(date) do
+      assert_equal date.to_i.to_s, Gem.source_date_epoch_string
+      assert_equal date.to_i, Gem.source_date_epoch.to_i
+    end
+
+    refute_equal date.to_i.to_s, Gem.source_date_epoch_string,
+      "the build time outlived the block it was set for"
+  end
+
   # The working directory is made before anything can go wrong and removed
   # after everything has: a repack that raises used to leave it in the system
   # temp directory, one per failure, with no one left holding the path.
@@ -278,6 +357,12 @@ class GemRepackerTest < Minitest::Test
     ensure
       FileUtils.rm_rf(temp_dir)
     end
+  end
+
+  def repack_of(gem_path)
+    Paquette::GemServer::GemRepacker.repack(gem_path,
+      gemspec_extras: {"paquette.license_key" => "L-1"},
+      files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
   end
 
   def create_personalized_gem

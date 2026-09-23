@@ -143,12 +143,24 @@ class RegexpTimeoutTest < Minitest::Test
 
     assert_in_delta 0.2, observed, 0.0001
   ensure
-    Paquette.regexp_timeout = Paquette::RegexpTimeout::DEFAULT_TIMEOUT
+    Paquette.regexp_timeout = Paquette::DEFAULT_REGEXP_TIMEOUT
   end
 
-  # The count is process-wide by design, so a test that leaks a request would
-  # otherwise leak it into the next one.
+  # The count is process-wide by design, so any test anywhere that calls an app
+  # without closing its body leaves a request in flight — and a leaked count is
+  # exactly what these tests are measuring. Cleared on the way in as well as on
+  # the way out, since the leak may come from another file entirely.
+  def setup
+    clear_in_flight_requests
+  end
+
   def teardown
+    clear_in_flight_requests
+  end
+
+  private
+
+  def clear_in_flight_requests
     Paquette::RegexpTimeout.instance_variable_set(:@in_flight, 0)
     Paquette::RegexpTimeout.instance_variable_set(:@ambient, nil)
     Regexp.timeout = nil

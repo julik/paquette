@@ -1,86 +1,74 @@
 require_relative "../test_helper"
-require "socket"
+require "puma"
+require "puma/server"
+require "tmpdir"
 
+# Bundler installing the fixture corpus, end to end: resolve against the
+# compact index, download the .gem files, unpack them into a bundle. The
+# dependency-resolution test next door proves the index *says* the right
+# thing about gems this suite builds; this one proves real published gems
+# come back out of the server installable.
+#
+# It used to point Bundler at "gem.localhost" through the subdomain router
+# and never look at the result — a host that does not resolve on macOS, so
+# every run of it silently installed nothing. The subdomain routing has its
+# own test that does not need DNS; what is worth a live server here is the
+# install.
 class BundlerInstallTest < Minitest::Test
+  FIXTURE_GEMS = File.expand_path("../fixtures/gems", __dir__)
+
   def setup
-    @server_thread = nil
+    @tmpdir = Dir.mktmpdir("paquette_bundler_install")
+    repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS)
+    @server = Puma::Server.new(Paquette::GemServer.new(repository))
+    @port = @server.add_tcp_listener("127.0.0.1", 0).addr[1]
+    @server.run
   end
 
   def teardown
-    stop_server if @server_thread
+    @server&.stop(true)
+    FileUtils.remove_entry(@tmpdir) if @tmpdir && File.exist?(@tmpdir)
   end
 
-  def test_gem_installation
-    start_server
-    sleep 2
-    # wait_for_server
+  def test_bundler_installs_gems_from_the_server
+    app_dir = File.join(@tmpdir, "app")
+    FileUtils.mkdir_p(app_dir)
+    File.write(File.join(app_dir, "Gemfile"), <<~RUBY)
+      source "http://127.0.0.1:#{@port}" do
+        gem "zip_kit"
+        gem "minuscule_test"
+      end
+    RUBY
 
-    tempdir = Dir.mktmpdir
-    pid = fork do
-      Dir.chdir(tempdir)
-      File.open("Gemfile", "w") do |gemfile|
-        gemfile << <<~RUBY
-          source "http://gem.localhost:#{@server_port}" do
-            gem "zip_kit"
-            gem "minuscule_test"
-          end
-        RUBY
-      end
-      Bundler.with_unbundled_env do
-        ENV["BUNDLE_GEMFILE"] = Dir.pwd + "/Gemfile"
-        system("bundle config set --local disable_checksum_validation true")
-        system("bundle install --verbose")
-      end
-    end
-    Process.wait(pid)
-  ensure
-    stop_server
+    output, status = bundle_install(app_dir)
+
+    assert status.success?, "bundle install failed:\n#{output}"
+
+    lockfile = File.read(File.join(app_dir, "Gemfile.lock"))
+    # The newest of the two zip_kit fixtures: the index offers both, so the
+    # choice is Bundler's and it proves it saw the whole version list.
+    assert_includes lockfile, "zip_kit (6.2.1)"
+    assert_includes lockfile, "minuscule_test (0.1.0)"
+
+    installed = Dir.glob(File.join(@tmpdir, "bundle", "**", "gems", "*")).map { |path| File.basename(path) }
+    assert_includes installed, "zip_kit-6.2.1", "the .gem was resolved but never unpacked"
+    assert_includes installed, "minuscule_test-0.1.0"
   end
 
   private
 
-  def find_free_port
-    server = TCPServer.new("127.0.0.1", 0)
-    port = server.addr[1]
-    server.close
-    port
-  end
+  def bundle_install(app_dir)
+    env = Bundler.with_unbundled_env { ENV.to_h }
+    env["BUNDLE_GEMFILE"] = File.join(app_dir, "Gemfile")
+    env["BUNDLE_PATH"] = File.join(@tmpdir, "bundle")
+    # A pristine cache, so nothing fetched from a real registry earlier can
+    # stand in for what this server is being asked to serve.
+    env["BUNDLE_USER_HOME"] = File.join(@tmpdir, "bundle_user_home")
 
-  def start_server
-    return if @server_thread
-    @server_port = find_free_port
-    env = {"PAQUETTE_PACKAGES_DIR" => File.expand_path("../fixtures", __dir__)}
-    cmd = "puma --port #{@server_port} -e test"
-
-    @server_thread ||= Thread.new { system(env, cmd) }
-  end
-
-  def stop_server
-    return unless @server_thread
-
-    # Kill the puma process
-    system("pkill -f 'puma.*#{@server_port}'")
-    @server_thread.kill
-    @server_thread.join(1) # Wait up to 1 second for thread to finish
-    @server_thread = nil
-  end
-
-  def wait_for_server
-    max_attempts = 50 # 5 seconds with 0.1 second intervals
-    attempts = 0
-
-    while attempts < max_attempts
-      begin
-        response = Net::HTTP.get_response(URI("http://127.0.0.1:#{@server_port}/"))
-        return if response.code == "200"
-      rescue
-        # Server not ready yet
-      end
-
-      sleep 0.1
-      attempts += 1
-    end
-
-    flunk "Server did not start within 5 seconds"
+    # unsetenv_others, because spawn otherwise MERGES this hash into the
+    # current environment — and the current environment is the one `bundle
+    # exec` set up for Paquette's own suite, RUBYOPT=-rbundler/setup and all.
+    output = IO.popen(env, ["bundle", "install"], chdir: app_dir, err: [:child, :out], unsetenv_others: true, &:read)
+    [output, $?]
   end
 end

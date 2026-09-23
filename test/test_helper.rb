@@ -1,4 +1,18 @@
+require "etc"
 require "minitest/autorun"
+
+# One forked process per test class, rather than minitest's threads: the suite
+# binds ports, shells out, sets ENV and leans on process-global state like
+# Regexp.timeout, none of which survives sharing a process. NCPU is the gem's
+# own knob — it defaults to 4, which is usually fewer than this machine has.
+ENV["NCPU"] ||= Etc.nprocessors.to_s
+require "minitest/parallel_fork"
+
+# Minitest.autorun turns deprecation warnings back on, and on 3.4 that means
+# every chilled-string warning out of rack and rubygems lands between the
+# dots. Ours would be worth reading; theirs are not ours to fix. `rake test`
+# already drops -w, so this is the other half of the same switch.
+Warning[:deprecated] = false
 require "rack/test"
 require "rack"
 require "fileutils"

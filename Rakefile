@@ -9,6 +9,9 @@ Rake::TestTask.new do |t|
   t.libs << "test"
   t.test_files = FileList["test/**/*_test.rb"]
   t.verbose = true
+  # No -w: the warnings that show up are rack's and rubygems', not ours, and
+  # they bury the dots.
+  t.warning = false
 end
 
 # Standard tasks

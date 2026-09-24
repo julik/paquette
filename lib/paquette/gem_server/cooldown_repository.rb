@@ -38,6 +38,17 @@ class Paquette::GemServer::CooldownRepository < Paquette::GemServer::ReadonlyRep
     @clock = clock
   end
 
+  # nil, which emits no validator at all. What this view serves moves with
+  # the clock while the corpus underneath sits still, so the inner
+  # validator passed through would answer 304 to a client holding the
+  # index from before a version cooled — hiding exactly the release the
+  # channel exists to deliver, until something unrelated moves the corpus.
+  # Folding the servable set into a digest would name the view honestly,
+  # but costs the walk over every version that a 304 is there to skip.
+  def cache_validator
+    nil
+  end
+
   # A gem with no servable version disappears from /names and /versions
   # altogether rather than showing up with an empty version list. Bundler
   # treats a listed name as resolvable and goes looking for its /info/

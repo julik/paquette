@@ -273,6 +273,30 @@ class CooldownRepositoryTest < Minitest::Test
     assert_versions_checksums_match
   end
 
+  # The corpus does not change when a version comes out of cooldown - the
+  # clock does. A validator passed through from the wrapped repository would
+  # keep answering 304 to a client holding yesterday's index, and the
+  # version that just became servable would reach nobody until somebody
+  # happened to push something else.
+  def test_a_version_coming_out_of_cooldown_is_not_hidden_behind_a_304
+    # Two apps rather than @app reassigned: Rack::Test builds its session
+    # around the first app it is handed and keeps it.
+    today = Paquette::GemServer.new(cooldown)
+    next_week = Paquette::GemServer.new(cooldown(at: NOW + WEEK))
+
+    {
+      "/names" => "brand_new_gem",
+      "/versions" => "brand_new_gem 0.1.0",
+      "/info/aged_gem" => "1.1.0 "
+    }.each do |path, newly_served|
+      etag = today.call(Rack::MockRequest.env_for(path))[1]["ETag"]
+
+      status, _, body = next_week.call(Rack::MockRequest.env_for(path, "HTTP_IF_NONE_MATCH" => etag || "*"))
+      assert_equal 200, status, path
+      assert_includes body.to_a.join, newly_served, path
+    end
+  end
+
   # --- Stacking with the other wrappers, in both orders ---
 
   def test_stacks_with_read_gating_outside

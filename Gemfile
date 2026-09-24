@@ -13,5 +13,10 @@ group :test do
   gem "minitest-parallel_fork", "~> 2.1"
   gem "rack-test"
   gem "rake"
-  gem "standard"
+  # Pinned, unlike everything else here. Floating the dependencies is how a
+  # library finds out early that a release broke it — but a linter floating
+  # forward does not report a break, it reports a new opinion, and it does so
+  # on whatever branch happens to bundle next. standard pins rubocop to
+  # ~> 1.88.0 in turn, so this pins the whole cop set.
+  gem "standard", "~> 1.56.0"
 end

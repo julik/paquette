@@ -57,6 +57,11 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
     Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
   end
 
+  # Every byte - and every dist.integrity - is baked for one licensee.
+  def varies_by_caller?
+    true
+  end
+
   def package_file_path(package_name, version)
     original_path = __getobj__.package_file_path(package_name, version)
     return original_path unless original_path && File.exist?(original_path)

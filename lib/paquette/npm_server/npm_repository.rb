@@ -66,6 +66,13 @@ class Paquette::NpmServer::NpmRepository
     nil
   end
 
+  # Whether two callers can get different answers out of this repository,
+  # deciding whether an anonymous response may be `public`. True is the
+  # safe default; see GemRepository#varies_by_caller?.
+  def varies_by_caller?
+    true
+  end
+
   def add_package(binary_data, dist_tags: {})
     raise NotImplementedError, "Subclasses must implement add_package"
   end

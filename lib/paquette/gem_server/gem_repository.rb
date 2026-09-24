@@ -65,14 +65,13 @@ class Paquette::GemServer::GemRepository
   # ---------------------------------------------------------------------
   # The HTTP caching protocol.
   #
-  # Unlike everything above, these two have defaults instead of raising.
+  # Unlike everything above, these three have defaults instead of raising.
   # They were added after repositories outside this gem already existed,
   # and the thing a repository that has never heard of them must do is
   # degrade to "no caching" — not raise NotImplementedError out of the
   # middle of a request. So the defaults are the answers that are safe
   # when nothing is known, which for a cache means: refuse to name the
-  # response. Who may keep a copy is not the repository's to say - every
-  # response is `private`, see Paquette::ConditionalGet.
+  # response, and assume its bytes belong to one caller.
   # ---------------------------------------------------------------------
 
   # A short string that changes whenever anything this repository would
@@ -95,6 +94,16 @@ class Paquette::GemServer::GemRepository
     nil
   end
 
+  # Whether two callers can get different answers out of this repository.
+  # An anonymous response over a stack that says false may be `public`,
+  # which lets a CDN keep it and hand it to anyone. True is the default
+  # because it is the only safe answer for a repository nobody here has
+  # seen; DirectoryGemRepository says false, and a wrapper that does not
+  # change what a caller sees delegates the question to what it wraps.
+  def varies_by_caller?
+    true
+  end
+
   # The SHA256 of the .gem file this repository would actually serve for
   # `gem_name` and `version` — the bytes the client receives, which under
   # a Personalizer are not the bytes on disk. nil when unknown or when
@@ -107,7 +116,7 @@ class Paquette::GemServer::GemRepository
     nil
   end
 
-  # The two questions above, asked of an object that may be any of: a
+  # The three questions above, asked of an object that may be any of: a
   # repository implementing the protocol, a SimpleDelegator wrapping one,
   # or somebody's duck-typed stand-in that has never heard of any of this.
   # The rules themselves live in Paquette::CacheValidation, shared with the

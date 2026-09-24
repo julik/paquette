@@ -152,17 +152,21 @@ class Paquette::NpmServer
   # IndexPage, which is the default and takes the sentence to print.
   DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
 
-  def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"))
+  # `shared_caching: false` keeps every response `private` - see the same
+  # option on GemServer for when to set it.
+  def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
+    shared_caching: true)
     @repository = if repository.is_a?(String)
       DirectoryNpmRepository.new(repository)
     else
       repository
     end
     @placeholder_app = placeholder_app
+    @shared_caching = shared_caching
   end
 
   def call(env)
-    with_private_caching(dispatch(env))
+    with_caching_defaults(dispatch(env))
   end
 
   private

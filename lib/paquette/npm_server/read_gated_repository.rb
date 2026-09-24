@@ -33,6 +33,13 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     Paquette::CacheValidation.derive_validator(inner, "read-gate", @gate_key)
   end
 
+  # A gate is a block, and it may decide by something Paquette never sees
+  # - an IP, a header, the time of day - so even two anonymous callers can
+  # be handed different views. Never `public`, whatever it wraps.
+  def varies_by_caller?
+    true
+  end
+
   def package_names
     super.select { |name| entitled?(name: name) }
   end

@@ -2,9 +2,10 @@
 
 - Serve conditional GETs on `/versions`, `/names` and `/info/`, with a 304 skipping the compact index render entirely
 - Derive HTTP cache validators from the whole repository wrapper stack, and emit none at all when a layer cannot describe itself
-- Mark every response `Cache-Control: private` with `Vary: Authorization`, never `public`, so a shared cache in front cannot replay an authorized download or index to a caller the embedder's gate would have refused (security)
+- Never answer a request carrying `Authorization` or a `Cookie`, or one served through a gate or a personalizer, with `Cache-Control: public`, so a shared cache in front cannot replay an authorized download or index to a caller the embedder's gate would have refused; everything else caller-specific is `private` with `Vary: Authorization, Cookie, Accept-Encoding` (security)
+- Answer anonymous requests over an ungated, unpersonalized repository `public`, so a CDN can cache an open registry, and add `shared_caching: false` to both servers for embedders who authorize by IP, mTLS or a header Paquette cannot see
 - Add `gate_key:` to both `ReadGatedRepository` classes, the caller-supplied name a gate needs before it may be cached
-- Add `cache_validator` and `gem_checksum` to the repository protocols
+- Add `cache_validator`, `varies_by_caller?` and `gem_checksum` to the repository protocols
 - Serve `.gem` downloads and npm tarballs as immutable, with an `ETag`, `Last-Modified` and `Range` support on Rack's own file serving
 - Answer conditional GETs on npm packuments and dist-tags, and never store `/-/whoami`
 - Fold each `dist-tags.json` mtime into the npm fingerprint as whole nanoseconds rather than a float

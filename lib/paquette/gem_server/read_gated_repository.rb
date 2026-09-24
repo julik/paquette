@@ -49,6 +49,13 @@ class Paquette::GemServer::ReadGatedRepository < Paquette::GemServer::ReadonlyRe
     Paquette::GemServer::GemRepository.derive_validator(inner, "read-gate", @gate_key)
   end
 
+  # A gate is a block, and it may decide by something Paquette never sees
+  # - an IP, a header, the time of day - so even two anonymous callers can
+  # be handed different views. Never `public`, whatever it wraps.
+  def varies_by_caller?
+    true
+  end
+
   # Asked through the class method rather than with `super` so that an
   # inner repository predating this protocol answers nil instead of
   # raising NoMethodError out of Delegator#method_missing.

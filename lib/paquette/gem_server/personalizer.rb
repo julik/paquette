@@ -82,6 +82,11 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     Paquette::GemServer::GemRepository.derive_validator(inner, "personalizer", personalization_digest)
   end
 
+  # Every byte this serves is baked for one licensee.
+  def varies_by_caller?
+    true
+  end
+
   # The checksum of what this personalizer would hand over: the repacked
   # gem's, or the underlying one's for a gem served byte for byte. Same
   # number, same cache, as the `checksum:` field compact_info publishes —

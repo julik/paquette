@@ -27,6 +27,17 @@ module Paquette::CacheValidation
     repository.cache_validator if repository.respond_to?(:cache_validator)
   end
 
+  # Whether two callers asking the stack the same question can get
+  # different answers - which decides whether an anonymous response may be
+  # `public`. True for anything that cannot say: a gate or a personalizer
+  # nobody here has seen, marked `public`, puts one caller's view in a CDN
+  # for the next, and being wrong the other way only costs a cache hit.
+  def varies_by_caller?(repository)
+    return true unless repository.respond_to?(:varies_by_caller?)
+
+    repository.varies_by_caller? != false
+  end
+
   # How a wrapper mixes itself into the validator of what it wraps: one
   # digest over the inner validator, a constant naming the layer, and the
   # key that distinguishes one instance of that layer from another.

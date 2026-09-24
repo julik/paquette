@@ -241,15 +241,23 @@ class Paquette::GemServer
   # is a decision to make knowingly.
   DEFAULT_MAX_PUSH_BYTES = 50 * 1024 * 1024
 
+  #
+  # `shared_caching: false` keeps every response `private`, as if every
+  # request carried a credential. Set it when you authorize by something
+  # Paquette cannot see - an IP allowlist, mTLS, a header checked in your
+  # own middleware, a VPN - in front of an ungated repository. Left at
+  # true, an anonymous request over an ungated, unpersonalized repository
+  # is answered `public` so a CDN may keep it; see ConditionalGet.
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
-    max_push_bytes: DEFAULT_MAX_PUSH_BYTES)
+    max_push_bytes: DEFAULT_MAX_PUSH_BYTES, shared_caching: true)
     @repository = repository
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
+    @shared_caching = shared_caching
   end
 
   def call(env)
-    with_private_caching(dispatch(env))
+    with_caching_defaults(dispatch(env))
   end
 
   private

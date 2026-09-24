@@ -10,7 +10,9 @@ require "time"
 # copies: a validator comparison or a `private` directive that drifted
 # between them would be a confidentiality bug on whichever side lost.
 #
-# Nothing either server sends is `public`. See cache_directives for why.
+# Nothing either server sends is `public` unless the request carried no
+# credential and nothing in the stack varies by caller. See
+# cache_directives for why.
 module Paquette::ConditionalGet
   # A year, the longest max-age RFC 9111 suggests anyone bother emitting,
   # paired with `immutable` so a revalidating client does not even ask.
@@ -32,63 +34,92 @@ module Paquette::ConditionalGet
     Paquette::CacheValidation.etag_for(@repository, *resource_parts, weak: weak)
   end
 
+  # Request headers that carry a credential. A request with either one is
+  # never answered `public`, whatever the stack looks like - these are the
+  # two Rack::Cache itself treats as private by default.
+  CREDENTIAL_HEADERS = %w[HTTP_AUTHORIZATION HTTP_COOKIE].freeze
+
   # Cache-Control, and the reason this feature is not simply "emit an ETag".
   #
-  # Paquette is a private registry. Every request an embedder routes here
-  # has been let through by something - a bearer token, a publishing
-  # token, TokenAuthorization - and the same URL is routinely served
-  # ungated to one caller (the owner reading the unwrapped repository with
-  # a publishing token) and gated to the next. So nothing here is ever
-  # `public`, whatever the wrapper stack looks like underneath.
+  # Paquette does not require authentication, so an open registry is a
+  # real configuration and deserves headers a CDN can use. But most
+  # deployments put a credential in front, and the same URL is routinely
+  # served ungated to one caller (the owner reading the unwrapped
+  # repository with a publishing token) and gated to the next. The cache
+  # Paquette tells embedders to put in front (rack-cache, Rails'
+  # Rack::Cache, a CDN) is *shared* and keyed on the URL. RFC 9111 keeps a
+  # shared cache from storing a response to a request that carried
+  # Authorization - and `public` is the directive that overrides exactly
+  # that rule. Rack::Cache honours it to the letter: a `public` answer to a
+  # publisher's authorized download used to be stored, and the next
+  # anonymous request for the URL was answered out of the cache without
+  # the embedder's gate ever running.
   #
-  # That matters because the cache Paquette tells embedders to put in front
-  # (rack-cache, or Rails' Rack::Cache integration) is a *shared* cache
-  # keyed on the URL. RFC 9111 already keeps a shared cache from storing a
-  # response to a request that carried Authorization - and `public` is the
-  # directive that explicitly overrides that rule. Rack::Cache honours it
-  # to the letter: a `public` answer to the publisher's authorized download
-  # is stored, and the next anonymous request for the URL is answered out
-  # of the cache without the embedder's gate ever running. `private` keeps
-  # every shared cache out, while the client's own cache - Bundler's
-  # compact index, npm's metadata cache - still keeps its copy and
-  # revalidates it.
+  # So `public` is decided per request, and only when all of these hold:
   #
-  # `no-cache` rather than `no-store` on the index endpoints: `private`
-  # already keeps the response out of every shared cache, and `no-cache`
-  # still forces a revalidation on each use, so nothing stale is served.
-  # `no-store` would additionally stop the *client* from keeping the copy
-  # it needs in order to send If-None-Match at all, which would make the
-  # 304 unreachable on precisely the most expensive endpoints there are.
+  # - the server was not built with `shared_caching: false`, which is how
+  #   an embedder says it authorizes by something Paquette cannot see (an
+  #   IP allowlist, mTLS, a header checked in middleware);
+  # - the request carries no credential (CREDENTIAL_HEADERS);
+  # - nothing in the wrapper stack varies by caller. A gate may decide by
+  #   something Paquette cannot see either, so two anonymous callers can
+  #   get different answers from it, and a personalizer bakes each
+  #   licensee's bytes. A repository that cannot say is taken to vary.
+  #
+  # Everything else is `private`, which keeps every shared cache out while
+  # the client's own cache - Bundler's compact index, npm's metadata cache -
+  # still keeps its copy and revalidates it.
+  #
+  # `no-cache` rather than `no-store` on the index endpoints: it still
+  # forces a revalidation on each use, so nothing stale is served, while
+  # letting the client (and, when public, a CDN) keep the copy it needs in
+  # order to send If-None-Match at all. `no-store` would make the 304
+  # unreachable on precisely the most expensive endpoints there are. It is
+  # `no-cache` rather than a short max-age for a CDN too: a push or a yank
+  # is visible on the next request instead of a max-age later, and the
+  # revalidation it costs is answered from the corpus fingerprint without
+  # rendering anything.
   def cache_directives(max_age: nil)
-    control = max_age ? "private, max-age=#{max_age}, immutable" : "private, no-cache"
+    scope = shareable_response? ? "public" : "private"
+    control = max_age ? "#{scope}, max-age=#{max_age}, immutable" : "#{scope}, no-cache"
     {"cache-control" => control, "vary" => vary_header}
   end
 
-  # Emitted alongside `private`, and honest for the auth flow this gem
-  # documents: TokenAuthorization reads the token out of Authorization, in
-  # both its Bearer and its Basic spelling.
+  def shareable_response?
+    return false unless @shared_caching
+    return false if CREDENTIAL_HEADERS.any? { |name| @request.has_header?(name) }
+
+    !Paquette::CacheValidation.varies_by_caller?(@repository)
+  end
+
+  # Emitted on everything a handler labels, public or private.
+  #
+  # On a `public` response it is what stops a Vary-honouring cache
+  # (Rack::Cache is one) from handing the anonymous copy it stored to a
+  # request that carries a credential - and so may be entitled to a
+  # different answer. Cookie is in there for the same reason it is in
+  # CREDENTIAL_HEADERS.
   #
   # It is emphatically not sufficient on its own, and must never be read as
-  # if it were. Paquette does not resolve identity - the embedding
-  # application does, and may carry the licensee in a cookie, a client
-  # certificate or a subdomain as easily as in Authorization. A shared
-  # cache keyed only on Authorization would then serve one licensee's
-  # packument to another quite happily, which is why `private` is what
-  # actually stands between two callers and this header is only defence in
-  # depth.
+  # if it were: several CDNs ignore Vary on anything but Accept-Encoding
+  # unless told otherwise, and Paquette does not resolve identity - the
+  # embedder may carry the licensee in a client certificate or a
+  # subdomain. `private` on every credentialed or caller-specific response
+  # is what actually stands between two callers.
   #
   # Accept-Encoding is in there because a compressing proxy in front of
   # these JSON and text bodies would otherwise let one encoding's stored
   # response answer a request that cannot read it.
   def vary_header
-    "Authorization, Accept-Encoding"
+    "Authorization, Cookie, Accept-Encoding"
   end
 
   # What every response leaving either server goes through, whichever
   # handler made it - an error, the placeholder page, a legacy Marshal
   # index nobody ever gave a validator.
   #
-  # Anything a handler did not label is `private, no-store`: it carries no
+  # Anything a handler did not label is `private, no-store`, whoever asks
+  # and whatever the stack: it carries no
   # validator, so there is nothing a client could revalidate, and there is
   # no reason for a shared cache to so much as consider it. Vary always
   # names Authorization, merged into whatever Vary is there already.
@@ -97,7 +128,7 @@ module Paquette::ConditionalGet
   # title case and Rack::Files in lowercase, and a plain Hash would let one
   # response carry both `Cache-Control` and `cache-control` - which a cache
   # is entitled to read as whichever of the two it finds first.
-  def with_private_caching(response)
+  def with_caching_defaults(response)
     status, headers, body = response
     headers = Rack::Headers[headers]
     headers["cache-control"] ||= "private, no-store"
@@ -134,7 +165,8 @@ module Paquette::ConditionalGet
   end
 
   # A response that must never be stored by anything, for content that is
-  # the caller's identity itself.
+  # the caller's identity itself. `private` as well as `no-store`, whatever
+  # the request carried.
   def uncacheable(response)
     status, headers, body = response
     [status, Rack::Headers[headers].merge!("cache-control" => "private, no-store", "vary" => vary_header), body]

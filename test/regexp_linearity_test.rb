@@ -31,7 +31,11 @@ class RegexpLinearityTest < Minitest::Test
       # Runs over a compact info line once per version per personalized
       # /info/ request, and the line now carries a "rubygems:" field after
       # the one it is looking for.
-      "GemRepository.replace_checksum" => /checksum:[0-9a-f]+/
+      "GemRepository.replace_checksum" => /checksum:[0-9a-f]+/,
+      "SpecValidator::NAME" => Paquette::GemServer::SpecValidator::NAME,
+      "SpecValidator::VERSION" => Paquette::GemServer::SpecValidator::VERSION,
+      "SpecValidator::FORBIDDEN_IN_FIELD" => Paquette::GemServer::SpecValidator::FORBIDDEN_IN_FIELD,
+      "NpmRepository::VERSION" => Paquette::NpmServer::NpmRepository::VERSION
     }
 
     patterns.each do |name, regexp|
@@ -156,6 +160,85 @@ class RegexpLinearityTest < Minitest::Test
       assert_nil Paquette::GemServer.split_gem_filename(bytes), bytes.inspect
       assert_nil Paquette::GemServer.split_gem_spec_name(bytes), bytes.inspect
     end
+  end
+
+  # The upload-side patterns never see a route, so the guarantees
+  # Routes::Route#params provides — a decoded segment that is valid UTF-8,
+  # and nothing longer than a path — do not cover them. A gemspec name is
+  # whatever a YAML document said it was.
+  def test_spec_validator_patterns_are_anchored_against_an_injected_newline
+    name = Paquette::GemServer::SpecValidator::NAME
+
+    refute name.match?("safe\nforged 9.9.9 deadbeef")
+    refute name.match?("safe\n")
+    refute name.match?("\nsafe")
+    assert name.match?("safe")
+
+    # ^..$ here would have matched the first line and let the rest ride.
+    refute Paquette::NpmServer::NpmRepository::VERSION.match?("1.0.0\nforged")
+    assert Paquette::NpmServer::NpmRepository.valid_version?("1.0.0")
+  end
+
+  def test_spec_validator_patterns_refuse_an_absurdly_long_field
+    name = Paquette::GemServer::SpecValidator::NAME
+
+    assert name.match?("a" * 255)
+    refute name.match?("a" * 256)
+    refute name.match?("a" * 10_000)
+
+    refute Paquette::NpmServer::NpmRepository.valid_version?("1" * 100)
+  end
+
+  # Long runs of the characters each pattern pivots on, plus near-misses
+  # that match to the last character — the shapes that make a backtracking
+  # pattern take a client-chosen amount of time.
+  def test_spec_validator_patterns_answer_pathological_input_promptly
+    size = 20_000
+    candidates = [
+      "." * size,
+      "-" * size,
+      "a." * size,
+      "a-" * size,
+      ("a" * size) + "/",
+      ("a" * size) + "\n",
+      ("1." * size) + "!",
+      ("1.0.0-" * size) + "/",
+      ("@" * size)
+    ]
+
+    took = elapsed do
+      candidates.each do |candidate|
+        # Nothing here is a valid name or version; what is asserted is that
+        # every one of them is answered, and answered with a refusal.
+        refute Paquette::GemServer::SpecValidator::NAME.match?(candidate), candidate[0, 16].inspect
+        refute Paquette::NpmServer::NpmRepository.valid_version?(candidate), candidate[0, 16].inspect
+      end
+    end
+
+    assert took < 1.0, "matching pathological input took #{took}s"
+  end
+
+  # A spec field can be bytes that are not valid UTF-8, and a regexp run
+  # over those raises ArgumentError rather than returning false. The
+  # validator has to refuse them as a decision, not by whichever rescue is
+  # nearest.
+  def test_the_validator_refuses_invalid_utf8_rather_than_raising
+    spec = Gem::Specification.new
+    spec.version = Gem::Version.new("1.0.0")
+    spec.summary = "s"
+    spec.authors = ["a"]
+
+    ["safe\xFF".b, "safe\xE2".b, "\xE2".b].each do |name|
+      spec.name = name
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem, name.inspect) do
+        Paquette::GemServer::SpecValidator.validate!(spec)
+      end
+    end
+  end
+
+  def test_npm_version_check_refuses_invalid_utf8_rather_than_raising
+    refute Paquette::NpmServer::NpmRepository.valid_version?("1.0.0\xFF".b)
+    refute Paquette::NpmServer::NpmRepository.valid_version?("\xE2".b)
   end
 
   private

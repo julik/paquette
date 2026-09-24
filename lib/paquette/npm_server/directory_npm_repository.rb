@@ -98,9 +98,15 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     end
   end
 
+  # nil rather than a path for anything that is not a name and a version,
+  # the same contract package_dir has — the version is a path component
+  # too, and checking it only on the publish path would leave the read
+  # path free to compose "1/../../secret" and serve whatever it landed on.
+  # Every caller here already treats nil as "no such package".
   def package_file_path(package_name, version)
     dir = package_dir(package_name)
     return nil unless dir
+    return nil unless Paquette::NpmServer::NpmRepository.valid_version?(version)
 
     File.join(dir, Paquette::NpmServer::NpmRepository.tarball_filename(package_name, version))
   end
@@ -215,6 +221,7 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
       raise InvalidPackage, "package.json has no name" if name.empty?
       raise InvalidPackage, "package.json has no version" if version.empty?
       raise InvalidPackage, "Invalid package name: #{name}" unless Paquette::NpmServer::NpmRepository.valid_package_name?(name)
+      raise InvalidPackage, "Invalid package version: #{version}" unless Paquette::NpmServer::NpmRepository.valid_version?(version)
 
       raise PackageYanked, "#{name}@#{version} was unpublished and cannot be republished" if tomb_exists?(name, version)
       raise PackageAlreadyExists, "#{name}@#{version} already exists" if package_exists?(name, version)

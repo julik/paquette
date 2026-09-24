@@ -12,6 +12,12 @@ class GemServerTest < Minitest::Test
 
   attr_reader :app
 
+  # A writable gem server over `dir`, which is what every push test needs.
+  def push_session(dir)
+    repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+    Rack::Test::Session.new(Rack::MockSession.new(Paquette::GemServer.new(repo)))
+  end
+
   def test_root_endpoint
     get "/"
     assert_equal 200, last_response.status
@@ -277,6 +283,92 @@ class GemServerTest < Minitest::Test
 
       session.post "/api/v1/gems", "not a real gem", "CONTENT_TYPE" => "application/octet-stream"
       assert_equal 400, session.last_response.status
+    end
+  end
+
+  # End to end, over the endpoint a `gem push` actually reaches, and in
+  # the README's default dev setup that endpoint has no auth in front of
+  # it at all. What is asserted is that nothing landed anywhere outside
+  # the configured gems root, not merely that the status was a 400.
+  def test_push_of_a_traversing_name_writes_nothing_outside_the_gems_root
+    Dir.mktmpdir do |outer|
+      gems_dir = File.join(outer, "a", "b", "gems")
+      session = push_session(gems_dir)
+      before = Dir.glob(File.join(outer, "**", "*"), File::FNM_DOTMATCH).sort
+
+      session.post "/api/v1/gems", hostile_gem_bytes(name: "../../pwned"), "CONTENT_TYPE" => "application/octet-stream"
+
+      assert_equal 400, session.last_response.status
+      refute_empty session.last_response.body, "Bundler raises on a push response with no text"
+      assert_equal before, Dir.glob(File.join(outer, "**", "*"), File::FNM_DOTMATCH).sort
+    end
+  end
+
+  def test_push_of_a_forged_name_is_a_bad_request_with_a_body
+    Dir.mktmpdir do |dir|
+      session = push_session(dir)
+
+      session.post "/api/v1/gems", hostile_gem_bytes(name: "safe\nforged 9.9.9 deadbeef"),
+        "CONTENT_TYPE" => "application/octet-stream"
+
+      assert_equal 400, session.last_response.status
+      refute_empty session.last_response.body
+      assert_equal "text/plain", session.last_response.content_type
+
+      # And the index it was aiming at is untouched.
+      session.get "/names"
+      assert_equal "", session.last_response.body
+    end
+  end
+
+  # An announced length over the cap costs nothing: it is refused before a
+  # byte of the body is read.
+  def test_push_refuses_an_oversized_declared_length
+    Dir.mktmpdir do |dir|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      app = Paquette::GemServer.new(repo, max_push_bytes: 64)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app))
+
+      session.post "/api/v1/gems", File.binread(MINUSCULE_FIXTURE), "CONTENT_TYPE" => "application/octet-stream"
+
+      assert_equal 413, session.last_response.status
+      refute_empty session.last_response.body
+      assert_equal [], Dir.glob(File.join(dir, "**", "*.gem"))
+    end
+  end
+
+  # And a length the client lied about does not get a free pass, because
+  # the cap is also enforced on the copy itself.
+  def test_push_refuses_a_body_larger_than_a_understated_content_length
+    Dir.mktmpdir do |dir|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      server = Paquette::GemServer.new(repo, max_push_bytes: 64)
+      binary = File.binread(MINUSCULE_FIXTURE)
+
+      env = Rack::MockRequest.env_for("/api/v1/gems",
+        "REQUEST_METHOD" => "POST", "CONTENT_TYPE" => "application/octet-stream")
+      env["rack.input"] = StringIO.new(binary)
+      env["CONTENT_LENGTH"] = "10"
+
+      status, _headers, body = server.call(env)
+
+      assert_equal 413, status
+      refute_empty body.first
+      assert_equal [], Dir.glob(File.join(dir, "**", "*.gem"))
+    end
+  end
+
+  def test_push_accepts_a_gem_within_the_cap
+    Dir.mktmpdir do |dir|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      size = File.size(MINUSCULE_FIXTURE)
+      app = Paquette::GemServer.new(repo, max_push_bytes: size)
+      session = Rack::Test::Session.new(Rack::MockSession.new(app))
+
+      session.post "/api/v1/gems", File.binread(MINUSCULE_FIXTURE), "CONTENT_TYPE" => "application/octet-stream"
+
+      assert_equal 200, session.last_response.status
+      assert repo.gem_exists?("minuscule_test", "0.1.0")
     end
   end
 

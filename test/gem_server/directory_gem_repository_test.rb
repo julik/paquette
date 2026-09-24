@@ -120,6 +120,222 @@ class DirectoryGemRepositoryTest < Minitest::Test
     end
   end
 
+  # A gemspec is YAML the uploader wrote, and add_gem used to take
+  # spec.name straight to File.join. A name of "../../pwned" put the whole
+  # uploaded payload two directories above the gems root — an arbitrary
+  # file write from a push, and in the README's default dev setup an
+  # unauthenticated one. The assertion is deliberately about the
+  # filesystem and not about the exception: a rejection that still wrote
+  # the file would pass an assert_raises.
+  def test_add_gem_refuses_a_name_that_escapes_the_gems_directory
+    binary = hostile_gem_bytes(name: "../../pwned")
+
+    Dir.mktmpdir do |outer|
+      gems_dir = File.join(outer, "a", "b", "gems")
+      repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+      before = Dir.glob(File.join(outer, "**", "*"), File::FNM_DOTMATCH).sort
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem(binary)
+      end
+
+      assert_equal before, Dir.glob(File.join(outer, "**", "*"), File::FNM_DOTMATCH).sort,
+        "the push wrote something, and everything it could have written is outside the gems root"
+      assert_equal [], repo.gem_names
+    end
+  end
+
+  # Every shape of the same hole, in case the first character rule and the
+  # separator rule are ever loosened independently.
+  def test_add_gem_refuses_every_traversing_name
+    Dir.mktmpdir do |outer|
+      gems_dir = File.join(outer, "a", "b", "gems")
+      repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+
+      ["..", "../..", "../../pwned", "a/../../b", "/tmp/pwned", ".hidden", "-rf"].each do |name|
+        assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem, "accepted #{name.inspect}") do
+          repo.add_gem(hostile_gem_bytes(name: name))
+        end
+      end
+
+      assert_equal [], Dir.glob(File.join(outer, "**", "*.gem"))
+    end
+  end
+
+  # The other half of the same trust: /info/ and /versions are
+  # line-oriented, so a "\n" in a field is a forged row rather than a
+  # broken one.
+  def test_add_gem_refuses_a_name_carrying_a_newline
+    binary = hostile_gem_bytes(name: "safe\nforged 9.9.9 deadbeef")
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem(binary)
+      end
+
+      assert_equal [], repo.gem_names
+      assert_equal [], repo.compact_info("safe")
+    end
+  end
+
+  def test_add_gem_refuses_a_forged_ruby_requirement
+    # Interpolated into the "ruby:" field, which is the tail of every info
+    # line — so a newline there appends a row just as a forged name does.
+    binary = hostile_gem_bytes(name: "widgets") do |spec|
+      spec.required_ruby_version = forged_requirement(">=", "2.0\nforged 9.9.9 deadbeef")
+    end
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem(binary)
+      end
+      assert_equal [], repo.compact_info("widgets")
+    end
+  end
+
+  def test_add_gem_refuses_a_forged_version
+    binary = hostile_gem_bytes(name: "widgets", version: "1.0.0\nforged 9.9.9 deadbeef")
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem(binary)
+      end
+      assert_equal [], repo.gem_names
+    end
+  end
+
+  # The corpus is only ever fed by add_gem, so what it renders is what
+  # add_gem let through: one line per real version, and no line the
+  # uploader wrote for themselves.
+  def test_compact_info_stays_one_line_per_version_under_a_forging_push
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(File.binread(@minuscule_fixture))
+
+      ["minuscule_test\nforged 9.9.9 deadbeef", "safe\nforged"].each do |name|
+        repo.add_gem(hostile_gem_bytes(name: name))
+      rescue Paquette::GemServer::DirectoryGemRepository::InvalidGem
+        nil
+      end
+
+      info = repo.compact_info("minuscule_test")
+      assert_equal 1, info.length
+      refute_includes info.join, "9.9.9"
+      info.each { |line| refute_includes line, "\n" }
+    end
+  end
+
+  # YAML aliases are how a few hundred bytes of gemspec become an
+  # arbitrarily large object graph, which on an open push endpoint is a
+  # memory-exhaustion DoS. Nothing RubyGems emits uses them.
+  def test_add_gem_refuses_a_gemspec_that_uses_yaml_aliases
+    Gem.load_yaml
+    skip "this RubyGems has no Gem::SafeYAML.aliases_enabled=" unless Gem::SafeYAML.respond_to?(:aliases_enabled=)
+
+    binary = gem_bytes_with_metadata(hostile_gem_bytes(name: "aliased"), ALIASED_GEMSPEC_YAML)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      error = without_rubygems_chatter do
+        assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) { repo.add_gem(binary) }
+      end
+
+      assert_match(/alias/i, error.message)
+      assert_equal [], repo.gem_names
+    end
+  end
+
+  # The flag is process-global and belongs to the host application, so a
+  # push must hand it back exactly as it found it — including when the
+  # parse raises, which is the case that is easy to get wrong.
+  def test_reading_an_uploaded_spec_restores_the_alias_flag
+    Gem.load_yaml
+    skip "this RubyGems has no Gem::SafeYAML.aliases_enabled=" unless Gem::SafeYAML.respond_to?(:aliases_enabled=)
+
+    was_enabled = Gem::SafeYAML.aliases_enabled?
+    aliased = gem_bytes_with_metadata(hostile_gem_bytes(name: "aliased"), ALIASED_GEMSPEC_YAML)
+
+    without_rubygems_chatter do
+      [true, false].each do |enabled|
+        # A fresh corpus each time: a yanked gem leaves a tomb, and the
+        # second push would be refused for that reason instead.
+        Dir.mktmpdir do |tmp|
+          repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+          Gem::SafeYAML.aliases_enabled = enabled
+
+          repo.add_gem(File.binread(@minuscule_fixture))
+          assert_equal enabled, Gem::SafeYAML.aliases_enabled?, "a successful push left the flag changed"
+
+          begin
+            repo.add_gem(aliased)
+          rescue Paquette::GemServer::DirectoryGemRepository::InvalidGem
+            nil
+          end
+          assert_equal enabled, Gem::SafeYAML.aliases_enabled?, "a failed push left the flag changed"
+        end
+      end
+    end
+  ensure
+    Gem::SafeYAML.aliases_enabled = was_enabled unless was_enabled.nil?
+  end
+
+  def test_add_gem_accepts_an_io_and_streams_it
+    binary = File.binread(@minuscule_fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      spec = repo.add_gem(StringIO.new(binary))
+
+      assert_equal "minuscule_test", spec.name
+      assert_equal binary, File.binread(repo.gem_file_path("minuscule_test", "0.1.0"))
+    end
+  end
+
+  def test_add_gem_accepts_a_real_file_handle
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      spec = File.open(@minuscule_fixture, "rb") { |io| repo.add_gem(io) }
+
+      assert_equal "minuscule_test", spec.name
+      assert repo.gem_exists?("minuscule_test", "0.1.0")
+    end
+  end
+
+  def test_add_gem_refuses_a_payload_over_max_bytes
+    binary = File.binread(@minuscule_fixture)
+
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::GemTooLarge) do
+        repo.add_gem(binary, max_bytes: binary.bytesize - 1)
+      end
+
+      assert_equal [], Dir.glob(File.join(tmp, "**", "*.gem"))
+      # The exact size still fits: the cap is a maximum, not a strict less-than.
+      assert repo.add_gem(binary, max_bytes: binary.bytesize)
+    end
+  end
+
+  def test_add_gem_rejects_an_empty_io
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem) do
+        repo.add_gem(StringIO.new(""))
+      end
+    end
+  end
+
   def test_yank_gem_moves_file_to_tomb
     binary = File.binread(@minuscule_fixture)
 

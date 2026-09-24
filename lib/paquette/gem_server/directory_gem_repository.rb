@@ -186,6 +186,31 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
   end
 
+  # The publication date out of the sidecar when one is there, and out of
+  # the gem itself when it is not. Same answer either way — the sidecar
+  # only saves the tar walk and the YAML parse.
+  #
+  # A sidecar written before "published_at" existed is *not* invalidated
+  # over the missing key: everything else in it still describes the gem
+  # correctly, and throwing it away would re-checksum the whole corpus on
+  # the first request after an upgrade. It falls through to the spec
+  # instead, and gets the key the next time the entry is derived for
+  # other reasons.
+  def published_at(gem_name, version)
+    gem_file = gem_file_path(gem_name, version)
+
+    stat = begin
+      File.stat(gem_file)
+    rescue Errno::ENOENT
+      return nil
+    end
+
+    cached = read_sidecar(gem_name, version, stat)&.fetch("published_at", nil)
+    return Time.at(cached).utc if cached
+
+    gem_spec(gem_name, version)&.date
+  end
+
   def gem_dependencies(gem_name, version)
     spec = gem_spec(gem_name, version)
     return [] unless spec

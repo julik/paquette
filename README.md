@@ -93,6 +93,38 @@ gem_repo = Paquette::GemServer::Personalizer.new(
 gem_server = Paquette::GemServer.new(gem_repo)
 ```
 
+There is also a _cooldown_ wrapper, which withholds versions that were published less than a given interval ago:
+
+```ruby
+# ...the rest as above
+gem_repo = Paquette::GemServer::CooldownRepository.new(gem_repo, interval: 7 * 24 * 60 * 60)
+gem_server = Paquette::GemServer.new(gem_repo)
+```
+
+A version that is still cooling does not appear in `/names`, `/versions`, `/info/`, `/specs.4.8` or `/latest_specs.4.8`, and it does not download - it 404s, same as a gem that is not there. A gem whose every version is still cooling disappears from the index entirely rather than showing up with an empty version list. The interval is in seconds (Paquette has no ActiveSupport, so there is no `7.days` to write), and a version whose age is exactly the interval is served.
+
+The point is that a bad release should not be resolvable into a customer's lockfile the instant it is pushed: the cooldown is the window in which you can still yank it before anyone has picked it up. It also makes a serviceable release channel - point your conservative customers at a server wrapped in this and they get every release a week late, out of the same corpus, without a second copy of anything. Like the other wrappers it is read-only; wrap the bare repository for the endpoint that accepts pushes.
+
+> [!IMPORTANT]
+> By default the publication date is `spec.date`, the date recorded in the gemspec - which is **publisher-controlled and records the build time, not the moment the gem arrived on your server.** A gem built in March and pushed in June is already past a seven-day cooldown when it lands.
+
+The default is `spec.date` because it is a property of the immutable gem bytes. It is not the file mtime, because an mtime is a property of your filesystem right now: an rsync, a container rebuild or a restore from backup resets every one of them, which would make the whole corpus look freshly published and put every gem into cooldown at once - a self-inflicted outage for every customer on the cooldown channel. And it is not a timestamp minted into the sidecar cache, because that cache is an optimization that may be deleted and regenerated at any time, which would have the same effect. `spec.date` survives all of that, and is cached in the sidecar precisely because it can always be re-derived.
+
+If you need the stronger property - when the artifact actually appeared here - pass your own source. Anyone embedding Paquette in a Rails app has a table for this:
+
+```ruby
+gem_repo = Paquette::GemServer::CooldownRepository.new(
+  gem_repo,
+  interval: 7 * 24 * 60 * 60,
+  published_at: ->(name:, version:) { GemPush.where(name: name, version: version).pick(:created_at) },
+
+  # Injectable so tests do not have to sleep
+  clock: -> { Time.now }
+)
+```
+
+Returning `nil` from `published_at:` means "I do not know when this was published", and an unknown date **fails open** - the version is served. That is deliberate: a cooldown is a delay policy, not an authorization boundary, and failing closed would turn one missing timestamp into a broken `bundle install`. If a version must not be served at all, gate it with `ReadGatedRepository`, which is the wrapper whose job that is.
+
 You may want to construct your own Rack application when wiring all that up though:
 
 ```ruby

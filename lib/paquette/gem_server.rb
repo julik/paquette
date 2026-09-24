@@ -8,6 +8,7 @@ require "time"
 require "measurometer"
 
 class Paquette::GemServer
+  autoload :CooldownRepository, "#{__dir__}/gem_server/cooldown_repository"
   autoload :DirectoryGemRepository, "#{__dir__}/gem_server/directory_gem_repository"
   autoload :GemRepacker, "#{__dir__}/gem_server/gem_repacker"
   autoload :GemRepository, "#{__dir__}/gem_server/gem_repository"

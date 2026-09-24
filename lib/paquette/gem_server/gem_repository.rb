@@ -43,6 +43,20 @@ class Paquette::GemServer::GemRepository
     raise NotImplementedError, "Subclasses must implement gem_dependencies"
   end
 
+  # When the given version was published, as a Time, or nil when that
+  # cannot be established. CooldownRepository asks this.
+  #
+  # The default answer is the date recorded in the gemspec. It is a
+  # property of the immutable gem bytes, which is what makes it survive an
+  # rsync, a container rebuild or a restore from backup — see the long
+  # note in CooldownRepository for why every other obvious source does
+  # not. Subclasses override this only to put a cache in front of it, not
+  # to change the answer; a caller wanting a different source passes
+  # `published_at:` to the wrapper.
+  def published_at(gem_name, version)
+    gem_spec(gem_name, version)&.date
+  end
+
   # Returns compact info for a specific gem (all versions)
   def compact_info(gem_name)
     raise NotImplementedError, "Subclasses must implement compact_info"
@@ -182,7 +196,16 @@ class Paquette::GemServer::GemRepository
       "dependencies" => deps,
       "ruby" => spec.required_ruby_version&.to_s || ">= 0",
       "rubygems" => rubygems,
-      "checksum" => checksum
+      "checksum" => checksum,
+      # Not part of any rendered line — compact_info_line_from_fields
+      # ignores every key past the four it reads — but it is derived
+      # from the same spec, so a repository that caches this hash caches
+      # the publication date with it and CooldownRepository never has to
+      # open the gem. Epoch seconds rather than a formatted string: an
+      # integer survives a round trip through JSON without anybody having
+      # to agree on a format first. Nil for a spec without a date, which
+      # the reader then knows to treat as unknown rather than as 1970.
+      "published_at" => spec.date&.to_i
     }
   end
 

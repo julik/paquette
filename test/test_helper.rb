@@ -59,8 +59,12 @@ end
 module HostileGemHelpers
   # A Gem::Version whose string is whatever you want, including one that
   # Gem::Version.new would have refused outright.
+  #
+  # A dup, not the object Gem::Version.new returns: RubyGems caches one
+  # instance per version string, so rewriting that one would forge "1.0.0"
+  # for every later test in the process.
   def forged_version(string)
-    version = Gem::Version.new("1.0.0")
+    version = Gem::Version.new("1.0.0").dup
     version.instance_variable_set(:@version, string)
     version
   end

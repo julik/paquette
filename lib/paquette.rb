@@ -32,6 +32,7 @@ module Paquette
   autoload :OtpGate, "#{__dir__}/paquette/otp_gate"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
   autoload :Routes, "#{__dir__}/paquette/routes"
+  autoload :SafeUrl, "#{__dir__}/paquette/safe_url"
   autoload :SubdomainRouter, "#{__dir__}/paquette/subdomain_router"
   autoload :Tarball, "#{__dir__}/paquette/tarball"
   autoload :TokenAuthorization, "#{__dir__}/paquette/token_authorization"

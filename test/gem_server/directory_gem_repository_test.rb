@@ -224,11 +224,11 @@ class DirectoryGemRepositoryTest < Minitest::Test
       assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.0"))
       assert File.exist?(sidecar_path(tmp, "zip_kit", "6.2.1"))
 
-      # Every freshly written sidecar names its format. Nothing reads the
-      # number yet — it is there so a future format change has something on
-      # disk to dispatch on.
+      # Every freshly written sidecar names its format, and the reader
+      # refuses anything stamped with a different number.
       written = JSON.parse(File.read(sidecar_path(tmp, "zip_kit", "6.2.0")))
-      assert_equal 1, written.fetch("format_version")
+      assert_equal Paquette::GemServer::DirectoryGemRepository::SIDECAR_FORMAT_VERSION,
+        written.fetch("format_version")
 
       # The second call must come out of the sidecars, not the gems — plant
       # a checksum no file hashes to and see it served back
@@ -303,6 +303,98 @@ class DirectoryGemRepositoryTest < Minitest::Test
     end
   end
 
+  def test_compact_info_names_the_required_rubygems_version
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(gem_bytes("picky", "1.0.0", required_rubygems_version: ">= 1.3.2"))
+
+      line = repo.compact_info("picky").fetch(0)
+
+      assert_match(/\A1\.0\.0 \|checksum:[0-9a-f]{64},ruby:>= 2\.6,rubygems:>= 1\.3\.2\z/, line)
+      # And the warm path renders the same bytes — /versions MD5s this body,
+      # so a field that only appears on a cold read would move every digest.
+      assert_equal line, repo.compact_info("picky").fetch(0)
+    end
+  end
+
+  # Gem::Requirement#to_s joins clauses with ", ", and a comma already
+  # separates fields in the metadata segment, so they come out joined with
+  # "&" the way rubygems.org joins them.
+  def test_compact_info_joins_multiple_rubygems_clauses_with_an_ampersand
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(gem_bytes("fussy", "1.0.0", required_rubygems_version: [">= 1.3.2", "< 4"]))
+
+      line = repo.compact_info("fussy").fetch(0)
+
+      assert_includes line, ",rubygems:>= 1.3.2&< 4"
+      refute_includes line, ", "
+    end
+  end
+
+  # rubygems.org leaves the field out entirely rather than writing
+  # ">= 0" — a gem with no constraint must serve exactly the line it
+  # served before the field existed.
+  def test_compact_info_omits_rubygems_when_the_gem_declares_no_constraint
+    Dir.mktmpdir do |tmp|
+      repo = seeded_repo(tmp)
+
+      line = repo.compact_info("minuscule_test").fetch(0)
+
+      refute_includes line, "rubygems:"
+      assert_match(/\A0\.1\.0 \|checksum:[0-9a-f]{64},ruby:[^,]+\z/, line)
+    end
+  end
+
+  # The one that a format bump exists for. A cache warmed by the previous
+  # release holds entries with no "rubygems" key, and an entry like that is
+  # indistinguishable from a gem that genuinely has no constraint — so it
+  # has to be thrown away on the version stamp alone, before its contents
+  # are consulted at all.
+  def test_compact_info_discards_a_sidecar_from_an_older_format_version
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(gem_bytes("picky", "1.0.0", required_rubygems_version: ">= 1.3.2"))
+      expected = repo.compact_info("picky")
+
+      # Exactly what the previous release would have left behind: the old
+      # format number, no "rubygems" key, and a size/mtime that still
+      # vouches for the gem file — so the version stamp is the only thing
+      # that can reject it.
+      sidecar = sidecar_path(tmp, "picky", "1.0.0")
+      fields = JSON.parse(File.read(sidecar))
+      fields.delete("rubygems")
+      fields["format_version"] = 1
+      File.write(sidecar, JSON.generate(fields))
+
+      assert_equal expected, repo.compact_info("picky")
+
+      # Re-derived rather than re-read on every request from here on.
+      rewritten = JSON.parse(File.read(sidecar))
+      assert_equal Paquette::GemServer::DirectoryGemRepository::SIDECAR_FORMAT_VERSION,
+        rewritten.fetch("format_version")
+      assert_equal ">= 1.3.2", rewritten.fetch("rubygems")
+    end
+  end
+
+  # A sidecar written before anyone stamped a version is ambiguous the same
+  # way, and goes the same way.
+  def test_compact_info_discards_an_unversioned_sidecar
+    Dir.mktmpdir do |tmp|
+      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
+      repo.add_gem(gem_bytes("picky", "1.0.0", required_rubygems_version: ">= 1.3.2"))
+      expected = repo.compact_info("picky")
+
+      sidecar = sidecar_path(tmp, "picky", "1.0.0")
+      fields = JSON.parse(File.read(sidecar))
+      fields.delete("rubygems")
+      fields.delete("format_version")
+      File.write(sidecar, JSON.generate(fields))
+
+      assert_equal expected, repo.compact_info("picky")
+    end
+  end
+
   def test_compact_info_recovers_from_corrupt_sidecar
     Dir.mktmpdir do |tmp|
       repo = seeded_repo(tmp)
@@ -363,6 +455,32 @@ class DirectoryGemRepositoryTest < Minitest::Test
       repo.add_gem(File.binread(File.join(@gems_dir, rel)))
     end
     repo
+  end
+
+  # The fixture gems on disk all leave required_rubygems_version at its
+  # default, so a gem that declares one gets built here rather than
+  # checked in — the field under test is the only reason it exists.
+  def gem_bytes(name, version, required_rubygems_version: nil)
+    Dir.mktmpdir do |source_dir|
+      FileUtils.mkdir_p(File.join(source_dir, "lib"))
+      File.write(File.join(source_dir, "lib", "#{name}.rb"), "module #{name.capitalize}; end\n")
+
+      spec = Gem::Specification.new do |s|
+        s.name = name
+        s.version = version
+        s.summary = "Paquette test fixture"
+        s.authors = ["Paquette"]
+        s.files = ["lib/#{name}.rb"]
+        s.required_ruby_version = ">= 2.6"
+        s.license = "MIT"
+        s.required_rubygems_version = required_rubygems_version if required_rubygems_version
+      end
+
+      # capture_io only to keep the gem builder's chatter out of the dots
+      built = nil
+      capture_io { built = Dir.chdir(source_dir) { Gem::Package.build(spec) } }
+      File.binread(File.join(source_dir, built))
+    end
   end
 
   def sidecar_path(gems_dir, gem_name, version)

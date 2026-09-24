@@ -33,7 +33,11 @@ class RegexpLinearityTest < Minitest::Test
       "readme" => /\AREADME(\.md|\.markdown|\.txt)?\z/i,
       "subdomain" => /\A([a-z\-\d]+)\./,
       "numeric identifier" => /\A\d+\z/,
-      "repacker marker" => /[\r\n]/
+      "repacker marker" => /[\r\n]/,
+      # Runs over a compact info line once per version per personalized
+      # /info/ request, and the line now carries a "rubygems:" field after
+      # the one it is looking for.
+      "GemRepository.replace_checksum" => /checksum:[0-9a-f]+/
     }
 
     patterns.each do |name, regexp|

@@ -59,6 +59,35 @@ class PersonalizerTest < Minitest::Test
     refute_equal original_checksum, personalized_checksum
   end
 
+  # A repack changes the gem's bytes and nothing else about it, so only the
+  # checksum of its info line may move. "rubygems:" sits after the field
+  # being rewritten, which is exactly where a too-greedy substitution would
+  # eat it.
+  def test_compact_info_rewrites_only_the_checksum_of_a_line_carrying_a_rubygems_field
+    Dir.mktmpdir do |gems_dir|
+      repository = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+      repository.add_gem(gem_with_required_rubygems_version)
+      original = repository.compact_info("picky").fetch(0)
+      assert_includes original, ",rubygems:>= 1.3.2"
+
+      personalizer = Paquette::GemServer::Personalizer.new(
+        Paquette::GemServer::DirectoryGemRepository.new(gems_dir),
+        license_key: "TEST-LICENSE-123",
+        files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"}
+      )
+      personalized = personalizer.compact_info("picky").fetch(0)
+
+      refute_equal extract_checksum(original), extract_checksum(personalized)
+      # And the line is otherwise character-for-character what it was: swap
+      # the checksum back and the two must be indistinguishable.
+      assert_equal original,
+        Paquette::GemServer::GemRepository.replace_checksum(personalized, extract_checksum(original))
+      # The checksum in the index is the one the customer's download hashes to
+      assert_equal Digest::SHA256.file(personalizer.gem_file_path("picky", "1.0.0")).hexdigest,
+        extract_checksum(personalized)
+    end
+  end
+
   # ── Files injected per licensee ────────────────────────────────────────────
   #
   # The repacker has always been able to write whole files into a gem; the
@@ -186,6 +215,31 @@ class PersonalizerTest < Minitest::Test
       license_key: license_ref,
       files: {"LICENSE-COMMERCIAL.txt" => "Licensed to #{licensee} under #{license_ref}.\n"}
     )
+  end
+
+  # None of the checked-in fixtures declares a required_rubygems_version —
+  # the default is ">= 0", which is not published at all — so a gem that
+  # does gets built here.
+  def gem_with_required_rubygems_version
+    Dir.mktmpdir do |source_dir|
+      FileUtils.mkdir_p(File.join(source_dir, "lib"))
+      File.write(File.join(source_dir, "lib", "picky.rb"), "module Picky; end\n")
+
+      spec = Gem::Specification.new do |s|
+        s.name = "picky"
+        s.version = "1.0.0"
+        s.summary = "Paquette test fixture"
+        s.authors = ["Paquette"]
+        s.files = ["lib/picky.rb"]
+        s.license = "MIT"
+        s.required_ruby_version = ">= 2.6"
+        s.required_rubygems_version = ">= 1.3.2"
+      end
+
+      built = nil
+      capture_io { built = Dir.chdir(source_dir) { Gem::Package.build(spec) } }
+      File.binread(File.join(source_dir, built))
+    end
   end
 
   def read_from_gem(gem_path, entry)

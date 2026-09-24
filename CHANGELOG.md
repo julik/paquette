@@ -10,6 +10,7 @@
 - Fold each `dist-tags.json` mtime into the npm fingerprint as whole nanoseconds rather than a float
 - Document how to put rack-cache or Rails' Rack::Cache integration in front of a Paquette server
 - Serve only absolute http(s) URLs for `homepage` and the `*_uri` gemspec metadata keys, and for the npm packument `homepage`
+- Name each gem's `required_rubygems_version` in the compact index, and bump the sidecar cache format so warm caches re-derive it
 
 ## 0.2.0
 

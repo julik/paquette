@@ -9,12 +9,13 @@ Gem::Specification.new do |spec|
   spec.license = "Osassy"
   spec.metadata = {
     "homepage_uri" => spec.homepage,
-    "source_code_uri" => spec.homepage
+    "source_code_uri" => spec.homepage,
+    "changelog_uri" => spec.homepage + "/blob/main/CHANGELOG.md"
   }
 
   spec.required_ruby_version = ">= 3.1"
 
-  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("lib/paquette/index_page/*") + Dir.glob("test/**/*") + ["LICENSE.md", "README.md"]
+  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("lib/paquette/index_page/*") + Dir.glob("test/**/*") + ["LICENSE.md", "README.md", "CHANGELOG.md"]
   spec.require_paths = ["lib"]
 
   spec.add_dependency "rack", "~> 3.0"

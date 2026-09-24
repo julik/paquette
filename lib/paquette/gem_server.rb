@@ -23,8 +23,38 @@ class Paquette::GemServer
   # own charset for a name. Bounded so the split point cannot slide across a
   # client-chosen length, which is quadratic on 3.1 — no memoization there.
   NAME_CHAR = "[A-Za-z0-9_.-]"
-  GEM_SPEC_NAME = /\A(#{NAME_CHAR}{1,255}?)-(\d+\.\d+\.\d+#{NAME_CHAR}{0,255})\z/
-  GEM_FILENAME = /\A(#{NAME_CHAR}{1,255})-(\d+\.\d+\.\d+#{NAME_CHAR}{0,255})\.gem\z/
+
+  # The version column of a "name-version" pair, which is Gem::Version's own
+  # grammar and not a guess at it. A hand-written \d+\.\d+\.\d+ looks right
+  # and is not: RubyGems publishes two-segment versions, and a corpus holding
+  # case_transform-0.2 or rails_twirp-0.17 served them to nobody, because
+  # every lookup in this file rejected the filename the push had just
+  # written. Borrowing the pattern means the rule cannot drift from the
+  # ecosystem again.
+  #
+  # The trailing NAME_CHAR run is the platform suffix a .gem *filename*
+  # carries in this same column — "nokogiri-1.16.0-arm64-darwin" — which is
+  # not part of a version and so is not in Gem::Version's pattern.
+  VERSION_COLUMN = "#{Gem::Version::VERSION_PATTERN}#{NAME_CHAR}{0,255}"
+
+  # The one pattern that splits a "name-version" pair here. The name is
+  # greedy on purpose: the dash is ambiguous ("a-1-1.0.0" is the gem "a-1" at
+  # 1.0.0, not "a" at "1-1.0.0"), and taking the longest name that still
+  # leaves a whole version behind is the reading that gets those right.
+  GEM_SPEC_NAME = /\A(#{NAME_CHAR}{1,255})-(#{VERSION_COLUMN})\z/
+
+  # The bound the pattern cannot carry. Every quantifier this file writes is
+  # bounded, but the borrowed one is not — Gem::Version::VERSION_PATTERN ends
+  # in "(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?", so a client-chosen run of dashes
+  # past the version has no ceiling of its own. Regexp.linear_time? is true
+  # for the assembled pattern, which settles 3.2 and up; the gemspec still
+  # allows 3.1, which does not memoize, and there the split point sliding
+  # across a long segment is quadratic. Checking the length first is the
+  # bound, and it is a comparison rather than a rewrite of a grammar that is
+  # not ours to restate: name, dash, version column.
+  MAX_GEM_SPEC_NAME_BYTES = 255 + 1 + 255
+
+  GEM_FILE_EXTENSION = ".gem"
 
   @@routes = Paquette::Routes.draw do |r|
     # Root endpoint
@@ -86,8 +116,8 @@ class Paquette::GemServer
 
     r.get "/quick/Marshal.4.8/:gem_spec_name.gemspec.rz" do |gem_spec_name:|
       # Parse gem name and version from the spec name (e.g., "zip_kit-6.3.2")
-      if (match = gem_spec_name.match(GEM_SPEC_NAME))
-        gem_name, version = match[1], match[2]
+      if (split = Paquette::GemServer.split_gem_spec_name(gem_spec_name))
+        gem_name, version = split
 
         if @repository.gem_exists?(gem_name, version)
           spec = @repository.gem_spec(gem_name, version)
@@ -110,8 +140,8 @@ class Paquette::GemServer
 
     r.get "/gems/:gem_filename" do |gem_filename:|
       # Extract gem name and version from filename
-      if (match = gem_filename.match(GEM_FILENAME))
-        handle_gem_download(match[1], match[2])
+      if (split = Paquette::GemServer.split_gem_filename(gem_filename))
+        handle_gem_download(*split)
       else
         not_found("Invalid gem filename")
       end
@@ -133,11 +163,6 @@ class Paquette::GemServer
     nil
   end
 
-  # "zip_kit-6.2.1.gem" into ["zip_kit", "6.2.1"], or nil for a filename
-  # that is not one — the same split the download route performs, exposed
-  # for callers turning route_for's params into a package and a version.
-  # The dash rule is genuinely ambiguous ("a-1-1.0.0.gem"), so nothing
-  # outside this class should be guessing at it with a regex of its own.
   # How `gem push` speaks OTP: the code arrives in the `OTP` header, and a
   # refusal is a plain 401 carrying one of the two sentences the client
   # expects, word for word.
@@ -164,13 +189,35 @@ class Paquette::GemServer
     Paquette::OtpGate.new(secret: secret, issuer: issuer, drift: drift, dialect: OtpDialect)
   end
 
+  # "zip_kit-6.2.1.gem" into ["zip_kit", "6.2.1"], or nil for a filename
+  # that is not one — the same split the download route performs, exposed
+  # for callers turning route_for's params into a package and a version.
+  # The dash rule is genuinely ambiguous ("a-1-1.0.0.gem"), so nothing
+  # outside this class should be guessing at it with a regex of its own —
+  # including the repository, which used to build a third pattern of its
+  # own and disagree with this one about what a version looks like.
   def self.split_gem_filename(gem_filename)
-    name = gem_filename.to_s
+    filename = gem_filename.to_s
+    return nil unless filename.end_with?(GEM_FILE_EXTENSION)
+
+    split_gem_spec_name(filename.delete_suffix(GEM_FILE_EXTENSION))
+  end
+
+  # "zip_kit-6.2.1" into ["zip_kit", "6.2.1"], the same split without the
+  # extension — what /quick/Marshal.4.8/ is handed. split_gem_filename is
+  # this plus the suffix, so there is one dash rule and not two.
+  def self.split_gem_spec_name(gem_spec_name)
+    spec_name = gem_spec_name.to_s
+    # Refused on its length before a pattern ever sees it — see
+    # MAX_GEM_SPEC_NAME_BYTES. Bytes, not characters: the ceiling is about
+    # how much there is to walk, and the check has to hold for a segment
+    # that is not valid UTF-8 and so has no character count to speak of.
+    return nil if spec_name.bytesize > MAX_GEM_SPEC_NAME_BYTES
     # A %xx-mangled segment can arrive as bytes that are not valid UTF-8,
     # and a regex run over those raises instead of failing to match.
-    return nil unless name.valid_encoding?
+    return nil unless spec_name.valid_encoding?
 
-    match = GEM_FILENAME.match(name)
+    match = GEM_SPEC_NAME.match(spec_name)
     match && [match[1], match[2]]
   end
 

@@ -60,3 +60,8 @@ vendor/
 # it serves. The suite reads test/fixtures/gems in place, so caches appear
 # there; they are rebuilt from the gem files whenever missing.
 .paquette-cache/
+
+# A library resolves against the host application's dependencies, so the
+# lockfile here only ever described one developer's machine — and it drifted
+# on every bundle because it pinned the gem's own previous version.
+/Gemfile.lock

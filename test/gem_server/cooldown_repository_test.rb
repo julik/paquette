@@ -290,11 +290,194 @@ class CooldownRepositoryTest < Minitest::Test
       "/info/aged_gem" => "1.1.0 "
     }.each do |path, newly_served|
       etag = today.call(Rack::MockRequest.env_for(path))[1]["ETag"]
+      refute_nil etag, path
 
-      status, _, body = next_week.call(Rack::MockRequest.env_for(path, "HTTP_IF_NONE_MATCH" => etag || "*"))
+      status, _, body = next_week.call(Rack::MockRequest.env_for(path, "HTTP_IF_NONE_MATCH" => etag))
       assert_equal 200, status, path
       assert_includes body.to_a.join, newly_served, path
     end
+  end
+
+  # --- The validator ---
+
+  # aged_gem 1.1.0 and brand_new_gem 0.1.0 are both dated the midnight
+  # before NOW, so the next thing to cool does so at that midnight plus a
+  # week - five and a half days after NOW.
+  def next_crossing
+    @repository.published_at("aged_gem", "1.1.0") + WEEK
+  end
+
+  def test_validator_is_stable_while_nothing_crosses_the_boundary
+    validator = cooldown.cache_validator
+    refute_nil validator
+
+    assert_equal validator, cooldown(at: NOW + DAY).cache_validator
+    assert_equal validator, cooldown(at: next_crossing - 1).cache_validator
+  end
+
+  def test_validator_changes_the_moment_a_version_cools
+    refute_equal cooldown(at: next_crossing - 1).cache_validator, cooldown(at: next_crossing).cache_validator
+
+    # And once it has, it holds still again until the next one.
+    assert_equal cooldown(at: next_crossing).cache_validator, cooldown(at: next_crossing + DAY).cache_validator
+  end
+
+  def test_validator_differs_from_the_inner_one
+    refute_equal @repository.cache_validator, cooldown.cache_validator
+  end
+
+  def test_validator_is_nil_when_the_inner_one_is
+    keyless = Paquette::GemServer::ReadGatedRepository.new(@repository) { |name:, version: nil| true }
+    assert_nil cooldown(keyless).cache_validator
+  end
+
+  def test_a_different_interval_gives_a_different_validator
+    # Neither interval moves anything across the boundary relative to the
+    # other, so only the interval itself can tell these two apart.
+    refute_equal cooldown(interval: WEEK).cache_validator, cooldown(interval: WEEK + 1).cache_validator
+  end
+
+  def test_a_push_changes_the_validator
+    repository = cooldown
+    before = repository.cache_validator
+
+    # Cooled long ago, and still it moves: the corpus did.
+    build_gem("aged_gem", "0.9.0", date: NOW - (60 * DAY))
+    refute_equal before, repository.cache_validator
+  end
+
+  def test_a_push_of_a_cooling_version_changes_the_validator
+    repository = cooldown
+    before = repository.cache_validator
+
+    build_gem("aged_gem", "1.2.0", date: NOW)
+    refute_equal before, repository.cache_validator
+  end
+
+  def test_a_yank_changes_the_validator
+    repository = cooldown
+    before = repository.cache_validator
+
+    @repository.yank_gem("aged_gem", "1.0.0")
+    refute_equal before, repository.cache_validator
+  end
+
+  def test_versions_with_no_known_publish_time_do_not_move_the_validator
+    # brand_new_gem is undated; the rest cooled long ago. Nothing can cross
+    # the boundary any more, however far the clock runs.
+    source = ->(name:, version:) { (name == "brand_new_gem") ? nil : NOW - (60 * DAY) }
+    at = ->(time) { cooldown(at: time, published_at: source, published_at_validator: -> { "v1" }).cache_validator }
+
+    refute_nil at.call(NOW)
+    assert_equal at.call(NOW), at.call(NOW + (1000 * DAY))
+  end
+
+  def test_a_custom_source_without_a_validator_emits_none
+    repository = cooldown(published_at: ->(name:, version:) { NOW - (30 * DAY) })
+    assert_nil repository.cache_validator
+
+    @app = Paquette::GemServer.new(repository)
+    get "/versions"
+    assert_equal 200, last_response.status
+    assert_nil last_response.headers["ETag"]
+  end
+
+  def test_a_custom_source_with_a_validator_emits_one_that_follows_it
+    state = "v1"
+    dates = {"1.0.0" => NOW - (30 * DAY), "1.1.0" => NOW - DAY}
+    repository = cooldown(published_at: ->(name:, version:) { dates[version] }, published_at_validator: -> { state })
+
+    first = repository.cache_validator
+    refute_nil first
+    assert_equal first, repository.cache_validator
+
+    # The table changes and the corpus does not: 1.1.0 turns out to have
+    # been published a month ago. The owner says so by moving the state.
+    dates["1.1.0"] = NOW - (30 * DAY)
+    state = "v2"
+    refute_equal first, repository.cache_validator
+    assert_equal ["1.0.0", "1.1.0"], repository.versions_for_gem("aged_gem")
+  end
+
+  def test_a_custom_source_validator_answering_nil_emits_none
+    repository = cooldown(published_at: ->(name:, version:) { NOW }, published_at_validator: -> {})
+    assert_nil repository.cache_validator
+  end
+
+  def test_a_source_validator_without_a_source_is_refused
+    assert_raises(ArgumentError) { cooldown(published_at_validator: -> { "v1" }) }
+  end
+
+  def test_publish_times_are_walked_once_per_inner_validator
+    counting = counting_repository(@repository)
+    now = NOW
+    repository = Paquette::GemServer::CooldownRepository.new(counting, interval: WEEK, clock: -> { now })
+
+    repository.cache_validator
+    assert_equal 3, counting.published_at_calls
+
+    # Asked again, and across a boundary: the clock is not part of the key.
+    repository.cache_validator
+    now = next_crossing + DAY
+    repository.cache_validator
+    assert_equal 3, counting.published_at_calls
+
+    # A push moves the inner validator, and the list is rebuilt once.
+    build_gem("aged_gem", "0.9.0", date: NOW - (60 * DAY))
+    repository.cache_validator
+    repository.cache_validator
+    assert_equal 3 + 4, counting.published_at_calls
+  end
+
+  def test_a_custom_source_is_walked_once_per_source_validator
+    calls = 0
+    state = "v1"
+    source = ->(name:, version:) {
+      calls += 1
+      NOW - (30 * DAY)
+    }
+    repository = cooldown(published_at: source, published_at_validator: -> { state })
+
+    2.times { repository.cache_validator }
+    assert_equal 3, calls
+
+    state = "v2"
+    2.times { repository.cache_validator }
+    assert_equal 6, calls
+  end
+
+  def test_concurrent_requests_walk_the_corpus_once
+    counting = counting_repository(@repository)
+    repository = cooldown(counting)
+
+    validators = 8.times.map { Thread.new { repository.cache_validator } }.map(&:value)
+    assert_equal 1, validators.uniq.length
+    assert_equal 3, counting.published_at_calls
+  end
+
+  def test_conditional_get_across_a_cooling_boundary
+    now = NOW
+    repository = Paquette::GemServer::CooldownRepository.new(@repository, interval: WEEK, clock: -> { now })
+    @app = Paquette::GemServer.new(repository)
+
+    get "/info/aged_gem"
+    etag = last_response.headers["ETag"]
+    refute_nil etag
+    refute_includes last_response.body, "1.1.0 "
+
+    # A day on, nothing has crossed: the same ETag, and a 304.
+    now = NOW + DAY
+    get "/info/aged_gem", {}, {"HTTP_IF_NONE_MATCH" => etag}
+    assert_equal 304, last_response.status
+    assert_equal etag, last_response.headers["ETag"]
+
+    # 1.1.0 cools. The ETag the client holds must not match any more, and
+    # the body has to carry the version that just became servable.
+    now = next_crossing
+    get "/info/aged_gem", {}, {"HTTP_IF_NONE_MATCH" => etag}
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, "1.1.0 "
+    refute_equal etag, last_response.headers["ETag"]
   end
 
   # --- Stacking with the other wrappers, in both orders ---
@@ -332,6 +515,25 @@ class CooldownRepositoryTest < Minitest::Test
   end
 
   private
+
+  # Counts the published_at calls reaching the repository underneath, and
+  # delegates everything else - cache_validator included.
+  def counting_repository(repository)
+    Class.new(SimpleDelegator) do
+      attr_reader :published_at_calls
+
+      def initialize(*)
+        super
+        @published_at_calls = 0
+        @lock = Mutex.new
+      end
+
+      def published_at(gem_name, version)
+        @lock.synchronize { @published_at_calls += 1 }
+        __getobj__.published_at(gem_name, version)
+      end
+    end.new(repository)
+  end
 
   def personalizer(repository)
     Paquette::GemServer::Personalizer.new(repository,

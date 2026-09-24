@@ -123,6 +123,12 @@ gem_repo = Paquette::GemServer::CooldownRepository.new(
 )
 ```
 
+A custom source may read state that changes while the corpus does not, so Paquette cannot tell when to re-read it, and a cooldown over one emits no `ETag` - every index request is served in full. To get one back, also pass `published_at_validator:`, a callable returning a string that changes whenever any answer your source gives would (or `nil` for "cannot say"):
+
+```ruby
+published_at_validator: -> { GemPush.maximum(:updated_at)&.iso8601(6) }
+```
+
 Returning `nil` from `published_at:` means "I do not know when this was published", and an unknown date **fails open** - the version is served. That is deliberate: a cooldown is a delay policy, not an authorization boundary, and failing closed would turn one missing timestamp into a broken `bundle install`. If a version must not be served at all, gate it with `ReadGatedRepository`, which is the wrapper whose job that is.
 
 You may want to construct your own Rack application when wiring all that up though:
@@ -353,7 +359,7 @@ The validator itself is derived from the whole wrapper stack, not just from the 
 - The directory repository contributes its `fingerprint` - a digest of what is on disk, which moves on every push and yank. On the npm side it also folds in each `dist-tags.json` mtime, because a dist-tag write rewrites that file in place and moves no path at all.
 - `Personalizer` mixes in its personalization key, so one licensee's index can never validate another's.
 - `ReadGatedRepository` mixes in the `gate_key:` you supplied, **and emits no validator at all if you did not supply one.** That is deliberate. An entitlement gate is an arbitrary block; guessing that two of them are the same gate is how one customer ends up with another customer's index. No `ETag` means every request is served in full, which is slow and recoverable.
-- `CooldownRepository` emits no validator at all. What it serves changes with the clock while the corpus stands still, so a corpus-derived `ETag` would answer 304 to a client holding the index from before a version cooled - and the release the channel exists to deliver would reach nobody.
+- `CooldownRepository` mixes in its interval and how many of the known publish times have cooled. What it serves changes with the clock while the corpus stands still, so the inner validator alone would answer 304 to a client holding the index from before a version cooled. But versions cool in the order they were published, so that count moves exactly when the servable set does. The publish times are read once per inner validator and binary-searched per request, which means the wrapper should be built once rather than per request. With a custom `published_at:` it emits no validator unless you also pass `published_at_validator:` (see above).
 
 On the npm side the packument validator also folds in the base URL the request was made against, since the document embeds absolute tarball URLs built from it. Host is part of any cache key already, but scheme is not.
 

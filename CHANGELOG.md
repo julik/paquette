@@ -14,6 +14,7 @@
 - Name each gem's `required_rubygems_version` in the compact index, and bump the sidecar cache format so warm caches re-derive it
 - Accept every version RubyGems publishes, not just three-segment ones — a gem pushed at `0.2` or `0.17` used to be written to disk and then served to nobody
 - Add `CooldownRepository`, a wrapper serving only versions published longer than a configured interval ago
+- Give `CooldownRepository` a cache validator that moves only when a version cools, a push or yank lands, or the interval changes, so its index documents can answer 304; a custom `published_at:` gets one only with `published_at_validator:`
 - Validate a pushed gemspec before acting on it, closing an arbitrary file write through `spec.name` (security)
 - Refuse newlines and NUL bytes in every spec field the compact index interpolates, so a push cannot forge an index row
 - Refuse any pushed gemspec field longer than 2KB

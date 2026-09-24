@@ -29,24 +29,81 @@ class Paquette::GemServer::CooldownRepository < Paquette::GemServer::ReadonlyRep
   # returns a Time — or nil for "I do not know". See #published_time for
   # what the default source is and why, and #servable? for what nil does.
   #
+  # `published_at_validator:` goes with it, and only with it: a callable
+  # taking no arguments that returns a string which changes whenever any
+  # answer `published_at:` would give changes — or nil for "I cannot say".
+  # Without one, a view over a custom source emits no validator. See
+  # #cache_validator for why.
+  #
   # `clock:` is here so tests do not have to sleep; it returns the current
   # Time and nothing calls it more than it has to.
-  def initialize(repository, interval:, published_at: nil, clock: -> { Time.now })
+  def initialize(repository, interval:, published_at: nil, published_at_validator: nil, clock: -> { Time.now })
+    if published_at_validator && !published_at
+      raise ArgumentError, "published_at_validator: describes a published_at: source, and none was given"
+    end
+
     super(repository)
     @interval = interval.to_i
     @published_at_source = published_at
+    @published_at_validator = published_at_validator
     @clock = clock
+    @publish_times_lock = Mutex.new
+    @publish_times = nil
   end
 
-  # nil, which emits no validator at all. What this view serves moves with
-  # the clock while the corpus underneath sits still, so the inner
-  # validator passed through would answer 304 to a client holding the
-  # index from before a version cooled — hiding exactly the release the
-  # channel exists to deliver, until something unrelated moves the corpus.
-  # Folding the servable set into a digest would name the view honestly,
-  # but costs the walk over every version that a 304 is there to skip.
+  # What this view serves moves with the clock while the corpus underneath
+  # sits still, so the inner validator passed through would answer 304 to a
+  # client holding the index from before a version cooled - hiding exactly
+  # the release the channel exists to deliver. But the clock only matters
+  # at the moments a version crosses the boundary, and versions cross it in
+  # the order they were published. Over a fixed corpus, then, the servable
+  # set is named exactly by how many of the known publish times are at
+  # least `interval` old: the count moves when, and only when, a version
+  # cools. (That count is the latest cooled publish time in another form -
+  # the same thing over a fixed sorted list, without a timestamp's
+  # precision to worry about.) A version with no known publish time is
+  # always served and never moves the set, so it is left out altogether.
+  #
+  # So the validator is a digest of the inner validator, the interval and
+  # that count. Counting is a binary search over the publish times sorted
+  # once, which is the walk a 304 is there to skip - done once per corpus
+  # rather than once per request. The sorted list is memoized under the
+  # inner validator, which is the stack's promise that nothing it serves
+  # has changed, and the default publish time is read out of the gem
+  # itself, so it cannot have changed either. One entry: a new inner
+  # validator replaces the old list. The memo lives on this instance, so
+  # build the wrapper once and not per request.
+  #
+  # A custom `published_at:` is a different animal. It may read a table
+  # whose rows change while the corpus does not, and nothing here can see
+  # that happen, so it only gets a validator when its owner can name its
+  # state with `published_at_validator:`. That is folded into both the
+  # memo key and the digest; nil from it, or no validator at all, gives no
+  # ETag - the same fail-closed rule as everywhere else, where the price of
+  # not knowing is serving in full. Rebuilding the memo per request
+  # instead would have been correct for exactly as long as the table did
+  # not change between two requests, which is no guarantee at all.
+  #
+  # The clock is read once here and again for every servable? during a
+  # render, so a version cooling between the two is in the body but not
+  # the validator. That errs the safe way: the client's next ETag cannot
+  # match, and it gets a 200 it did not strictly need.
   def cache_validator
-    nil
+    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
+    return nil if inner.nil?
+
+    source_state = if @published_at_source
+      @published_at_validator&.call
+    else
+      "gemspec-date"
+    end
+    return nil if source_state.nil?
+
+    times = publish_times_for([inner, source_state])
+    now = @clock.call
+    cooled = times.bsearch_index { |published| !cooled?(published, now) } || times.length
+
+    Paquette::GemServer::GemRepository.derive_validator(inner, "cooldown", [@interval, source_state, cooled].join("\0"))
   end
 
   # A gem with no servable version disappears from /names and /versions
@@ -91,6 +148,12 @@ class Paquette::GemServer::CooldownRepository < Paquette::GemServer::ReadonlyRep
   # The download path has to agree with the index, or Bundler resolves
   # against a version it is then handed a 404 for and reports a failure
   # nobody can act on. A cooling version 404s.
+  #
+  # A download's ETag is the checksum of its bytes and never asks
+  # cache_validator, and a cooldown cannot change the bytes at a path -
+  # only whether the path is served at all, which gem_exists? has settled
+  # before the server computes an ETag. So downloads need nothing from
+  # the reasoning above #cache_validator.
   def gem_file_path(gem_name, version)
     super if servable?(gem_name, version)
   end
@@ -127,10 +190,31 @@ class Paquette::GemServer::CooldownRepository < Paquette::GemServer::ReadonlyRep
     published = published_time(gem_name, version)
     return true if published.nil?
 
-    (@clock.call - published) >= @interval
+    cooled?(published, @clock.call)
   end
 
   private
+
+  # The one comparison both servable? and cache_validator make, so the two
+  # cannot disagree about which side of the boundary a version is on.
+  def cooled?(published, now)
+    (now - published) >= @interval
+  end
+
+  # The known publish times of every version the inner repository lists,
+  # sorted, out of the same published_time servable? reads. Rebuilt only
+  # when `key` changes. Built under the lock, so a burst of requests after
+  # a push walks the corpus once rather than once each.
+  def publish_times_for(key)
+    @publish_times_lock.synchronize do
+      memo_key, times = @publish_times
+      return times if memo_key == key
+
+      times = __getobj__.gem_versions.filter_map { |gem_name, version| published_time(gem_name, version) }.sort.freeze
+      @publish_times = [key, times].freeze
+      times
+    end
+  end
 
   # Where a publication timestamp comes from.
   #

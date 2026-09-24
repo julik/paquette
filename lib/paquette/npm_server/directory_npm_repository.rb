@@ -31,10 +31,34 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
       d = Digest::SHA256.new
       Dir.glob(File.join(@packages_dir, "**", "*.tgz")).sort.each { |path| d << path }
       Dir.glob(File.join(@packages_dir, "**", DIST_TAGS_FILE)).sort.each do |path|
-        d << path << File.mtime(path).to_f.to_s
+        d << path << mtime_ns(path).to_s
       end
       d.base64digest
     end
+  end
+
+  # Whole nanoseconds rather than the Float this used to fold in. A Float
+  # mtime loses precision at the top end of the range - the same reason the
+  # gem repository's sidecars keep integer nanoseconds - and two dist-tag
+  # writes landing inside one float tick would digest identically, which
+  # here means a client keeping a 304 for a tag that has since moved. The
+  # value only ever feeds a digest, so it was never as dangerous as an
+  # equality comparison, but the precision is free.
+  def mtime_ns(path)
+    mtime = File.mtime(path)
+    (mtime.to_i * 1_000_000_000) + mtime.nsec
+  end
+
+  # The corpus fingerprint is this repository's whole contribution to an
+  # HTTP validator. The wrappers above add who is asking.
+  def cache_validator
+    fingerprint
+  end
+
+  # A directory of packages is the same directory for everybody; the
+  # wrappers are what make a response caller-specific.
+  def private_to_caller?
+    false
   end
 
   def package_names

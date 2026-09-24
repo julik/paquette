@@ -43,6 +43,35 @@ class Paquette::NpmServer::NpmRepository
     raise NotImplementedError, "Subclasses must implement dist_tags"
   end
 
+  # ---------------------------------------------------------------------
+  # The HTTP caching protocol, mirroring the gem side. Defaults instead of
+  # raises, because a repository written before any of this existed has to
+  # degrade to "no caching" rather than raise out of the middle of a
+  # request. The rules live in Paquette::CacheValidation.
+  # ---------------------------------------------------------------------
+
+  # A short string that changes whenever anything this repository would
+  # serve changes, including anything a wrapper would change about it, or
+  # nil for "do not cache this".
+  #
+  # The npm side needs this more badly than the gem side does. A gem
+  # Personalizer changes the bytes of a .gem and the checksum an index
+  # publishes for it; an npm Personalizer changes the *packument itself*,
+  # because dist.integrity is computed per licensee and the document
+  # carries one per version. A packument cached under a
+  # licensee-independent key and replayed to a second licensee hands them
+  # integrity hashes that cannot match the tarball they then download, and
+  # npm treats that as tampering and hard-fails the install.
+  def cache_validator
+    nil
+  end
+
+  # Whether what this serves belongs to one caller, deciding
+  # `Cache-Control: private` against `public`. True is the safe default.
+  def private_to_caller?
+    true
+  end
+
   def add_package(binary_data, dist_tags: {})
     raise NotImplementedError, "Subclasses must implement add_package"
   end

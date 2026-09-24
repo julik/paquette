@@ -6,9 +6,37 @@ require "measurometer"
 class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   class WriteNotAllowed < StandardError; end
 
-  def initialize(repository, &entitler)
+  # `gate_key:` names this gate for HTTP caching, and it is the caller's to
+  # supply because nothing here can work it out - the gate is a block, and
+  # nothing about a Proc says which subset of the corpus it selects, least
+  # of all when the stack is rebuilt per request as the README recommends.
+  #
+  # Pass the identity of whoever the entitler consults, and pass everything
+  # about them the answers depend on; if entitlements can change without
+  # that identity changing, the key has to move when they do, or a client
+  # keeps a 304 for a package it is no longer allowed to have.
+  #
+  # Leave it out and this repository reports no validator, which makes the
+  # whole stack above it report none, which means no ETag is emitted and
+  # every request is served in full. That is the intended default: an
+  # absent key is indistinguishable from "every licensee is the same
+  # licensee", and a wrong ETag on a gated packument is one customer
+  # holding another's entitlements. Slow is recoverable.
+  def initialize(repository, gate_key: nil, &entitler)
     super(repository)
     @entitler = entitler
+    @gate_key = gate_key
+  end
+
+  def cache_validator
+    inner = Paquette::CacheValidation.validator_of(__getobj__)
+    Paquette::CacheValidation.derive_validator(inner, "read-gate", @gate_key)
+  end
+
+  # A gated packument is one licensee's list of what they may have, and a
+  # gated tarball is bytes another licensee would have been refused.
+  def private_to_caller?
+    true
   end
 
   def package_names

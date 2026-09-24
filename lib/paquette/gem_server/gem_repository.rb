@@ -1,5 +1,6 @@
 require "json"
 require "fileutils"
+require "digest"
 
 # Abstract base class for gem repositories
 class Paquette::GemServer::GemRepository
@@ -45,6 +46,86 @@ class Paquette::GemServer::GemRepository
   # Returns compact info for a specific gem (all versions)
   def compact_info(gem_name)
     raise NotImplementedError, "Subclasses must implement compact_info"
+  end
+
+  # ---------------------------------------------------------------------
+  # The HTTP caching protocol.
+  #
+  # Unlike everything above, these three have defaults instead of raising.
+  # They were added after repositories outside this gem already existed,
+  # and the thing a repository that has never heard of them must do is
+  # degrade to "no caching" — not raise NotImplementedError out of the
+  # middle of a request. So the defaults are the answers that are safe
+  # when nothing is known, which for a cache means: refuse to name the
+  # response, and assume its bytes belong to one caller.
+  # ---------------------------------------------------------------------
+
+  # A short string that changes whenever anything this repository would
+  # serve changes — including anything a *wrapper* would change about it.
+  # The server turns it into an ETag; two requests that get the same
+  # validator are promised the same bytes.
+  #
+  # That promise is the whole difficulty, because a repository here is
+  # almost never one object: it is a base repository wrapped in a gate
+  # (each licensee sees a different subset) and a personalizer (each
+  # licensee gets different bytes). A validator derived from the corpus
+  # alone would let one licensee's cached index answer another licensee's
+  # request, which is a confidentiality bug and strictly worse than no
+  # caching. So every wrapper that changes what a caller sees must mix
+  # itself in, and a wrapper that *cannot* describe itself must return
+  # nil. nil means "do not cache this" and propagates outward through
+  # every layer above it — see ReadGatedRepository, which cannot
+  # fingerprint the arbitrary block it gates with.
+  def cache_validator
+    nil
+  end
+
+  # Whether what this repository serves is specific to the caller, i.e.
+  # whether a shared cache holding one response and replaying it to the
+  # next requester would hand out somebody else's entitlements or
+  # somebody else's personalized bytes. Decides `Cache-Control: private`
+  # against `public`.
+  #
+  # The default is true, which is the wrong answer for a plain directory
+  # of gems and the only safe answer for a repository nobody here has
+  # seen. Getting this backwards puts one customer's packages in another
+  # customer's CDN; getting it too conservative costs a cache hit.
+  def private_to_caller?
+    true
+  end
+
+  # The SHA256 of the .gem file this repository would actually serve for
+  # `gem_name` and `version` — the bytes the client receives, which under
+  # a Personalizer are not the bytes on disk. nil when unknown or when
+  # the gem is not there.
+  #
+  # This is the same number that already goes into the `checksum:` field
+  # of a compact info line, and both sides of the protocol cache it, so
+  # asking for it is a couple of stat calls rather than a re-hash.
+  def gem_checksum(gem_name, version)
+    nil
+  end
+
+  # The three questions above, asked of an object that may be any of: a
+  # repository implementing the protocol, a SimpleDelegator wrapping one,
+  # or somebody's duck-typed stand-in that has never heard of any of this.
+  # The rules themselves live in Paquette::CacheValidation, shared with the
+  # npm side - two servers are two chances to get a security-critical
+  # digest subtly different from each other.
+  def self.cache_validator_of(repository)
+    Paquette::CacheValidation.validator_of(repository)
+  end
+
+  def self.private_to_caller?(repository)
+    Paquette::CacheValidation.private_to_caller?(repository)
+  end
+
+  def self.gem_checksum_of(repository, gem_name, version)
+    repository.gem_checksum(gem_name, version) if repository.respond_to?(:gem_checksum)
+  end
+
+  def self.derive_validator(inner_validator, layer, key)
+    Paquette::CacheValidation.derive_validator(inner_validator, layer, key)
   end
 
   # One line of an /info/ file, in the compact index format:

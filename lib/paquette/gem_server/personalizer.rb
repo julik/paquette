@@ -62,6 +62,50 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     personalize_gem(original_path, gem_name, version)
   end
 
+  # The wrapped validator with this personalizer's own identity mixed in,
+  # so one licensee's cached index can never satisfy another's request.
+  #
+  # The key is `personalization_digest` — the same digest that already
+  # names the personalized gems in the cache directory. That is the
+  # argument for it being enough: if two licensees could collide here,
+  # they would already be colliding on disk, and the second one would be
+  # handed the first one's gem. This validator is therefore exactly as
+  # strong as the personalized-gem cache the class already ships, and it
+  # inherits that cache's contract — what `files_for:` returns may depend
+  # on the gem and on `personalization_key:` and on nothing else, and
+  # anything else the personalized bytes depend on belongs in that key.
+  #
+  # Which is also why `files_for:` itself is not digested: a Proc cannot
+  # be, and the contract exists so that it does not have to be.
+  def cache_validator
+    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
+    Paquette::GemServer::GemRepository.derive_validator(inner, "personalizer", personalization_digest)
+  end
+
+  # Every byte this serves is baked for one licensee. Even the gems that
+  # opt out of personalization arrive on a URL whose neighbours do not,
+  # so the response as a whole is not a shared cache's to keep.
+  def private_to_caller?
+    true
+  end
+
+  # The checksum of what this personalizer would hand over: the repacked
+  # gem's, or the underlying one's for a gem served byte for byte. Same
+  # number, same cache, as the `checksum:` field compact_info publishes —
+  # a download ETag that disagreed with the index would make `bundle
+  # install` report a tampered gem.
+  def gem_checksum(gem_name, version)
+    original = __getobj__.gem_file_path(gem_name, version)
+    served = gem_file_path(gem_name, version)
+
+    if served.nil? || served == original
+      return Paquette::GemServer::GemRepository.gem_checksum_of(__getobj__, gem_name, version)
+    end
+    return nil unless File.exist?(served)
+
+    served_checksum(served)
+  end
+
   # The wrapped repository's lines with the checksum swapped where the
   # served file differs from the one on disk, and only there. The other
   # fields of a line still describe the gem — repacking touches neither

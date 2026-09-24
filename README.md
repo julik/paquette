@@ -53,7 +53,7 @@ You can also create your own entitlement checks. This allows you to customize wh
 
 ```ruby
 # ...the rest as above
-gem_repo = Paquette::GemServer::ReadGatedRepository.new(gem_repo) do |name:, version: nil|
+gem_repo = Paquette::GemServer::ReadGatedRepository.new(gem_repo, gate_key: Current.license.cache_key) do |name:, version: nil|
   lic = Current.license
   lic.package_names.include?(name)
 end
@@ -61,6 +61,8 @@ gem_server = Paquette::GemServer.new(gem_repo)
 ```
 
 Now the holder of the `license` stored in your `ActiveSupport::Current` for the request will only receive the gems included in their license's `package_names` list. And you can limit version access as well. This affects serving the actual packages, serving the indexes and anything else.
+
+The `gate_key:` (the npm `ReadGatedRepository` takes one too) is optional and is only used for HTTP caching. Your gate is a block, and nothing inside Paquette can work out which subset of the corpus it selects - so if you want Paquette to emit `ETag`s on the index endpoints, you have to say who this gate is for. Pass something that identifies the licensee *and* changes whenever their entitlements change (a Rails `cache_key` does both). Leave it out and Paquette emits no `ETag` at all rather than a possibly-wrong one - see [HTTP caching](#http-caching).
 
 Paquette also includes a _personalization_ wrapper.
 
@@ -225,6 +227,81 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 - `PUT /{package}/-rev/{rev}` - Document update (how `npm unpublish` removes versions)
 - `DELETE /{package}/-rev/{rev}` - Unpublish a package
 - `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
+
+## HTTP caching
+
+Paquette does not cache anything itself. It emits correct HTTP cache headers and answers conditional requests, and leaves the actual caching to a cache you put in front of it.
+
+### What the server emits
+
+`GET /versions`, `GET /names` and `GET /info/:gem_name` carry an `ETag` and honour `If-None-Match` with a `304 Not Modified`. This is worth having on `/versions` in particular: rendering it means rendering and MD5-ing every gem's `/info/` body for the whole corpus, so a 304 turns the most expensive request this server serves into a digest of the corpus fingerprint.
+
+`GET /gems/:gem_filename` carries an `ETag`, a `Last-Modified`, `Accept-Ranges: bytes` and `Cache-Control: max-age=31536000, immutable`, and honours `If-None-Match`, `If-Modified-Since`, and `Range` (including multiple ranges, `416` for an unsatisfiable one, and `If-Range`). The `immutable` is honest: a `.gem` file at a given path never changes, because a yank renames it away and a name+version can never be pushed twice.
+
+The npm server does the same on its own surfaces. `GET /:package` (the packument) and `GET /-/package/:package/dist-tags` carry an `ETag` and answer `If-None-Match` with a 304 - the npm client honours ETag on packuments, so this is the equivalent of `/versions`. `GET /:package/-/:tarball` is served exactly like a gem download, and its `ETag` is the very `dist.integrity` value the packument published, because npm refuses to install a tarball that disagrees with the document that pointed at it. `GET /-/whoami` is `Cache-Control: no-store` and carries no validator at all: it is the caller's identity, and there is no key under which storing it would be safe.
+
+Range serving is Rack's own `Rack::Files#serving`, so this adds no dependency.
+
+### Putting a cache in front
+
+Under Rails, turn on the Rack::Cache integration:
+
+```ruby
+# config/environments/production.rb
+config.action_dispatch.rack_cache = true
+```
+
+Under plain Rack, use [rack-cache](https://github.com/rtomayko/rack-cache) directly:
+
+```ruby
+# config.ru
+require "rack/cache"
+
+use Rack::Cache,
+  metastore: "file:tmp/cache/rack/meta",
+  entitystore: "file:tmp/cache/rack/body",
+  verbose: false
+
+run Paquette::GemServer.new(gem_repo)
+```
+
+A CDN in front of your application works the same way, on the same headers.
+
+### The part to read before you turn that on
+
+**rack-cache is a shared cache.** It keys on the URL, and a response marked `public` is one it will store once and replay to whoever asks next. Under a `ReadGatedRepository` or a `Personalizer` the next requester is a different licensee, and what they would be handed is somebody else's entitlements.
+
+So Paquette marks any response that passed through a gate or a personalizer `Cache-Control: private` (never `public`), plus `Vary: Authorization, Accept-Encoding`.
+
+**`Cache-Control: private` is the load-bearing control.** It is what excludes shared caches altogether, and it is the only thing standing between two licensees when the content is personalized.
+
+**`Vary: Authorization` is defence in depth, and it is not sufficient on its own.** It is correct for the flow this gem documents - `Paquette::TokenAuthorization` reads the token out of `Authorization`, in both its Bearer and its Basic spelling - but Paquette does not resolve identity, your application does. The example further up this README resolves the user from `env["REMOTE_USER"]`; yours may use a cookie, a client certificate or a subdomain. A shared cache keyed only on `Authorization` would then serve one licensee's index to another quite happily. If you are caching gated or personalized responses, do not read "we set `Vary`" as meaning you are covered - `private` is what covers you, and if you deliberately relax it you are on your own.
+
+The index endpoints get `no-cache` rather than `no-store`, so the *client* (Bundler's own on-disk compact index) can still keep a copy and send `If-None-Match`. Without that there would be nothing to revalidate and no 304.
+
+The validator itself is derived from the whole wrapper stack, not just from the corpus:
+
+- The directory repository contributes its `fingerprint` - a digest of what is on disk, which moves on every push and yank. On the npm side it also folds in each `dist-tags.json` mtime, because a dist-tag write rewrites that file in place and moves no path at all.
+- `Personalizer` mixes in its personalization key, so one licensee's index can never validate another's.
+- `ReadGatedRepository` mixes in the `gate_key:` you supplied, **and emits no validator at all if you did not supply one.** That is deliberate. An entitlement gate is an arbitrary block; guessing that two of them are the same gate is how one customer ends up with another customer's index. No `ETag` means every request is served in full, which is slow and recoverable.
+
+On the npm side the packument validator also folds in the base URL the request was made against, since the document embeds absolute tarball URLs built from it. Host is part of any cache key already, but scheme is not.
+
+Personalization is worse on the npm side than on the gem side, and worth understanding before you cache anything. A gem `Personalizer` changes the bytes of a `.gem` and the checksum the index publishes for it. An npm `Personalizer` changes the *packument itself*, because `dist.integrity` is recomputed per licensee and the document carries one per version. Hand a second licensee a packument cached for the first and npm receives integrity hashes that cannot match the tarball it downloads next - which it treats as tampering and refuses to install.
+
+A `nil` validator propagates outward, so a `Personalizer` wrapped around a keyless gate emits no `ETag` either.
+
+### For your own repository classes
+
+If you have written a repository of your own, these optional methods hook into this (defined on `Paquette::GemServer::GemRepository` and `Paquette::NpmServer::NpmRepository` with safe defaults, so an existing class keeps working untouched):
+
+- `#cache_validator` - a short string that changes whenever anything you would serve changes, or `nil` for "do not cache this". Defaults to `nil`.
+- `#private_to_caller?` - whether what you serve is specific to the caller. Defaults to `true`, which is the safe answer; `DirectoryGemRepository` overrides it to `false`.
+- `#gem_checksum(name, version)` - the SHA256 of the `.gem` bytes you would actually serve, used for the download `ETag`. Defaults to `nil`, which falls back to size and mtime.
+
+The npm repository protocol has `#cache_validator` and `#private_to_caller?` with the same meaning; instead of `#gem_checksum` it reads the tarball's integrity off `#dist_for`.
+
+If you are writing a wrapper, mix yourself into the layer below with `Paquette::CacheValidation.derive_validator(inner_validator, "your-layer", your_key)`, which returns `nil` if either argument is `nil`.
 
 ## The index page
 

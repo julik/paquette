@@ -16,6 +16,7 @@ class Paquette::GemServer
   autoload :ReadonlyRepository, "#{__dir__}/gem_server/readonly_repository"
 
   prepend Paquette::RegexpTimeout
+  include Paquette::ConditionalGet
 
   # \A..\z, not ^..$: Mustermann unescapes %0A into a real newline and line
   # anchors let the rest of the segment ride along. NAME_CHAR is RubyGems'
@@ -80,13 +81,7 @@ class Paquette::GemServer
 
     # Dynamic endpoints with parameters
     r.get "/info/:gem_name" do |gem_name:|
-      body = compact_info_body(gem_name)
-
-      if body.nil?
-        not_found("Not Found")
-      else
-        text_ok(body)
-      end
+      handle_compact_info(gem_name)
     end
 
     r.get "/quick/Marshal.4.8/:gem_spec_name.gemspec.rz" do |gem_spec_name:|
@@ -116,18 +111,7 @@ class Paquette::GemServer
     r.get "/gems/:gem_filename" do |gem_filename:|
       # Extract gem name and version from filename
       if (match = gem_filename.match(GEM_FILENAME))
-        gem_name, version = match[1], match[2]
-
-        if @repository.gem_exists?(gem_name, version)
-          # gem_file_path now automatically returns personalized gem
-          gem_path = @repository.gem_file_path(gem_name, version)
-          clen = File.size(gem_path).to_s
-          hh = {"Content-Type" => "application/octet-stream", "Content-Length" => clen}
-
-          [200, hh, File.open(gem_path, "rb")]
-        else
-          not_found("Gem not found or it is not within your license")
-        end
+        handle_gem_download(match[1], match[2])
       else
         not_found("Invalid gem filename")
       end
@@ -358,12 +342,47 @@ class Paquette::GemServer
   end
 
   def handle_compact_names
-    names = @repository.gem_names
-    text_ok(names.join("\n"))
+    etag = etag_for("compact-names")
+    return not_modified(etag) if if_none_match_satisfied?(etag)
+
+    cacheable(text_ok(@repository.gem_names.join("\n")), etag)
   end
 
+  # The conditional check is deliberately the first thing here, in front of
+  # the Measurometer block and therefore in front of render_compact_versions.
+  # A 304 on this endpoint is the whole point of the exercise: the render
+  # below walks every gem in the corpus and MD5s the /info/ body it would
+  # serve for each, and under a Personalizer that means knowing the SHA256 of
+  # a repacked gem per version. Answering "nothing changed" must cost a
+  # digest of the corpus fingerprint and not one byte more.
   def handle_compact_versions
-    Measurometer.instrument("paquette.gem_server.compact_versions") { render_compact_versions }
+    # Weak, and it has to be. The body carries `created_at:` stamped from
+    # Time.now at render time, so two renders of an unchanged corpus are
+    # semantically the same index and are *not* byte-identical — which is
+    # exactly the distinction W/ was invented for. Claiming a strong
+    # validator here would be a lie, and a strong ETag is the one a client
+    # is entitled to use for If-Range byte arithmetic.
+    etag = etag_for("compact-versions", weak: true)
+    return not_modified(etag) if if_none_match_satisfied?(etag)
+
+    response = Measurometer.instrument("paquette.gem_server.compact_versions") { render_compact_versions }
+    cacheable(response, etag)
+  end
+
+  # A 304 here cannot outlive the gem it describes. Every validator on this
+  # endpoint folds in the corpus fingerprint, and a yank renames the .gem
+  # file away, which moves the fingerprint — so the ETag a client holds for
+  # a gem that has since been yanked can never match, and the client is told
+  # 404 rather than "unchanged". The gem name is in the validator as well,
+  # so one gem's cached info can never answer for another's.
+  def handle_compact_info(gem_name)
+    etag = etag_for("compact-info", gem_name)
+    return not_modified(etag) if if_none_match_satisfied?(etag)
+
+    body = compact_info_body(gem_name)
+    return not_found("Not Found") if body.nil?
+
+    cacheable(text_ok(body), etag)
   end
 
   # Rendered per request, and it renders every /info/ file in the corpus to
@@ -495,6 +514,61 @@ class Paquette::GemServer
         io.string
       end
     end
+  end
+
+  # .gem bytes at a given path never change - a yank renames the file away
+  # and a name+version can never be pushed twice - so a download is the one
+  # thing this server hands out that is worth an immutable, year-long
+  # max-age. Under a Personalizer the path is per-licensee (it is named
+  # after everything baked into the gem), so that invariant holds there too;
+  # what changes is only who may keep the copy, which is Cache-Control's job
+  # and not the validator's.
+  def handle_gem_download(gem_name, version)
+    return not_found("Gem not found or it is not within your license") unless @repository.gem_exists?(gem_name, version)
+
+    # gem_file_path returns the personalized gem where there is one. nil is
+    # a gate refusing after gem_exists? said yes, which a per-version
+    # entitler can legitimately do.
+    gem_path = @repository.gem_file_path(gem_name, version)
+    return not_found("Gem not found or it is not within your license") if gem_path.nil?
+
+    stat = begin
+      File.stat(gem_path)
+    rescue SystemCallError
+      return not_found("Gem not found or it is not within your license")
+    end
+
+    serve_gem_file(gem_path, stat, gem_name, version)
+  end
+
+  # The .gem bytes at a given path never change - a yank renames the file
+  # away and a name+version can never be pushed twice - so this is served
+  # immutable. Under a Personalizer the path is per-licensee (it is named
+  # after everything baked into the gem), so the invariant holds there too;
+  # what changes is only who may keep the copy, which is Cache-Control's
+  # job and not the validator's.
+  def serve_gem_file(gem_path, stat, gem_name, version)
+    serve_immutable_file(gem_path, stat, gem_file_etag(gem_path, stat, gem_name, version))
+  end
+
+  # What names these particular bytes. The SHA256 the repository already
+  # computed and cached is the honest answer and costs two stat calls
+  # rather than a re-hash of a multi-megabyte file - it is the very number
+  # the compact index publishes as `checksum:`, so a download ETag can
+  # never disagree with the index that sent the client here.
+  #
+  # Size and mtime are the fallback for a repository that does not
+  # implement gem_checksum: weaker, but it still moves when the file does.
+  #
+  # Note that this needs nothing from the wrapper stack. A digest of the
+  # bytes being served *is* the validator, and a personalized gem hashes
+  # differently by construction. Who is allowed to keep the copy is a
+  # separate question, answered by Cache-Control.
+  def gem_file_etag(gem_path, stat, gem_name, version)
+    checksum = Paquette::GemServer::GemRepository.gem_checksum_of(@repository, gem_name, version)
+    return %("#{checksum}") if checksum
+
+    %("#{stat.size}-#{stat.mtime.to_i}-#{stat.mtime.nsec}")
   end
 
   # Helper methods for common response patterns

@@ -255,15 +255,24 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   end
 
   # Returns the cached fields, or nil for anything short of a usable
-  # entry: no sidecar yet, unparseable JSON, a hash missing the keys the
-  # renderer needs, or a size/mtime that disagrees with the gem file on
-  # disk. A byte-different file at the same path should never happen, but
-  # "should never happen" is not a thing to serve stale checksums over —
-  # a nil here just means the gem gets parsed again.
+  # entry: no sidecar yet, unparseable JSON, an entry written by an older
+  # format, a hash missing the keys the renderer needs, or a size/mtime
+  # that disagrees with the gem file on disk. A byte-different file at the
+  # same path should never happen, but "should never happen" is not a
+  # thing to serve stale checksums over — a nil here just means the gem
+  # gets parsed again.
   def read_sidecar(gem_name, version, stat)
     fields = JSON.parse(File.read(sidecar_path(gem_name, version)))
     return nil unless fields.is_a?(Hash)
-    return nil unless %w[dependencies ruby checksum].all? { |key| fields.key?(key) }
+
+    # Anything not stamped with the current format number is discarded
+    # rather than served. A sidecar from before the number existed reads
+    # as nil here and is re-derived too, which is the case this check was
+    # put in for: an entry that predates a field cannot be told from one
+    # whose gem genuinely lacks it, and serving it would mean a warm cache
+    # quietly emitting yesterday's line forever.
+    return nil unless fields["format_version"] == SIDECAR_FORMAT_VERSION
+    return nil unless %w[dependencies ruby rubygems checksum].all? { |key| fields.key?(key) }
     return nil unless fields["size"] == stat.size && fields["mtime_ns"] == mtime_ns(stat)
 
     fields
@@ -271,18 +280,24 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     nil
   end
 
-  # Written into every sidecar, and checked by nothing — deliberately.
-  # The reader keys off the fields it needs and ignores the rest, so a
-  # sidecar from before this constant existed reads exactly as well as
-  # one written today, and no migration or version branch is wanted yet.
-  # The number is here for the day the format has to change: when it
-  # does, the reader will need something on disk to dispatch on, and a
-  # file that says "1" can be told apart from whatever comes after it,
-  # while a file written before anyone recorded a version is ambiguous
-  # forever. So the version goes in now, while writing it costs nothing,
-  # instead of at the moment it is needed and every existing sidecar
-  # lacks it.
-  SIDECAR_FORMAT_VERSION = 1
+  # Written into every sidecar, and checked by read_sidecar, which
+  # discards anything not stamped with the current number.
+  #
+  # The day the format had to change arrived with "rubygems", the fourth
+  # compact-info field. A cached entry written at version 1 has no such
+  # key, and a reader that only looked for the keys it needed could not
+  # tell that entry apart from one whose gem simply declares no
+  # `required_rubygems_version` — so every deployment with a warm cache
+  # would have gone on serving lines without the field, indefinitely and
+  # invisibly. Bumping the number is what expires them: a version-1
+  # sidecar is re-derived on the first request that reaches it, once,
+  # after which the cache is warm again at the new format.
+  #
+  # Bump this whenever compact_info_fields gains, drops or changes the
+  # meaning of a key. It costs each deployment one re-derivation pass
+  # spread over ordinary traffic, which is the price of never serving a
+  # line the current code would not have rendered.
+  SIDECAR_FORMAT_VERSION = 2
 
   def derive_sidecar(gem_name, version, gem_file, stat)
     Measurometer.instrument("paquette.gem_repository.derive_sidecar") do

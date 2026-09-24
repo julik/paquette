@@ -130,7 +130,7 @@ class Paquette::GemServer::GemRepository
 
   # One line of an /info/ file, in the compact index format:
   #
-  #   VERSION DEP:REQ,DEP:REQ|checksum:SHA256,ruby:REQ
+  #   VERSION DEP:REQ,DEP:REQ|checksum:SHA256,ruby:REQ,rubygems:REQ
   #
   # The dependency section is what Bundler resolves against, and the gem it
   # later downloads is checked against it — a line that claims no
@@ -166,9 +166,22 @@ class Paquette::GemServer::GemRepository
       [dep.name, requirement_string(dep.requirement)]
     end
 
+    # The same failure mode as a missing dependency, one field over: a gem
+    # that declares `required_rubygems_version` and does not say so in the
+    # index resolves cleanly and then refuses to install, because the
+    # client only meets the constraint once it holds the real gemspec.
+    #
+    # nil rather than ">= 0" when there is no constraint — rubygems.org
+    # omits the field entirely in that case (compare
+    # https://rubygems.org/info/rake, where 13.4.2 carries `ruby:` and no
+    # `rubygems:`), and the renderer keys off the nil to leave it out.
+    required_rubygems = spec.required_rubygems_version
+    rubygems = requirement_string(required_rubygems) if required_rubygems && required_rubygems.to_s != ">= 0"
+
     {
       "dependencies" => deps,
       "ruby" => spec.required_ruby_version&.to_s || ">= 0",
+      "rubygems" => rubygems,
       "checksum" => checksum
     }
   end
@@ -176,7 +189,7 @@ class Paquette::GemServer::GemRepository
   # Renders a line from a fields hash — freshly extracted or read back
   # from a cache, the bytes must come out the same either way, which is
   # why there is one renderer and compact_info_line goes through it.
-  # Keys beyond the three this reads are ignored, so a caller may keep
+  # Keys beyond the ones this reads are ignored, so a caller may keep
   # bookkeeping of its own (file sizes, mtimes) in the same hash.
   def self.compact_info_line_from_fields(version, fields)
     deps = fields.fetch("dependencies").map { |dep_name, req| "#{dep_name}:#{req}" }.join(",")
@@ -184,7 +197,18 @@ class Paquette::GemServer::GemRepository
     # No space between the dependency list and the pipe, but one after the
     # version — which means a gem without dependencies gets "1.0.0 |...",
     # exactly what rubygems.org serves for such a gem.
-    "#{version} #{deps}|checksum:#{fields.fetch("checksum")},ruby:#{fields.fetch("ruby")}"
+    line = "#{version} #{deps}|checksum:#{fields.fetch("checksum")},ruby:#{fields.fetch("ruby")}"
+
+    # "rubygems:" comes after "ruby:" and before the "created_at:" that
+    # rubygems.org appends and Paquette does not, and it is absent — not
+    # empty, not ">= 0" — for a gem with no constraint. Fetched with [] and
+    # not fetch() so a fields hash assembled by something other than
+    # compact_info_fields still renders the line it would have rendered
+    # before this field existed.
+    rubygems = fields["rubygems"]
+    line << ",rubygems:#{rubygems}" if rubygems
+
+    line
   end
 
   # An already-rendered line with only its checksum replaced, for
@@ -194,6 +218,13 @@ class Paquette::GemServer::GemRepository
   # paid for instead of re-deriving it from the spec. Lives here because
   # this class owns the line format: the one place that renders
   # "checksum:" is the one place allowed to find it again.
+  #
+  # The pattern cannot stray into a neighbouring field: no other field name
+  # ends in "checksum" (the match is not anchored, but "ruby:" and
+  # "rubygems:" share no suffix with it), and the value class [0-9a-f]
+  # stops dead at the "," that ends the hex digest, so a requirement like
+  # ">= 1.3.2" sitting after it is never in reach. sub, not gsub, so only
+  # the first occurrence is touched even if a digest somehow repeated.
   def self.replace_checksum(line, checksum)
     line.sub(/checksum:[0-9a-f]+/) { "checksum:#{checksum}" }
   end
@@ -202,6 +233,19 @@ class Paquette::GemServer::GemRepository
   # separates *dependencies* in this format, so within one dependency the
   # clauses are joined with "&" instead: ">= 1.0, < 3" becomes ">= 1.0&< 3".
   # The space inside a clause stays; rubygems.org keeps it too.
+  #
+  # The same join applies to "ruby:" and "rubygems:", which sit in the
+  # comma-separated metadata segment for the same reason — see
+  # CompactIndex::GemVersion#join_multiple, which rubygems.org renders with
+  # and which uses one helper for all three.
+  #
+  # One divergence, noted rather than fixed here: join_multiple also sorts
+  # the clauses, so rubygems.org renders ">= 1.3.2, < 4" as "< 4&>= 1.3.2"
+  # where this renders it in the gemspec's own order. Nothing resolves
+  # differently for it — a requirement is a set — and sorting would change
+  # the bytes of every existing multi-clause dependency line, which is a
+  # /versions digest shift for a corpus that has not changed. It belongs in
+  # its own change, not smuggled into one about a missing field.
   def self.requirement_string(requirement)
     requirement.to_s.split(", ").join("&")
   end

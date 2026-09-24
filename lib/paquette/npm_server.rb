@@ -11,6 +11,7 @@ class Paquette::NpmServer
   autoload :ReadGatedRepository, "#{__dir__}/npm_server/read_gated_repository"
 
   prepend Paquette::RegexpTimeout
+  include Paquette::ConditionalGet
 
   # npm sends the scope separator percent-encoded for metadata but plain in
   # tarball URLs; normalizing makes a package name one path segment.
@@ -25,17 +26,15 @@ class Paquette::NpmServer
       json_ok({})
     end
 
+    # Identity itself. There is no validator that could make this safe to
+    # store, and a shared cache holding one licensee's answer would be
+    # telling the next caller who they are.
     r.get "/-/whoami" do
-      json_ok({username: username})
+      uncacheable(json_ok({username: username}))
     end
 
     r.get "/-/package/:package_name/dist-tags" do |package_name:|
-      tags = @repository.dist_tags(package_name)
-      if tags.empty?
-        not_found("Package not found")
-      else
-        json_ok(tags)
-      end
+      handle_dist_tags(package_name)
     end
 
     r.put "/-/package/:package_name/dist-tags/:tag" do |package_name:, tag:|
@@ -187,14 +186,41 @@ class Paquette::NpmServer
   end
 
   # The hot read path for `npm install`: one document covering every version
-  # of the package, rebuilt per request.
+  # of the package, rebuilt per request. The npm client honours ETag on
+  # packuments, so this is where a conditional GET pays for itself the way
+  # /versions does on the gem side.
+  #
+  # The validator folds in the request's base URL as well as the corpus and
+  # the wrapper stack, because absolutize_tarballs rewrites every
+  # dist.tarball into an absolute URL built from it. Host is implicitly part
+  # of any HTTP cache key, but scheme is not: a proxy that varies
+  # X-Forwarded-Proto for one Host would otherwise let a cached packument
+  # hand http:// tarball URLs to an https:// client. It costs nothing when
+  # the base is stable, which is the normal case.
   def handle_metadata(package_name)
+    etag = etag_for("packument", package_name, metadata_base_url)
+    return not_modified(etag) if if_none_match_satisfied?(etag)
+
     Measurometer.instrument("paquette.npm_server.metadata") do
       metadata = @repository.package_metadata(package_name)
       next not_found("Package not found") unless metadata
 
-      json_ok(with_absolute_tarballs(metadata))
+      cacheable(json_ok(with_absolute_tarballs(metadata)), etag)
     end
+  end
+
+  # dist-tags move without any path moving - the file is rewritten in
+  # place - which the repository fingerprint accounts for by folding in
+  # that file's mtime. So this rides on the same validator as everything
+  # else and still moves the moment a tag is repointed.
+  def handle_dist_tags(package_name)
+    etag = etag_for("dist-tags", package_name)
+    return not_modified(etag) if if_none_match_satisfied?(etag)
+
+    tags = @repository.dist_tags(package_name)
+    return not_found("Package not found") if tags.empty?
+
+    cacheable(json_ok(tags), etag)
   end
 
   def handle_tarball(package_name, tarball_name)
@@ -209,13 +235,48 @@ class Paquette::NpmServer
     end
     return not_found("Package not found or it is not within your license") unless path && File.exist?(path)
 
-    size = File.size(path)
-    Measurometer.add_distribution_value("paquette.npm_server.tarball_bytes", size)
-    headers = {
-      "Content-Type" => "application/octet-stream",
-      "Content-Length" => size.to_s
-    }
-    [200, headers, File.open(path, "rb")]
+    stat = begin
+      File.stat(path)
+    rescue SystemCallError
+      return not_found("Package not found or it is not within your license")
+    end
+    Measurometer.add_distribution_value("paquette.npm_server.tarball_bytes", stat.size)
+
+    # An unpublished version leaves a .tgz.tomb behind that stops the same
+    # version being republished with different bytes, so a tarball at a
+    # given path is as immutable as a .gem is.
+    serve_immutable_file(path, stat, tarball_etag(package_name, version, path, stat))
+  end
+
+  # npm's own integrity hash for the tarball it is about to receive, which
+  # under a Personalizer is the personalized tarball's rather than the one
+  # on disk. Using the very value the packument publishes as
+  # dist.integrity means a download ETag can never disagree with the
+  # document that sent npm here - and npm hard-fails an install when those
+  # two disagree.
+  def tarball_etag(package_name, version, path, stat)
+    integrity = dist_integrity(package_name, version)
+    return %("#{integrity}") if integrity
+
+    %("#{stat.size}-#{stat.mtime.to_i}-#{stat.mtime.nsec}")
+  end
+
+  def dist_integrity(package_name, version)
+    return nil unless @repository.respond_to?(:dist_for)
+
+    dist = @repository.dist_for(package_name, version)
+    return nil unless dist.is_a?(Hash)
+
+    dist["integrity"] || dist["shasum"]
+  rescue
+    nil
+  end
+
+  # The base absolutize_tarballs will build its URLs from - the same
+  # expression, kept in one place so the validator and the document cannot
+  # disagree about what went into the body.
+  def metadata_base_url
+    @request.base_url + @request.script_name
   end
 
   # Only the `_attachments` tarball is used; the rest is derived from it.
@@ -326,7 +387,7 @@ class Paquette::NpmServer
   end
 
   def absolutize_tarballs(metadata)
-    base = @request.base_url + @request.script_name
+    base = metadata_base_url
     versions = (metadata["versions"] || {}).each_with_object({}) do |(version, doc), acc|
       dist = doc["dist"]
       acc[version] = if dist.is_a?(Hash) && dist["tarball"].to_s.start_with?("/")

@@ -13,9 +13,56 @@ require "measurometer"
 # policy. This one is deliberately opinionated: gating reads blocks
 # writes, full stop.
 class Paquette::GemServer::ReadGatedRepository < Paquette::GemServer::ReadonlyRepository
-  def initialize(repository, &entitler)
+  # `gate_key:` is what this gate is called, for HTTP caching, and it is
+  # the caller's to supply because nothing here can work it out.
+  #
+  # The gate is a block. Two blocks that select different gems are two
+  # different views of the corpus, and nothing about a Proc — not its
+  # source location, not its identity, which is fresh on every request
+  # when the stack is built per-request as the README recommends — tells
+  # you which view it produces. It closes over a licensee, and only the
+  # caller knows who.
+  #
+  # So: pass the identity of whoever the entitler will consult, and pass
+  # everything about them the answers depend on. A licensee id is usually
+  # it; if entitlements can change without the id changing, the key has
+  # to move when they do (append the licensee's updated_at, or a version
+  # counter on their entitlement set), or a client keeps a 304 for a gem
+  # it is no longer allowed to have.
+  #
+  # Leave it out and this repository reports no validator at all, which
+  # makes the whole stack above it report none, which makes the server
+  # emit no ETag and serve every request in full. That is the intended
+  # default: an absent key is indistinguishable from "every licensee is
+  # the same licensee", and a wrong ETag on a gated index hands one
+  # customer another customer's entitlements. Slow is recoverable.
+  def initialize(repository, gate_key: nil, &entitler)
     super(repository)
     @entitler = entitler
+    @gate_key = gate_key
+  end
+
+  # nil without a gate_key — see above. derive_validator does the
+  # refusing, so this reads the same as any other layer.
+  def cache_validator
+    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
+    Paquette::GemServer::GemRepository.derive_validator(inner, "read-gate", @gate_key)
+  end
+
+  # A gated response is one licensee's list of what they may have, and a
+  # gated download is bytes another licensee would have been refused.
+  # Neither may sit in a shared cache, whatever the bytes underneath.
+  def private_to_caller?
+    true
+  end
+
+  # Asked through the class method rather than with `super` so that an
+  # inner repository predating this protocol answers nil instead of
+  # raising NoMethodError out of Delegator#method_missing.
+  def gem_checksum(gem_name, version)
+    return nil unless entitled?(name: gem_name, version: version)
+
+    Paquette::GemServer::GemRepository.gem_checksum_of(__getobj__, gem_name, version)
   end
 
   def gem_names

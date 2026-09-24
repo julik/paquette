@@ -37,6 +37,30 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
     @cache_dir = cache_dir || File.join(Dir.tmpdir, "paquette_personalized_npm")
   end
 
+  # The wrapped validator with this personalizer's identity mixed in.
+  #
+  # This matters more here than on the gem side. dist_for below rewrites
+  # `integrity` per version, and the packument carries those hashes in the
+  # document itself - so the *response body* of a metadata request differs
+  # per licensee, not merely the tarball it points at. Serve one licensee's
+  # cached packument to another and npm receives integrity hashes that
+  # cannot match the tarball it downloads next, which it reports as
+  # tampering and refuses to install.
+  #
+  # The key is `personalization_digest`, the same digest that already names
+  # the personalized tarballs on disk: if two licensees could collide here
+  # they would already be colliding in that cache, and the second would be
+  # handed the first one's tarball. So this validator is exactly as strong
+  # as the caching the class already ships, and inherits its contract.
+  def cache_validator
+    inner = Paquette::CacheValidation.validator_of(__getobj__)
+    Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
+  end
+
+  def private_to_caller?
+    true
+  end
+
   def package_file_path(package_name, version)
     original_path = __getobj__.package_file_path(package_name, version)
     return original_path unless original_path && File.exist?(original_path)

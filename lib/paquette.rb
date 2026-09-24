@@ -23,6 +23,8 @@ module Paquette
   # should not pay for the npm side, and nothing here needs a load order.
   # Absolute paths because config.ru and bin/dev reach this file through
   # require_relative, which does not put lib/ on the load path.
+  autoload :CacheValidation, "#{__dir__}/paquette/cache_validation"
+  autoload :ConditionalGet, "#{__dir__}/paquette/conditional_get"
   autoload :GemServer, "#{__dir__}/paquette/gem_server"
   autoload :IndexPage, "#{__dir__}/paquette/index_page"
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"

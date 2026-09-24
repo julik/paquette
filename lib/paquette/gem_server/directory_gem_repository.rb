@@ -32,6 +32,38 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
   end
 
+  # The corpus fingerprint is this repository's whole contribution to an
+  # HTTP validator: it is the one thing here that can change what a
+  # response says, because the bytes at a given path never do.
+  def cache_validator
+    fingerprint
+  end
+
+  # A directory of gems is the same directory of gems for everybody. The
+  # wrappers above are what make a response caller-specific, and each of
+  # them says so for itself.
+  def private_to_caller?
+    false
+  end
+
+  # The SHA256 the sidecar already holds, so an ETag on a download costs
+  # two stat calls rather than a re-hash of a multi-megabyte file. Goes
+  # through exactly the same read-or-derive path compact_info uses, which
+  # is what makes the ETag and the checksum the compact index publishes
+  # the same number by construction rather than by coincidence.
+  def gem_checksum(gem_name, version)
+    gem_file = gem_file_path(gem_name, version)
+
+    stat = begin
+      File.stat(gem_file)
+    rescue SystemCallError
+      return nil
+    end
+
+    fields = read_sidecar(gem_name, version, stat) || derive_sidecar(gem_name, version, gem_file, stat)
+    fields && fields["checksum"]
+  end
+
   # Persists a .gem file from its raw binary contents. Returns the parsed
   # spec on success. Raises InvalidGem when the payload can't be opened as
   # a gem, or GemAlreadyExists if the name+version is already on disk.

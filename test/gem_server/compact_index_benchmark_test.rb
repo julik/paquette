@@ -116,6 +116,42 @@ class CompactIndexBenchmarkTest < Minitest::Test
       "a warm /versions repacked something"
     assert_equal VERSIONS_PER_GEM, @driver.counters["paquette.gem_personalizer.cache_hit"]
     assert_equal VERSIONS_PER_GEM, @driver.counters["paquette.gem_personalizer.checksum_hit"]
+
+    # And now the point of conditional GET on this endpoint. A warm render
+    # is cheap only relative to a cold one: it still walks every version of
+    # every gem the licensee can see, stats the personalized gem and reads
+    # its checksum sidecar, which is the whole VERSIONS_PER_GEM of counter
+    # movement asserted just above. A 304 must do none of that.
+    #
+    # Asserting the counters rather than the elapsed time is deliberate, and
+    # it is the same choice the warm assertions above make: a timing
+    # comparison would say the same thing and say it flakily. Here it says
+    # something a status code alone cannot - that the expensive render was
+    # skipped, not merely that its output was discarded.
+    etag = @warm_response[1]["ETag"]
+    refute_nil etag, "a personalized index must still be able to name itself"
+
+    counters_before = @driver.counters.dup
+    conditional = elapsed { @conditional_response = get("/versions", "HTTP_IF_NONE_MATCH" => etag) }
+    report("conditional /versions", conditional)
+
+    assert_equal 304, @conditional_response[0]
+    assert_equal "", body_of(@conditional_response)
+    assert_equal counters_before, @driver.counters,
+      "a 304 /versions rendered the index anyway"
+  end
+
+  # The validator has to move when the corpus does, or a client that asked
+  # once never sees a newly published gem again. Pushing one version is
+  # enough: the fingerprint underneath is a digest of the paths on disk.
+  def test_a_pushed_gem_invalidates_the_conditional_index
+    etag = get("/versions")[1]["ETag"]
+    refute_nil etag
+
+    write_dummy_gem(PLAIN_GEM, "9.0.0")
+
+    assert_equal 200, get("/versions", "HTTP_IF_NONE_MATCH" => etag)[0],
+      "a push must not leave a client holding a 304 for an index that changed"
   end
 
   # The point of the whole exercise. Every checksum the index publishes has to
@@ -151,8 +187,8 @@ class CompactIndexBenchmarkTest < Minitest::Test
     Paquette::GemServer.new(personalized)
   end
 
-  def get(path)
-    server.call(Rack::MockRequest.env_for(path))
+  def get(path, env = {})
+    server.call(Rack::MockRequest.env_for(path, env))
   end
 
   def body_of(response)

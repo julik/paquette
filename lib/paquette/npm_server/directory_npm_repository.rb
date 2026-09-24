@@ -169,7 +169,12 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
       "maintainers" => latest_info["maintainers"] || [],
       "repository" => latest_info["repository"],
       "bugs" => latest_info["bugs"],
-      "homepage" => latest_info["homepage"],
+      # Filtered, unlike its neighbours: this is the one field here that a
+      # reader treats as "the link for this package", and `npm publish` does
+      # not check its scheme. `repository` and `bugs` are left alone on
+      # purpose — `git://` and `git+ssh://` are legitimate there, so the
+      # http(s) rule would refuse values that are doing their job.
+      "homepage" => Paquette::SafeUrl.http_url(latest_info["homepage"]),
       "readme" => readme_for(package_name, tags["latest"]) || ""
     }.compact
   end

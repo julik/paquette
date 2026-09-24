@@ -86,6 +86,29 @@ class DirectoryNpmRepositoryTest < Minitest::Test
     assert_equal "# widget\n", metadata["readme"]
   end
 
+  # `npm publish` does not look at the scheme of a homepage either, and the
+  # packument is what a portal renders as "the link for this package".
+  def test_metadata_homepage_is_filtered_to_absolute_http_urls
+    hostile = ["javascript:alert(document.domain)", "data:text/html,<script>", "//evil.test", "docs/index.html"]
+    # A package apiece: the repository caches what it read out of a tarball
+    # under that tarball's path.
+    hostile.each_with_index do |homepage, i|
+      write_npm_package(@dir, name: "widget#{i}", version: "1.0.0", homepage: homepage)
+
+      metadata = @repository.package_metadata("widget#{i}")
+      refute metadata.key?("homepage"), "expected #{homepage.inspect} to be filtered out"
+    end
+  end
+
+  # The per-version documents still pass package.json through whole — see
+  # NpmRepository.version_doc, where a curated subset is a deliberate no.
+  def test_metadata_version_documents_are_not_filtered
+    write_npm_package(@dir, name: "widget", version: "1.0.0", homepage: "javascript:alert(1)")
+
+    versions = @repository.package_metadata("widget")["versions"]
+    assert_equal "javascript:alert(1)", versions["1.0.0"]["homepage"]
+  end
+
   def test_metadata_is_nil_for_an_unknown_package
     assert_nil @repository.package_metadata("nope")
   end

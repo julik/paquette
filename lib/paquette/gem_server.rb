@@ -257,15 +257,36 @@ class Paquette::GemServer
           platform: spec.platform.to_s,
           authors: spec.authors,
           info: spec.description || "",
-          homepage: spec.homepage || "",
+          homepage: Paquette::SafeUrl.http_url(spec.homepage) || "",
           description: spec.description || "",
           summary: spec.summary || "",
-          metadata: spec.metadata || {}
+          metadata: safe_metadata(spec.metadata)
         }
       end
     end
 
     json_ok(versions)
+  end
+
+  # The gemspec metadata hash, with every `*_uri` key filtered through
+  # SafeUrl and dropped when it is not an absolute http(s) URL. The rest of
+  # the hash passes through: an application can put anything it likes in
+  # there through GemRepacker's gemspec_extras (a license key, an
+  # entitlement) and an allowlist of rubygems.org's own URI keys would
+  # silently eat all of it. The `_uri` suffix is RubyGems' own convention
+  # for "this value is a URL", so it is the one part of the hash where the
+  # shape is known well enough to enforce.
+  def safe_metadata(metadata)
+    return {} unless metadata.is_a?(Hash)
+
+    metadata.each_with_object({}) do |(key, value), safe|
+      if key.to_s.end_with?("_uri")
+        url = Paquette::SafeUrl.http_url(value)
+        safe[key] = url if url
+      else
+        safe[key] = value
+      end
+    end
   end
 
   def handle_names

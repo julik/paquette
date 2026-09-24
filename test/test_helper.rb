@@ -1,6 +1,11 @@
 require "etc"
 require "minitest/autorun"
 
+# Explicit because minitest 6 stopped pulling it in behind autorun. The suite
+# has always used Minitest::Mock; on 5.x it happened to be there already, so
+# the missing require sat latent until the lockfile stopped pinning 5.25.
+require "minitest/mock"
+
 # One forked process per test class, rather than minitest's threads: the suite
 # binds ports, shells out, sets ENV and leans on process-global state like
 # Regexp.timeout, none of which survives sharing a process. NCPU is the gem's

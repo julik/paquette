@@ -152,15 +152,16 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     gem_dir = File.join(@gems_dir, gem_name)
     return [] unless Dir.exist?(gem_dir)
 
-    # Once, not once per .gem: gem_versions walks this for the whole corpus.
-    versioned = /\A#{Regexp.escape(gem_name)}-(\d+\.\d+\.\d+#{Paquette::GemServer::NAME_CHAR}{0,255})\z/
-
+    # The split is GemServer's to make, not this class's. Building a
+    # pattern here meant a third opinion about what a version looks like,
+    # and it disagreed: a gem pushed at "0.2" was written to disk and then
+    # matched by nothing, so it existed as a file and as nothing else. It
+    # also compiled a regexp per call out of a name that a caller chose,
+    # which raises on its own for a name that is not valid UTF-8.
     Measurometer.instrument("paquette.gem_repository.versions_for_gem") do
       Dir.glob(File.join(gem_dir, "*.gem")).map do |gem_path|
-        filename = File.basename(gem_path, ".gem")
-        if (match = filename.match(versioned))
-          match[1]
-        end
+        name, version = Paquette::GemServer.split_gem_filename(File.basename(gem_path))
+        version if name == gem_name
       end.compact.sort
     end
   end

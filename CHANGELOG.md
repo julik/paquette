@@ -11,6 +11,7 @@
 - Document how to put rack-cache or Rails' Rack::Cache integration in front of a Paquette server
 - Serve only absolute http(s) URLs for `homepage` and the `*_uri` gemspec metadata keys, and for the npm packument `homepage`
 - Name each gem's `required_rubygems_version` in the compact index, and bump the sidecar cache format so warm caches re-derive it
+- Accept every version RubyGems publishes, not just three-segment ones — a gem pushed at `0.2` or `0.17` used to be written to disk and then served to nobody
 
 ## 0.2.0
 

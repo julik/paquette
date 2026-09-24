@@ -15,6 +15,7 @@
 - Add `CooldownRepository`, a wrapper serving only versions published longer than a configured interval ago
 - Validate a pushed gemspec before acting on it, closing an arbitrary file write through `spec.name` (security)
 - Refuse newlines and NUL bytes in every spec field the compact index interpolates, so a push cannot forge an index row
+- Refuse any pushed gemspec field longer than 2KB
 - Validate the npm package version, which reached the filesystem as a path component the same way
 - Parse an uploaded gemspec with YAML alias expansion disabled
 - Stream a gem push to disk instead of buffering it in memory, and cap it with `max_push_bytes:`

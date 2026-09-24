@@ -32,8 +32,7 @@ class Paquette::GemServer::SpecValidator
   # the first place is the cheaper half of the belt and braces. gem.coop
   # applies the same rule. Anchored with \A..\z, never ^..$: a "$" would
   # happily match the end of the first line of "safe\nforged 9.9.9 …".
-  # Bounded rather than "+" so a 10MB name cannot pick the running time on
-  # Ruby 3.1, which does not memoize backtracking.
+  # Bounded rather than "+" because a gem name has a real-world maximum.
   NAME = /\A[A-Za-z0-9]#{Paquette::GemServer::NAME_CHAR}{0,254}\z/
 
   # RubyGems' own, and anchored and linear as it ships — but it is written
@@ -50,6 +49,10 @@ class Paquette::GemServer::SpecValidator
   # and each dependency's requirement verbatim, and those are as
   # uploader-chosen as the name is.
   FORBIDDEN_IN_FIELD = /[\r\n\x00]/
+
+  # No field in a gemspec has any business being longer than this, so
+  # nothing longer gets as far as an encoding check or a regexp.
+  MAX_FIELD_BYTES = 2048
 
   # Raised for anything here, deliberately: `GemServer#handle_push` already
   # maps InvalidGem to a 400 with the message as the body, and a rejected
@@ -119,6 +122,8 @@ class Paquette::GemServer::SpecValidator
     rescue
       invalid!("Gem #{label} could not be read as text")
     end
+
+    invalid!("Gem #{label} is longer than #{MAX_FIELD_BYTES} bytes") if string.bytesize > MAX_FIELD_BYTES
 
     # Reinterpreted as UTF-8 before the check, not merely asked whether it
     # is valid in whatever encoding it arrived tagged with: a string

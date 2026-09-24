@@ -65,7 +65,11 @@ class Paquette::GemServer::CooldownRepository < Paquette::GemServer::ReadonlyRep
   # always served and never moves the set, so it is left out altogether.
   #
   # So the validator is a digest of the inner validator, the interval and
-  # that count. Counting is a binary search over the publish times sorted
+  # that count. The count on its own would not do: it is a position in one
+  # list, and the inner validator is what names the list. A yank or a push
+  # changes the inner validator - for DirectoryGemRepository it hashes every
+  # .gem path - so two different corpora that happen to have the same number
+  # of cooled versions never share a validator. Counting is a binary search over the publish times sorted
   # once, which is the walk a 304 is there to skip - done once per corpus
   # rather than once per request. The sorted list is memoized under the
   # inner validator, which is the stack's promise that nothing it serves

@@ -154,6 +154,58 @@ class DirectoryNpmRepositoryTest < Minitest::Test
     end
   end
 
+  # The npm *name* was already validated, but the version was only checked
+  # for emptiness — and it is the other half of every tarball filename, so
+  # it reached File.join and FileUtils.mv from a package.json the uploader
+  # wrote. Same hole as the gem side, one field over.
+  def test_add_package_refuses_a_version_that_escapes_the_packages_directory
+    Dir.mktmpdir do |outer|
+      packages_dir = File.join(outer, "a", "b", "packages")
+      repository = Paquette::NpmServer::DirectoryNpmRepository.new(packages_dir)
+      before = Dir.glob(File.join(outer, "**", "*"), File::FNM_DOTMATCH).sort
+
+      escaping = "0.0.0/../../../../pwned"
+      assert_raises(Paquette::NpmServer::DirectoryNpmRepository::InvalidPackage) do
+        repository.add_package(npm_tarball_bytes(name: "widget", version: escaping))
+      end
+
+      assert_equal before, Dir.glob(File.join(outer, "**", "*"), File::FNM_DOTMATCH).sort
+      assert_equal [], repository.package_names
+    end
+  end
+
+  def test_add_package_refuses_every_malformed_version
+    ["../1.0.0", "1.0.0/../x", "/etc/passwd", ".1.0.0", "1.0.0\n", "1.0.0\x00", "a" * 100, "-1"].each do |version|
+      assert_raises(Paquette::NpmServer::DirectoryNpmRepository::InvalidPackage, "accepted #{version.inspect}") do
+        @repository.add_package(npm_tarball_bytes(name: "widget", version: version))
+      end
+    end
+
+    assert_equal [], Dir.glob(File.join(@dir, "**", "*.tgz"))
+  end
+
+  def test_add_package_still_accepts_real_semver
+    ["1.0.0", "0.0.1", "1.0.0-beta.1", "2.3.4+build.5", "10.20.30-rc.1+exp"].each do |version|
+      info = @repository.add_package(npm_tarball_bytes(name: "widget", version: version))
+      assert_equal version, info["version"]
+    end
+
+    assert_equal 5, @repository.versions_for_package("widget").length
+  end
+
+  # The read path composed the same string, so a tarball URL with a
+  # traversing version could serve any .tgz on the box. package_file_path
+  # now answers nil for it, which every caller already treats as "no such
+  # package".
+  def test_package_file_path_is_nil_for_a_traversing_version
+    write_npm_package(@dir, name: "widget", version: "1.0.0")
+
+    assert @repository.package_file_path("widget", "1.0.0")
+    assert_nil @repository.package_file_path("widget", "1.0.0/../../secret")
+    assert_nil @repository.package_file_path("widget", "../../../etc/passwd")
+    refute @repository.package_exists?("widget", "1.0.0/../../secret")
+  end
+
   def test_yank_package_leaves_a_tomb_that_blocks_republishing
     @repository.add_package(npm_tarball_bytes(name: "widget", version: "1.0.0"))
     @repository.yank_package("widget", "1.0.0")

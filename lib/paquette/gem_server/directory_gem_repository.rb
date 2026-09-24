@@ -1,5 +1,6 @@
 require "rubygems/package"
 require "tempfile"
+require "stringio"
 require "fileutils"
 require "digest"
 require "json"
@@ -10,6 +11,8 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   class GemAlreadyExists < StandardError; end
 
   class InvalidGem < StandardError; end
+
+  class GemTooLarge < StandardError; end
 
   class GemNotFound < StandardError; end
 
@@ -64,38 +67,132 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     fields && fields["checksum"]
   end
 
-  # Persists a .gem file from its raw binary contents. Returns the parsed
-  # spec on success. Raises InvalidGem when the payload can't be opened as
-  # a gem, or GemAlreadyExists if the name+version is already on disk.
-  def add_gem(binary_data)
-    raise InvalidGem, "Empty gem payload" if binary_data.nil? || binary_data.empty?
+  # Persists a .gem file from an uploaded payload. Returns the parsed spec
+  # on success.
+  #
+  # `gem_payload` is either an IO to stream from — a Rack request body, say
+  # — or a String of raw bytes. The IO form is the one the server uses: a
+  # 50MB push should not become a 50MB Ruby String on its way into a
+  # tempfile it was always going to be written to anyway. The String form
+  # stays because embedders call this directly and a signature change is
+  # not worth a major version; it is wrapped and streamed through the same
+  # path, so there is one copy loop rather than two.
+  #
+  # `max_bytes` caps what is copied, and nil means uncapped — the default,
+  # so nothing changes for a caller that never asked for a limit. The cap
+  # is enforced on the copy rather than on a declared length because a
+  # chunked body has no declared length to enforce it on.
+  #
+  # Raises InvalidGem when the payload can't be opened as a gem or its spec
+  # claims something a server should not act on, GemTooLarge past the cap,
+  # GemYanked for a tombed name+version, and GemAlreadyExists if the
+  # name+version is already on disk.
+  def add_gem(gem_payload, max_bytes: nil)
+    raise InvalidGem, "Empty gem payload" if gem_payload.nil?
 
-    Measurometer.add_distribution_value("paquette.gem_repository.add_gem_bytes", binary_data.bytesize)
+    io = gem_payload.is_a?(String) ? StringIO.new(gem_payload) : gem_payload
+    io.rewind if io.respond_to?(:rewind)
 
     tmp = Tempfile.new(["paquette_push", ".gem"])
     tmp.binmode
-    Measurometer.instrument("paquette.gem_repository.write_upload") { tmp.write(binary_data) }
+
+    copied = Measurometer.instrument("paquette.gem_repository.write_upload") do
+      # One byte past the cap, so an oversized body is caught by having
+      # produced that byte rather than by being read to its end to measure
+      # it — the point of the cap is to not read the rest.
+      max_bytes ? IO.copy_stream(io, tmp, max_bytes + 1) : IO.copy_stream(io, tmp)
+    end
     tmp.close
 
+    Measurometer.add_distribution_value("paquette.gem_repository.add_gem_bytes", copied)
+    raise InvalidGem, "Empty gem payload" if copied.zero?
+    raise GemTooLarge, "Gem payload exceeds the #{max_bytes} byte limit" if max_bytes && copied > max_bytes
+
     spec = begin
-      Measurometer.instrument("paquette.gem_repository.read_uploaded_spec") { Gem::Package.new(tmp.path).spec }
+      Measurometer.instrument("paquette.gem_repository.read_uploaded_spec") { read_uploaded_spec(tmp.path) }
     rescue Gem::Package::Error, StandardError => e
       raise InvalidGem, "Could not read gem: #{e.message}"
     end
 
-    name = spec.name
-    version = spec.version.to_s
+    # Before anything touches the filesystem with them. Every field below
+    # this line came out of a YAML document the uploader wrote.
+    name, version = Paquette::GemServer::SpecValidator.validate!(spec)
+
     raise GemYanked, "#{name}-#{version} was yanked and cannot be republished" if tomb_exists?(name, version)
     raise GemAlreadyExists, "#{name}-#{version} already exists" if gem_exists?(name, version)
 
-    dest_dir = File.join(@gems_dir, name)
-    FileUtils.mkdir_p(dest_dir)
-    FileUtils.mv(tmp.path, gem_file_path(name, version))
+    destination = gem_file_path(name, version)
+    # Braces to the validator's belt. SpecValidator::NAME already excludes
+    # "/" and a leading dot, so this cannot fire today — which is the
+    # point: it is the check that keeps holding if that pattern is ever
+    # widened, and it costs one expand_path per push.
+    raise InvalidGem, "Gem #{name}-#{version} resolves outside the gems directory" unless within_gems_dir?(destination)
+
+    FileUtils.mkdir_p(File.dirname(destination))
+    FileUtils.mv(tmp.path, destination)
 
     spec
   ensure
     tmp&.close unless tmp&.closed?
     File.unlink(tmp.path) if tmp && File.exist?(tmp.path)
+  end
+
+  # Serializes the alias flip below. Two concurrent pushes must not have
+  # one of them restore the flag while the other is still inside Psych.
+  YAML_ALIAS_MUTEX = Mutex.new
+
+  # Reads the spec out of an uploaded .gem with YAML alias expansion off.
+  #
+  # `Gem::Package#spec` parses the gemspec through Gem::SafeYAML, which
+  # permits aliases by default. Aliases are how a small YAML document
+  # becomes an enormous object graph — the billion-laughs shape, `&a [*b,
+  # *b, *b, …]` — and on an endpoint that accepts uploads from anyone that
+  # is a memory-exhaustion DoS for the price of a few hundred bytes.
+  # Nothing legitimate needs them here: Gem::Specification#to_yaml has
+  # never emitted an alias, so a gemspec that contains one was hand-built.
+  #
+  # gem.coop turns the flag off once, globally, at boot. It can: it *is*
+  # the application. Paquette is a library living inside someone else's
+  # process, and Gem::SafeYAML is process-global state that RubyGems and
+  # Bundler also read — so flipping it permanently at require time would
+  # be this gem quietly changing how its host parses every gemspec it ever
+  # loads, with no mention at the call site. That is the kind of thing a
+  # library gets blamed for years later.
+  #
+  # So it is flipped around our own parse and put back, under a mutex.
+  # This is not free of consequence either, and the trade is worth naming:
+  # for the duration of one parse the flag is off for the whole process,
+  # so another thread parsing an alias-using gemspec in that window would
+  # see it fail. That is the milder of the two failures — brief, and
+  # failing in the safe direction — where the permanent version is silent
+  # and forever. Older RubyGems without the accessor simply parse as they
+  # always did; the size cap in add_gem is the backstop there.
+  def read_uploaded_spec(gem_path)
+    # Gem::SafeYAML is only defined once RubyGems has pulled Psych in, and
+    # Gem::Package does that lazily on the first spec it reads. Asking for
+    # it here means the flag below is looked up on the real module rather
+    # than on a NameError.
+    Gem.load_yaml
+    return Gem::Package.new(gem_path).spec unless Gem::SafeYAML.respond_to?(:aliases_enabled=)
+
+    YAML_ALIAS_MUTEX.synchronize do
+      was_enabled = Gem::SafeYAML.aliases_enabled?
+      begin
+        Gem::SafeYAML.aliases_enabled = false
+        Gem::Package.new(gem_path).spec
+      ensure
+        Gem::SafeYAML.aliases_enabled = was_enabled
+      end
+    end
+  end
+
+  # Whether a path the repository is about to write to is really inside the
+  # corpus. expand_path resolves "..", and the trailing separator is what
+  # stops a sibling directory whose name merely starts the same way —
+  # "/srv/gems-evil" against a root of "/srv/gems" — from passing.
+  def within_gems_dir?(path)
+    root = File.expand_path(@gems_dir) + File::SEPARATOR
+    File.expand_path(path).start_with?(root)
   end
 
   # Yanks a gem by renaming its .gem file to .gem.tomb. The tomb prevents

@@ -15,6 +15,7 @@ class Paquette::GemServer
   autoload :Personalizer, "#{__dir__}/gem_server/personalizer"
   autoload :ReadGatedRepository, "#{__dir__}/gem_server/read_gated_repository"
   autoload :ReadonlyRepository, "#{__dir__}/gem_server/readonly_repository"
+  autoload :SpecValidator, "#{__dir__}/gem_server/spec_validator"
 
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
@@ -233,9 +234,18 @@ class Paquette::GemServer
   # IndexPage, which is the default and takes the sentence to print.
   DEFAULT_BLURB = "This server provides RubyGems packages. Point your gem source at it and bundle as usual."
 
-  def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"))
+  # The largest push this server will accept, in bytes. 50MB is what
+  # rubygems.org allows and comfortably more than any gem anyone has a
+  # reason to publish — the number is here to bound what one request can
+  # make the process do, not to be a quota. `nil` removes the cap, which
+  # is a decision to make knowingly.
+  DEFAULT_MAX_PUSH_BYTES = 50 * 1024 * 1024
+
+  def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
+    max_push_bytes: DEFAULT_MAX_PUSH_BYTES)
     @repository = repository
     @placeholder_app = placeholder_app
+    @max_push_bytes = max_push_bytes
   end
 
   def call(env)
@@ -342,11 +352,28 @@ class Paquette::GemServer
     json_ok(names)
   end
 
+  # The body is handed to the repository as an IO rather than read into a
+  # String first. It was always going to be written to a tempfile, and the
+  # String in between was a whole copy of the upload resident per concurrent
+  # push for no gain.
+  #
+  # Two guards, because one is not enough. CONTENT_LENGTH is checked before
+  # a single byte is read, which is what keeps an announced 2GB push from
+  # costing anything at all — but a chunked body declares no length, and a
+  # dishonest one declares whatever it likes, so the repository caps the
+  # actual copy too. The header check is the optimization; the copy cap is
+  # the guarantee.
   def handle_push
-    gem_data = Measurometer.instrument("paquette.gem_server.read_push_body") { @request.body.read }
-    Measurometer.add_distribution_value("paquette.gem_server.push_bytes", gem_data.to_s.bytesize)
+    declared = declared_content_length
+    if @max_push_bytes && declared && declared > @max_push_bytes
+      return payload_too_large("Gem payload exceeds the #{@max_push_bytes} byte limit")
+    end
 
-    spec = @repository.add_gem(gem_data)
+    Measurometer.add_distribution_value("paquette.gem_server.push_bytes", declared) if declared
+
+    spec = Measurometer.instrument("paquette.gem_server.read_push_body") do
+      @repository.add_gem(@request.body, max_bytes: @max_push_bytes)
+    end
     text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
   rescue ReadonlyRepository::WriteNotAllowed => e
     [403, {"Content-Type" => "text/plain"}, [e.message]]
@@ -354,8 +381,22 @@ class Paquette::GemServer
     [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemAlreadyExists => e
     [409, {"Content-Type" => "text/plain"}, [e.message]]
+  rescue DirectoryGemRepository::GemTooLarge => e
+    payload_too_large(e.message)
   rescue DirectoryGemRepository::InvalidGem => e
     bad_request(e.message)
+  end
+
+  # nil when the client did not announce one — a chunked upload, or a
+  # header that is not a number. Not an error on its own: it only means
+  # the cheap check cannot be made and the copy cap has to do the work.
+  def declared_content_length
+    raw = @request.get_header("CONTENT_LENGTH")
+    return nil if raw.nil? || raw.to_s.empty?
+
+    Integer(raw, 10)
+  rescue ArgumentError, TypeError
+    nil
   end
 
   def handle_yank
@@ -657,6 +698,13 @@ class Paquette::GemServer
 
   def bad_request(message = "Bad Request")
     [400, {"Content-Type" => "text/plain"}, [message]]
+  end
+
+  # Always with a body: `gem push` prints the response text and Bundler
+  # raises on a push response that has none, so an empty 413 reads to the
+  # user as a crash rather than as a refusal.
+  def payload_too_large(message = "Payload Too Large")
+    [413, {"Content-Type" => "text/plain"}, [message]]
   end
 
   def server_error(message = "Internal Server Error")

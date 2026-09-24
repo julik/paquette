@@ -27,6 +27,7 @@ require "stringio"
 require "net/http"
 require "tempfile"
 require "tmpdir"
+require "rubygems/package"
 require_relative "../lib/paquette"
 
 FIXTURE_GEMS_DIR = File.expand_path("fixtures/gems", __dir__)
@@ -42,6 +43,126 @@ module ExternalTooling
     else
       flunk "#{name} is not available, and #{env_var} says this run must have it"
     end
+  end
+end
+
+# Builds .gem files whose specs say things `gem build` would never let
+# them say. A gemspec is YAML the uploader wrote, so every one of these is
+# a payload a real client can produce — RubyGems' own validation runs on
+# the *pushing* side, which is exactly why a server cannot rely on it.
+#
+# Two escapes are needed. Gem::Package.build takes a skip_validation flag,
+# which gets a nonsense name or licence past the builder; and fields that
+# RubyGems parses into an object on assignment (versions, requirements)
+# are built well-formed and then have their backing string replaced, which
+# is what the YAML actually carries and what the server reads back.
+module HostileGemHelpers
+  # A Gem::Version whose string is whatever you want, including one that
+  # Gem::Version.new would have refused outright.
+  def forged_version(string)
+    version = Gem::Version.new("1.0.0")
+    version.instance_variable_set(:@version, string)
+    version
+  end
+
+  # Likewise for a requirement: Gem::Requirement#to_s renders "#{op}
+  # #{version}", so a forged version inside one is how a newline reaches
+  # the "ruby:" field of a compact index line.
+  def forged_requirement(operator, version_string)
+    requirement = Gem::Requirement.new(">= 0")
+    requirement.instance_variable_set(:@requirements, [[operator, forged_version(version_string)]])
+    requirement
+  end
+
+  # The bytes of a .gem carrying `spec`. The filename is passed explicitly
+  # rather than left to default to spec.file_name, because a spec named
+  # "../../pwned" has a file_name that escapes the build directory — the
+  # test would land the payload outside tmp before the code under test
+  # ever saw it.
+  def gem_bytes_for(spec)
+    Dir.mktmpdir("paquette_hostile_gem") do |dir|
+      built = Gem::DefaultUserInteraction.use_ui(Gem::SilentUI.new) do
+        Dir.chdir(dir) do
+          Gem::Package.build(spec, true, false, "hostile.gem")
+          File.join(dir, "hostile.gem")
+        end
+      end
+      File.binread(built)
+    end
+  end
+
+  # A gemspec YAML document that uses an alias. Harmless in itself — the
+  # point is that it round-trips at all, because the shape that is not
+  # harmless (`&a [*b, *b, *b, …]`, repeated) is the same feature.
+  ALIASED_GEMSPEC_YAML = <<~YAML
+    --- !ruby/object:Gem::Specification
+    name: &shared aliased
+    version: !ruby/object:Gem::Version
+      version: 1.0.0
+    summary: *shared
+    authors:
+      - a
+    require_paths:
+      - lib
+    rubygems_version: 3.0.0
+    specification_version: 4
+  YAML
+
+  # The same .gem with its metadata.gz replaced. A .gem is an uncompressed
+  # tar of metadata.gz, data.tar.gz and checksums.yaml.gz, so this goes
+  # through RubyGems' own tar reader and writer rather than through
+  # Paquette::Tarball, which is for the gzipped tarballs npm ships.
+  # checksums.yaml.gz is rebuilt rather than dropped, so the only thing
+  # wrong with the result is the thing under test — a gem that merely
+  # fails its own checksum would be refused for a reason that proves
+  # nothing about the YAML parse.
+  def gem_bytes_with_metadata(original_bytes, metadata_yaml)
+    parts = {}
+    Gem::Package::TarReader.new(StringIO.new(original_bytes)) do |tar|
+      tar.each { |entry| parts[entry.full_name] = entry.read }
+    end
+    parts["metadata.gz"] = Zlib.gzip(metadata_yaml)
+
+    if parts.key?("checksums.yaml.gz")
+      digested = parts.except("checksums.yaml.gz")
+      checksums = {
+        "SHA1" => digested.transform_values { |c| Digest::SHA1.hexdigest(c) },
+        "SHA512" => digested.transform_values { |c| Digest::SHA512.hexdigest(c) }
+      }
+      parts["checksums.yaml.gz"] = Zlib.gzip(Psych.dump(checksums))
+    end
+
+    io = StringIO.new(+"".b)
+    Gem::Package::TarWriter.new(io) do |tar|
+      parts.each do |name, content|
+        tar.add_file_simple(name, 0o444, content.bytesize) { |f| f.write(content) }
+      end
+    end
+    io.string
+  end
+
+  # Gem::Package#verify announces a failed verification with Kernel#warn,
+  # which no Gem::SilentUI can intercept. A test that deliberately feeds
+  # it an unreadable gem would otherwise print that line between the dots.
+  def without_rubygems_chatter
+    original = $stderr
+    $stderr = StringIO.new
+    yield
+  ensure
+    $stderr = original
+  end
+
+  # A minimal but otherwise plausible spec, ready to be sabotaged by the
+  # block before it is packed.
+  def hostile_gem_bytes(name: "hostile", version: "1.0.0")
+    spec = Gem::Specification.new
+    spec.name = name
+    spec.version = version.is_a?(Gem::Version) ? version : forged_version(version.to_s)
+    spec.summary = "A gem built to say things it should not"
+    spec.authors = ["Test"]
+    spec.files = []
+    yield spec if block_given?
+    gem_bytes_for(spec)
   end
 end
 
@@ -143,6 +264,7 @@ end
 module Minitest
   class Test
     include NpmTarballHelpers
+    include HostileGemHelpers
     include ExternalTooling
     include MalformedRequestHelpers
     include TimingHelpers

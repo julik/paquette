@@ -108,6 +108,29 @@ class Paquette::NpmServer::NpmRepository
     end
   end
 
+  # The version is half of every tarball filename, so it is a path
+  # component just as much as the name is — and it comes from the same
+  # place, a package.json the uploader wrote. Without this, a version of
+  # "0.0.0/../../../../etc/thing" writes the upload wherever it points.
+  #
+  # Tighter than semver, and deliberately so: semver's grammar exists to
+  # decide what sorts before what, not to decide what is safe to put in a
+  # path. Everything a real version needs is here — digits, dots, a "-"
+  # prerelease tail, "+build" metadata — and "/", "\", "%", NUL and a
+  # leading dot are not. \A..\z rather than ^..$ so a trailing newline
+  # cannot ride along, and bounded because no version is 64 characters.
+  VERSION = /\A[0-9][0-9A-Za-z.+-]{0,63}\z/
+  def self.valid_version?(version)
+    string = version.to_s
+    # A percent-decoded path segment can be bytes that are not valid
+    # UTF-8, and a regexp run over those raises ArgumentError rather than
+    # failing to match. Refusing them here is what keeps a caller from
+    # having to rescue around a predicate.
+    return false unless string.valid_encoding?
+
+    VERSION.match?(string)
+  end
+
   # Not Gem::Version: it mangles prereleases and rejects "+build" metadata.
   def self.sort_versions(versions)
     versions.sort { |a, b| compare_versions(a, b) }

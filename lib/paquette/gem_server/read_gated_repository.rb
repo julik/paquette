@@ -49,13 +49,6 @@ class Paquette::GemServer::ReadGatedRepository < Paquette::GemServer::ReadonlyRe
     Paquette::GemServer::GemRepository.derive_validator(inner, "read-gate", @gate_key)
   end
 
-  # A gated response is one licensee's list of what they may have, and a
-  # gated download is bytes another licensee would have been refused.
-  # Neither may sit in a shared cache, whatever the bytes underneath.
-  def private_to_caller?
-    true
-  end
-
   # Asked through the class method rather than with `super` so that an
   # inner repository predating this protocol answers nil instead of
   # raising NoMethodError out of Delegator#method_missing.

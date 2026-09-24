@@ -274,22 +274,41 @@ Paquette does not cache anything itself. It emits correct HTTP cache headers and
 
 `GET /versions`, `GET /names` and `GET /info/:gem_name` carry an `ETag` and honour `If-None-Match` with a `304 Not Modified`. This is worth having on `/versions` in particular: rendering it means rendering and MD5-ing every gem's `/info/` body for the whole corpus, so a 304 turns the most expensive request this server serves into a digest of the corpus fingerprint.
 
-`GET /gems/:gem_filename` carries an `ETag`, a `Last-Modified`, `Accept-Ranges: bytes` and `Cache-Control: max-age=31536000, immutable`, and honours `If-None-Match`, `If-Modified-Since`, and `Range` (including multiple ranges, `416` for an unsatisfiable one, and `If-Range`). The `immutable` is honest: a `.gem` file at a given path never changes, because a yank renames it away and a name+version can never be pushed twice.
+`GET /gems/:gem_filename` carries an `ETag`, a `Last-Modified`, `Accept-Ranges: bytes` and `Cache-Control: private, max-age=31536000, immutable`, and honours `If-None-Match`, `If-Modified-Since`, and `Range` (including multiple ranges, `416` for an unsatisfiable one, and `If-Range`). The `immutable` is honest: a `.gem` file at a given path never changes, because a yank renames it away and a name+version can never be pushed twice.
 
-The npm server does the same on its own surfaces. `GET /:package` (the packument) and `GET /-/package/:package/dist-tags` carry an `ETag` and answer `If-None-Match` with a 304 - the npm client honours ETag on packuments, so this is the equivalent of `/versions`. `GET /:package/-/:tarball` is served exactly like a gem download, and its `ETag` is the very `dist.integrity` value the packument published, because npm refuses to install a tarball that disagrees with the document that pointed at it. `GET /-/whoami` is `Cache-Control: no-store` and carries no validator at all: it is the caller's identity, and there is no key under which storing it would be safe.
+The npm server does the same on its own surfaces. `GET /:package` (the packument) and `GET /-/package/:package/dist-tags` carry an `ETag` and answer `If-None-Match` with a 304 - the npm client honours ETag on packuments, so this is the equivalent of `/versions`. `GET /:package/-/:tarball` is served exactly like a gem download, and its `ETag` is the very `dist.integrity` value the packument published, because npm refuses to install a tarball that disagrees with the document that pointed at it. `GET /-/whoami` is `Cache-Control: private, no-store` and carries no validator at all: it is the caller's identity, and there is no key under which storing it would be safe.
 
 Range serving is Rack's own `Rack::Files#serving`, so this adds no dependency.
 
+Nothing either server sends is ever `public`, and every response carries `Vary: Authorization`:
+
+| Response | `Cache-Control` | `Vary` |
+| --- | --- | --- |
+| `.gem` download, npm tarball (and their 304s) | `private, max-age=31536000, immutable` | `Authorization, Accept-Encoding` |
+| `/versions`, `/names`, `/info/:gem_name`, packument, dist-tags (and their 304s) | `private, no-cache` | `Authorization, Accept-Encoding` |
+| `/-/whoami` | `private, no-store` | `Authorization, Accept-Encoding` |
+| Everything else - errors, the legacy Marshal indexes, `/api/v1/*`, the index page | `private, no-store` | `Authorization` |
+
+### Why everything is `private`
+
+Paquette is a private registry. Every request you route to it has been let through by something - a bearer token, a publishing token, `Paquette::TokenAuthorization` - and it is normal to serve the *same URL* ungated to one caller (the owner's publishing token reading the unwrapped repository) and gated to the next. A shared cache in front keys on the URL and cannot tell those two apart.
+
+RFC 9111 already says a shared cache must not store the response to a request that carried `Authorization` - unless the response says `public`, which is exactly what that directive is for. Rack::Cache implements that rule to the letter. So a `public` download handed to the publisher would be stored, and the next anonymous request for the URL would be answered out of the cache without your gate ever running. That is why Paquette never sends `public`, whatever repository it is serving, and why a bare `DirectoryGemRepository` is treated no differently from a gated one.
+
+**`Cache-Control: private` is the load-bearing control.** It keeps every shared cache out.
+
+**`Vary: Authorization` is defence in depth, and it is not sufficient on its own.** It is correct for the flow this gem documents - `Paquette::TokenAuthorization` reads the token out of `Authorization`, in both its Bearer and its Basic spelling - but Paquette does not resolve identity, your application does. The example further up this README resolves the user from `env["REMOTE_USER"]`; yours may use a cookie, a client certificate or a subdomain. A shared cache keyed only on `Authorization` would then serve one licensee's index to another quite happily. If you override these headers, do not read "we set `Vary`" as meaning you are covered - `private` is what covers you, and if you relax it you are on your own.
+
+The index endpoints get `no-cache` rather than `no-store`, so the *client* (Bundler's own on-disk compact index, npm's metadata cache) can still keep a copy and send `If-None-Match`. Without that there would be nothing to revalidate and no 304.
+
 ### Putting a cache in front
 
-Under Rails, turn on the Rack::Cache integration:
+With every response `private`, a shared cache in front of Paquette - rack-cache, Rails' Rack::Cache integration, a CDN - stores nothing Paquette serves. Each request reaches your gate and then Paquette, every time. That is deliberate, and it is what stops one caller's download from being replayed to another. What you still get:
 
-```ruby
-# config/environments/production.rb
-config.action_dispatch.rack_cache = true
-```
+- The client's own cache revalidates cheaply. A repeat `bundle install` or `npm install` sends `If-None-Match`, and a 304 on `/versions` or a packument skips the render entirely.
+- Downloads are `immutable` for a year in the client's cache, and `Range`/`If-Range` let an interrupted one resume.
 
-Under plain Rack, use [rack-cache](https://github.com/rtomayko/rack-cache) directly:
+If you already run rack-cache in front for other routes, it is safe to leave it there:
 
 ```ruby
 # config.ru
@@ -303,19 +322,9 @@ use Rack::Cache,
 run Paquette::GemServer.new(gem_repo)
 ```
 
-A CDN in front of your application works the same way, on the same headers.
+Put your authorization *below* the cache, next to Paquette, and it runs on every request. If the server-side cost of rendering is what you are after, cache inside your application - the personalizer already keeps repacked artifacts on disk - rather than asking a shared HTTP cache to hold responses that were served to one authorized caller.
 
-### The part to read before you turn that on
-
-**rack-cache is a shared cache.** It keys on the URL, and a response marked `public` is one it will store once and replay to whoever asks next. Under a `ReadGatedRepository` or a `Personalizer` the next requester is a different licensee, and what they would be handed is somebody else's entitlements.
-
-So Paquette marks any response that passed through a gate or a personalizer `Cache-Control: private` (never `public`), plus `Vary: Authorization, Accept-Encoding`.
-
-**`Cache-Control: private` is the load-bearing control.** It is what excludes shared caches altogether, and it is the only thing standing between two licensees when the content is personalized.
-
-**`Vary: Authorization` is defence in depth, and it is not sufficient on its own.** It is correct for the flow this gem documents - `Paquette::TokenAuthorization` reads the token out of `Authorization`, in both its Bearer and its Basic spelling - but Paquette does not resolve identity, your application does. The example further up this README resolves the user from `env["REMOTE_USER"]`; yours may use a cookie, a client certificate or a subdomain. A shared cache keyed only on `Authorization` would then serve one licensee's index to another quite happily. If you are caching gated or personalized responses, do not read "we set `Vary`" as meaning you are covered - `private` is what covers you, and if you deliberately relax it you are on your own.
-
-The index endpoints get `no-cache` rather than `no-store`, so the *client* (Bundler's own on-disk compact index) can still keep a copy and send `If-None-Match`. Without that there would be nothing to revalidate and no 304.
+### How the validator is derived
 
 The validator itself is derived from the whole wrapper stack, not just from the corpus:
 
@@ -335,10 +344,9 @@ A `nil` validator propagates outward, so a `Personalizer` wrapped around a keyle
 If you have written a repository of your own, these optional methods hook into this (defined on `Paquette::GemServer::GemRepository` and `Paquette::NpmServer::NpmRepository` with safe defaults, so an existing class keeps working untouched):
 
 - `#cache_validator` - a short string that changes whenever anything you would serve changes, or `nil` for "do not cache this". Defaults to `nil`.
-- `#private_to_caller?` - whether what you serve is specific to the caller. Defaults to `true`, which is the safe answer; `DirectoryGemRepository` overrides it to `false`.
 - `#gem_checksum(name, version)` - the SHA256 of the `.gem` bytes you would actually serve, used for the download `ETag`. Defaults to `nil`, which falls back to size and mtime.
 
-The npm repository protocol has `#cache_validator` and `#private_to_caller?` with the same meaning; instead of `#gem_checksum` it reads the tarball's integrity off `#dist_for`.
+The npm repository protocol has `#cache_validator` with the same meaning; instead of `#gem_checksum` it reads the tarball's integrity off `#dist_for`.
 
 If you are writing a wrapper, mix yourself into the layer below with `Paquette::CacheValidation.derive_validator(inner_validator, "your-layer", your_key)`, which returns `nil` if either argument is `nil`.
 

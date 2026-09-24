@@ -145,14 +145,14 @@ class NpmHttpCachingTest < Minitest::Test
     response = get(plain_app, "/-/whoami")
 
     assert_equal 200, response[0]
-    assert_equal "no-store", response[1]["Cache-Control"]
+    assert_equal "private, no-store", response[1]["Cache-Control"]
     assert_nil response[1]["ETag"], "identity must not be given a validator"
   end
 
   def test_whoami_is_not_cacheable_under_gating_either
     response = get(gated_app(gate_key: "alice") { |**| true }, "/-/whoami")
 
-    assert_equal "no-store", response[1]["Cache-Control"]
+    assert_equal "private, no-store", response[1]["Cache-Control"]
     refute_includes response[1]["Cache-Control"], "public"
   end
 
@@ -226,32 +226,55 @@ class NpmHttpCachingTest < Minitest::Test
   # Cache-Control
   # ------------------------------------------------------------------
 
-  def test_no_gated_or_personalized_response_ever_carries_public
-    apps = {
-      "gated with a key" => gated_app(gate_key: "alice") { |**| true },
-      "gated without a key" => gated_app(gate_key: nil) { |**| true },
-      "personalized" => personalized_app(key: "one"),
-      "gated and personalized" => gated_and_personalized_app
-    }
-
-    paths = ["/#{PACKAGE}", "/-/package/#{PACKAGE}/dist-tags", "/#{PACKAGE}/-/#{PACKAGE}-1.0.0.tgz"]
-
-    apps.each do |description, app|
-      paths.each do |path|
-        headers = get(app, path)[1]
+  # Every request reaching Paquette has been authorized by something, and
+  # the embedder serves the same URL ungated to one caller and gated to the
+  # next - so a bare directory repository is no more `public` than a gated
+  # one. See the gem side's twin of this test.
+  def test_no_response_ever_carries_public
+    each_stack do |description, app|
+      each_response(app) do |path, (status, headers, _body)|
         control = headers["Cache-Control"].to_s
 
-        refute_includes control, "public", "#{description} #{path} is offered to a shared cache"
-        assert_includes control, "private", "#{description} #{path} must be marked private"
-        assert_equal "Authorization, Accept-Encoding", headers["Vary"], "#{description} #{path}"
+        refute_includes control, "public", "#{description} #{path} (#{status}) is offered to a shared cache"
+        assert_includes control, "private", "#{description} #{path} (#{status}) must be marked private"
+        assert_includes vary_fields(headers), "Authorization", "#{description} #{path} (#{status})"
       end
     end
   end
 
-  def test_a_plain_registry_is_public_and_says_so
-    headers = get(plain_app, "/#{PACKAGE}")[1]
-    assert_equal "public, no-cache", headers["Cache-Control"]
-    assert_nil headers["Vary"]
+  def test_no_response_carries_one_header_in_two_spellings
+    each_stack do |description, app|
+      each_response(app) do |path, (_status, headers, _body)|
+        names = headers.keys.map(&:downcase)
+        assert_equal names.uniq, names, "#{description} #{path}"
+      end
+    end
+  end
+
+  def test_the_header_matrix
+    each_stack do |description, app|
+      assert_directives "private, no-cache", get(app, "/#{PACKAGE}")[1], "#{description} packument"
+      assert_directives "private, no-cache", get(app, "/-/package/#{PACKAGE}/dist-tags")[1], "#{description} dist-tags"
+      assert_directives "private, max-age=31536000, immutable", get(app, tarball_path)[1], "#{description} tarball"
+      assert_directives "private, no-store", get(app, "/-/whoami")[1], "#{description} whoami"
+      assert_directives "private, no-store", get(app, "/nothing")[1], "#{description} 404"
+    end
+  end
+
+  def test_a_304_repeats_the_caching_directives
+    [plain_app, personalized_app(key: "one")].each do |app|
+      etag = get(app, "/#{PACKAGE}")[1]["ETag"]
+      response = get(app, "/#{PACKAGE}", "HTTP_IF_NONE_MATCH" => etag)
+
+      assert_equal 304, response[0]
+      assert_directives "private, no-cache", response[1], "packument 304"
+
+      etag = get(app, tarball_path)[1]["ETag"]
+      response = get(app, tarball_path, "HTTP_IF_NONE_MATCH" => etag)
+
+      assert_equal 304, response[0]
+      assert_directives "private, max-age=31536000, immutable", response[1], "tarball 304"
+    end
   end
 
   def test_a_private_packument_still_lets_the_client_keep_a_copy
@@ -264,10 +287,10 @@ class NpmHttpCachingTest < Minitest::Test
   # Tarballs
   # ------------------------------------------------------------------
 
-  def test_a_plain_tarball_is_immutable_and_public
+  def test_a_plain_tarball_is_immutable_and_private
     headers = get(plain_app, tarball_path)[1]
 
-    assert_equal "public, max-age=31536000, immutable", headers["Cache-Control"]
+    assert_equal "private, max-age=31536000, immutable", headers["Cache-Control"]
     assert_equal "bytes", headers["Accept-Ranges"]
     assert_equal "application/octet-stream", headers["Content-Type"]
     refute_nil headers["ETag"]
@@ -373,6 +396,46 @@ class NpmHttpCachingTest < Minitest::Test
   end
 
   private
+
+  def each_stack
+    {
+      "plain" => plain_app,
+      "gated with a key" => gated_app(gate_key: "alice") { |**| true },
+      "gated without a key" => gated_app(gate_key: nil) { |**| true },
+      "personalized" => personalized_app(key: "one"),
+      "gated and personalized" => gated_and_personalized_app
+    }.each { |description, app| yield description, app }
+  end
+
+  # Every kind of response the npm server hands out, 304s included.
+  def each_response(app)
+    ["/#{PACKAGE}", "/-/package/#{PACKAGE}/dist-tags", tarball_path,
+      "/-/whoami", "/-/ping", "/nothing", "/"].each do |path|
+      response = get(app, path)
+      yield path, response
+
+      if (etag = response[1]["ETag"])
+        not_modified = get(app, path, "HTTP_IF_NONE_MATCH" => etag)
+        assert_equal 304, not_modified[0], path
+        yield "#{path} (If-None-Match)", not_modified
+      end
+
+      if (last_modified = response[1]["Last-Modified"])
+        not_modified = get(app, path, "HTTP_IF_MODIFIED_SINCE" => last_modified)
+        assert_equal 304, not_modified[0], path
+        yield "#{path} (If-Modified-Since)", not_modified
+      end
+    end
+  end
+
+  def assert_directives(control, headers, message)
+    assert_equal control, headers["Cache-Control"], message
+    assert_includes vary_fields(headers), "Authorization", message
+  end
+
+  def vary_fields(headers)
+    headers["Vary"].to_s.split(",").map(&:strip)
+  end
 
   def tarball_path
     "/#{PACKAGE}/-/#{PACKAGE}-1.0.0.tgz"

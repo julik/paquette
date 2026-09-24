@@ -162,6 +162,12 @@ class Paquette::NpmServer
   end
 
   def call(env)
+    with_private_caching(dispatch(env))
+  end
+
+  private
+
+  def dispatch(env)
     Measurometer.instrument("paquette.npm_server.call") do
       env = env.dup
       env["PATH_INFO"] = normalize_scoped_path(env["PATH_INFO"].to_s)
@@ -178,8 +184,6 @@ class Paquette::NpmServer
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
   end
-
-  private
 
   def normalize_scoped_path(path)
     self.class.normalize_scoped_path(path)

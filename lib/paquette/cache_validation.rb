@@ -27,15 +27,6 @@ module Paquette::CacheValidation
     repository.cache_validator if repository.respond_to?(:cache_validator)
   end
 
-  # Whether what the stack serves belongs to one caller. Defaults to true
-  # for anything that cannot answer: marking a personalized response
-  # `public` puts one customer's packages in another customer's CDN, and
-  # being wrong in the other direction only costs a cache hit.
-  def private_to_caller?(repository)
-    return true unless repository.respond_to?(:private_to_caller?)
-    repository.private_to_caller?
-  end
-
   # How a wrapper mixes itself into the validator of what it wraps: one
   # digest over the inner validator, a constant naming the layer, and the
   # key that distinguishes one instance of that layer from another.

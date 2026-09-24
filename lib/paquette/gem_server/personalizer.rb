@@ -82,13 +82,6 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     Paquette::GemServer::GemRepository.derive_validator(inner, "personalizer", personalization_digest)
   end
 
-  # Every byte this serves is baked for one licensee. Even the gems that
-  # opt out of personalization arrive on a URL whose neighbours do not,
-  # so the response as a whole is not a shared cache's to keep.
-  def private_to_caller?
-    true
-  end
-
   # The checksum of what this personalizer would hand over: the repacked
   # gem's, or the underlying one's for a gem served byte for byte. Same
   # number, same cache, as the `checksum:` field compact_info publishes —

@@ -66,12 +66,6 @@ class Paquette::NpmServer::NpmRepository
     nil
   end
 
-  # Whether what this serves belongs to one caller, deciding
-  # `Cache-Control: private` against `public`. True is the safe default.
-  def private_to_caller?
-    true
-  end
-
   def add_package(binary_data, dist_tags: {})
     raise NotImplementedError, "Subclasses must implement add_package"
   end

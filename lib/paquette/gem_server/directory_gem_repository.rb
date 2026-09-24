@@ -42,13 +42,6 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     fingerprint
   end
 
-  # A directory of gems is the same directory of gems for everybody. The
-  # wrappers above are what make a response caller-specific, and each of
-  # them says so for itself.
-  def private_to_caller?
-    false
-  end
-
   # The SHA256 the sidecar already holds, so an ETag on a download costs
   # two stat calls rather than a re-hash of a multi-megabyte file. Goes
   # through exactly the same read-or-derive path compact_info uses, which

@@ -237,62 +237,86 @@ class HttpCachingTest < Minitest::Test
   # ------------------------------------------------------------------
 
   # Paquette recommends putting rack-cache in front, and rack-cache is a
-  # *shared* cache keyed on the URL. A `public` on a gated or personalized
-  # response is one customer's entitlements stored once and replayed to the
-  # next customer who asks. This is the test that stops a refactor from
-  # doing that.
-  def test_no_gated_or_personalized_response_ever_carries_public
-    apps = {
-      "gated with a key" => gated_app(gate_key: "alice") { |**| true },
-      "gated without a key" => gated_app(gate_key: nil) { |**| true },
-      "personalized" => personalized_app(key: "one"),
-      "gated and personalized" => gated_and_personalized_app
-    }
-
-    apps.each do |description, app|
-      ["/versions", "/names", "/info/zip_kit", "/gems/zip_kit-6.2.0.gem"].each do |path|
-        headers = get(app, path)[1]
+  # *shared* cache keyed on the URL. Every request reaching Paquette has
+  # been authorized by something, and `public` is the directive that lets a
+  # shared cache store the answer to an authorized request anyway - after
+  # which the next caller for that URL gets it without the embedder's gate
+  # running. That holds for a bare directory repository as much as for a
+  # gated one: the embedder serves the unwrapped repository to its owner and
+  # the gated one to everybody else, on the same URLs. This is the test that
+  # stops a refactor from bringing `public` back.
+  def test_no_response_ever_carries_public
+    each_stack do |description, app|
+      each_response(app) do |path, (status, headers, _body)|
         control = headers["Cache-Control"].to_s
 
-        refute_includes control, "public", "#{description} #{path} is offered to a shared cache"
-        assert_includes control, "private", "#{description} #{path} must be marked private"
-        assert_equal "Authorization, Accept-Encoding", headers["Vary"], "#{description} #{path}"
+        refute_includes control, "public", "#{description} #{path} (#{status}) is offered to a shared cache"
+        assert_includes control, "private", "#{description} #{path} (#{status}) must be marked private"
+        assert_includes vary_fields(headers), "Authorization", "#{description} #{path} (#{status})"
       end
     end
   end
 
-  def test_a_plain_repository_is_public_and_says_so
-    headers = get(plain_app, "/versions")[1]
-    assert_equal "public, no-cache", headers["Cache-Control"]
-    assert_nil headers["Vary"], "an ungated index does not vary by who asks"
+  # Handlers spell headers in title case and Rack::Files in lowercase. A
+  # response carrying both `Cache-Control` and `cache-control` is one a
+  # cache may read either way.
+  def test_no_response_carries_one_header_in_two_spellings
+    each_stack do |description, app|
+      each_response(app) do |path, (_status, headers, _body)|
+        names = headers.keys.map(&:downcase)
+        assert_equal names.uniq, names, "#{description} #{path}"
+      end
+    end
+  end
+
+  def test_the_header_matrix
+    each_stack do |description, app|
+      assert_directives "private, no-cache", get(app, "/versions")[1], "#{description} /versions"
+      assert_directives "private, no-cache", get(app, "/names")[1], "#{description} /names"
+      assert_directives "private, no-cache", get(app, "/info/zip_kit")[1], "#{description} /info/"
+      assert_directives "private, max-age=31536000, immutable",
+        get(app, "/gems/zip_kit-6.2.0.gem")[1], "#{description} download"
+
+      # What nobody labelled: no validator, so nothing for a client to
+      # revalidate either.
+      assert_directives "private, no-store", get(app, "/specs.4.8.gz")[1], "#{description} specs"
+      assert_directives "private, no-store", get(app, "/gems/nothing-1.0.0.gem")[1], "#{description} 404"
+    end
   end
 
   # no-cache, not no-store: `private` is what keeps it out of a shared
   # cache, while the client keeping a copy is the entire point - without it
   # there is no If-None-Match to send and the 304 is unreachable.
   def test_a_private_index_still_lets_the_client_keep_a_copy
-    control = get(personalized_app(key: "one"), "/versions")[1]["Cache-Control"]
+    control = get(plain_app, "/versions")[1]["Cache-Control"]
     assert_equal "private, no-cache", control
     refute_includes control, "no-store"
   end
 
   def test_a_304_repeats_the_caching_directives
-    app = personalized_app(key: "one")
-    etag = get(app, "/versions")[1]["ETag"]
-    headers = get(app, "/versions", "HTTP_IF_NONE_MATCH" => etag)[1]
+    [plain_app, personalized_app(key: "one")].each do |app|
+      etag = get(app, "/versions")[1]["ETag"]
+      response = get(app, "/versions", "HTTP_IF_NONE_MATCH" => etag)
 
-    assert_equal "private, no-cache", headers["Cache-Control"]
-    assert_equal "Authorization, Accept-Encoding", headers["Vary"]
+      assert_equal 304, response[0]
+      assert_directives "private, no-cache", response[1], "index 304"
+
+      download = get(app, "/gems/zip_kit-6.2.0.gem")[1]
+      response = get(app, "/gems/zip_kit-6.2.0.gem", "HTTP_IF_NONE_MATCH" => download["ETag"])
+
+      assert_equal 304, response[0]
+      assert_directives "private, max-age=31536000, immutable", response[1], "download 304"
+    end
   end
 
   # ------------------------------------------------------------------
   # Downloads
   # ------------------------------------------------------------------
 
-  def test_a_plain_download_is_immutable_and_public
+  def test_a_plain_download_is_immutable_and_private
     headers = get(plain_app, "/gems/zip_kit-6.2.0.gem")[1]
 
-    assert_equal "public, max-age=31536000, immutable", headers["Cache-Control"]
+    assert_equal "private, max-age=31536000, immutable", headers["Cache-Control"]
     assert_equal "bytes", headers["Accept-Ranges"]
     assert_equal "application/octet-stream", headers["Content-Type"]
     refute_nil headers["ETag"]
@@ -340,11 +364,6 @@ class HttpCachingTest < Minitest::Test
     personalized = get(personalized_app(key: "one"), "/gems/zip_kit-6.2.0.gem")[1]["ETag"]
 
     refute_equal plain, personalized
-  end
-
-  def test_a_personalized_download_is_private_not_public
-    control = get(personalized_app(key: "one"), "/gems/zip_kit-6.2.0.gem")[1]["Cache-Control"]
-    assert_equal "private, max-age=31536000, immutable", control
   end
 
   # ------------------------------------------------------------------
@@ -486,8 +505,7 @@ class HttpCachingTest < Minitest::Test
 
     assert_equal 200, response[0]
     assert_nil response[1]["ETag"], "an unknown repository must not be given a validator"
-    assert_includes response[1]["Cache-Control"], "private",
-      "an unknown repository must be assumed to serve caller-specific bytes"
+    assert_includes response[1]["Cache-Control"], "private"
   end
 
   def test_gem_checksum_agrees_with_what_the_compact_index_publishes
@@ -512,6 +530,49 @@ class HttpCachingTest < Minitest::Test
   end
 
   private
+
+  def each_stack
+    {
+      "plain" => plain_app,
+      "gated with a key" => gated_app(gate_key: "alice") { |**| true },
+      "gated without a key" => gated_app(gate_key: nil) { |**| true },
+      "personalized" => personalized_app(key: "one"),
+      "gated and personalized" => gated_and_personalized_app
+    }.each { |description, app| yield description, app }
+  end
+
+  # Every kind of response the gem server hands out, 304s included - by
+  # tag where the stack emits one, and by date on the download, which a
+  # keyless gate still answers.
+  def each_response(app)
+    ["/versions", "/names", "/info/zip_kit", "/gems/zip_kit-6.2.0.gem",
+      "/specs.4.8.gz", "/quick/Marshal.4.8/zip_kit-6.2.0.gemspec.rz", "/api/v1/versions",
+      "/gems/nothing-1.0.0.gem", "/"].each do |path|
+      response = get(app, path)
+      yield path, response
+
+      if (etag = response[1]["ETag"])
+        not_modified = get(app, path, "HTTP_IF_NONE_MATCH" => etag)
+        assert_equal 304, not_modified[0], path
+        yield "#{path} (If-None-Match)", not_modified
+      end
+
+      if (last_modified = response[1]["Last-Modified"])
+        not_modified = get(app, path, "HTTP_IF_MODIFIED_SINCE" => last_modified)
+        assert_equal 304, not_modified[0], path
+        yield "#{path} (If-Modified-Since)", not_modified
+      end
+    end
+  end
+
+  def assert_directives(control, headers, message)
+    assert_equal control, headers["Cache-Control"], message
+    assert_includes vary_fields(headers), "Authorization", message
+  end
+
+  def vary_fields(headers)
+    headers["Vary"].to_s.split(",").map(&:strip)
+  end
 
   def plain_app
     Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR))

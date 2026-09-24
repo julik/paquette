@@ -65,13 +65,14 @@ class Paquette::GemServer::GemRepository
   # ---------------------------------------------------------------------
   # The HTTP caching protocol.
   #
-  # Unlike everything above, these three have defaults instead of raising.
+  # Unlike everything above, these two have defaults instead of raising.
   # They were added after repositories outside this gem already existed,
   # and the thing a repository that has never heard of them must do is
   # degrade to "no caching" — not raise NotImplementedError out of the
   # middle of a request. So the defaults are the answers that are safe
   # when nothing is known, which for a cache means: refuse to name the
-  # response, and assume its bytes belong to one caller.
+  # response. Who may keep a copy is not the repository's to say - every
+  # response is `private`, see Paquette::ConditionalGet.
   # ---------------------------------------------------------------------
 
   # A short string that changes whenever anything this repository would
@@ -94,20 +95,6 @@ class Paquette::GemServer::GemRepository
     nil
   end
 
-  # Whether what this repository serves is specific to the caller, i.e.
-  # whether a shared cache holding one response and replaying it to the
-  # next requester would hand out somebody else's entitlements or
-  # somebody else's personalized bytes. Decides `Cache-Control: private`
-  # against `public`.
-  #
-  # The default is true, which is the wrong answer for a plain directory
-  # of gems and the only safe answer for a repository nobody here has
-  # seen. Getting this backwards puts one customer's packages in another
-  # customer's CDN; getting it too conservative costs a cache hit.
-  def private_to_caller?
-    true
-  end
-
   # The SHA256 of the .gem file this repository would actually serve for
   # `gem_name` and `version` — the bytes the client receives, which under
   # a Personalizer are not the bytes on disk. nil when unknown or when
@@ -120,7 +107,7 @@ class Paquette::GemServer::GemRepository
     nil
   end
 
-  # The three questions above, asked of an object that may be any of: a
+  # The two questions above, asked of an object that may be any of: a
   # repository implementing the protocol, a SimpleDelegator wrapping one,
   # or somebody's duck-typed stand-in that has never heard of any of this.
   # The rules themselves live in Paquette::CacheValidation, shared with the
@@ -128,10 +115,6 @@ class Paquette::GemServer::GemRepository
   # digest subtly different from each other.
   def self.cache_validator_of(repository)
     Paquette::CacheValidation.validator_of(repository)
-  end
-
-  def self.private_to_caller?(repository)
-    Paquette::CacheValidation.private_to_caller?(repository)
   end
 
   def self.gem_checksum_of(repository, gem_name, version)

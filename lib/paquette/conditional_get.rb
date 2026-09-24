@@ -9,6 +9,8 @@ require "time"
 # differently, which is the whole reason this is one module and not two
 # copies: a validator comparison or a `private` directive that drifted
 # between them would be a confidentiality bug on whichever side lost.
+#
+# Nothing either server sends is `public`. See cache_directives for why.
 module Paquette::ConditionalGet
   # A year, the longest max-age RFC 9111 suggests anyone bother emitting,
   # paired with `immutable` so a revalidating client does not even ask.
@@ -32,34 +34,34 @@ module Paquette::ConditionalGet
 
   # Cache-Control, and the reason this feature is not simply "emit an ETag".
   #
-  # Paquette caches nothing itself and tells embedders to put an ordinary
-  # HTTP cache in front (rack-cache, or Rails' Rack::Cache integration).
-  # Those are *shared* caches: they key on the URL, and a response marked
-  # `public` is one they will store once and replay to whoever asks next.
-  # For a gated or personalized response that next requester is a different
-  # licensee, and what they would receive is somebody else's entitlements -
-  # or, on the npm side, integrity hashes for a tarball they will never be
-  # handed. So anything that passed through a gate or a personalizer is
-  # `private`, full stop, and never carries `public`.
+  # Paquette is a private registry. Every request an embedder routes here
+  # has been let through by something - a bearer token, a publishing
+  # token, TokenAuthorization - and the same URL is routinely served
+  # ungated to one caller (the owner reading the unwrapped repository with
+  # a publishing token) and gated to the next. So nothing here is ever
+  # `public`, whatever the wrapper stack looks like underneath.
   #
-  # `Cache-Control: private` is the load-bearing control here. `Vary` is
-  # defence in depth and nothing more - see vary_header below.
+  # That matters because the cache Paquette tells embedders to put in front
+  # (rack-cache, or Rails' Rack::Cache integration) is a *shared* cache
+  # keyed on the URL. RFC 9111 already keeps a shared cache from storing a
+  # response to a request that carried Authorization - and `public` is the
+  # directive that explicitly overrides that rule. Rack::Cache honours it
+  # to the letter: a `public` answer to the publisher's authorized download
+  # is stored, and the next anonymous request for the URL is answered out
+  # of the cache without the embedder's gate ever running. `private` keeps
+  # every shared cache out, while the client's own cache - Bundler's
+  # compact index, npm's metadata cache - still keeps its copy and
+  # revalidates it.
   #
   # `no-cache` rather than `no-store` on the index endpoints: `private`
   # already keeps the response out of every shared cache, and `no-cache`
   # still forces a revalidation on each use, so nothing stale is served.
-  # `no-store` would additionally stop the *client* - Bundler's compact
-  # index, npm's own metadata cache - from keeping the copy it needs in
-  # order to send If-None-Match at all, which would make the 304
-  # unreachable on precisely the most expensive endpoints there are.
+  # `no-store` would additionally stop the *client* from keeping the copy
+  # it needs in order to send If-None-Match at all, which would make the
+  # 304 unreachable on precisely the most expensive endpoints there are.
   def cache_directives(max_age: nil)
-    if Paquette::CacheValidation.private_to_caller?(@repository)
-      control = max_age ? "private, max-age=#{max_age}, immutable" : "private, no-cache"
-      {"Cache-Control" => control, "Vary" => vary_header}
-    else
-      control = max_age ? "public, max-age=#{max_age}, immutable" : "public, no-cache"
-      {"Cache-Control" => control}
-    end
+    control = max_age ? "private, max-age=#{max_age}, immutable" : "private, no-cache"
+    {"cache-control" => control, "vary" => vary_header}
   end
 
   # Emitted alongside `private`, and honest for the auth flow this gem
@@ -68,12 +70,12 @@ module Paquette::ConditionalGet
   #
   # It is emphatically not sufficient on its own, and must never be read as
   # if it were. Paquette does not resolve identity - the embedding
-  # application does, and the README's own example resolves the user from
-  # env["REMOTE_USER"]. An application may just as well carry the licensee
-  # in a cookie, a client certificate or a subdomain. A shared cache keyed
-  # only on Authorization would then serve one licensee's packument to
-  # another quite happily, which is why `private` is what actually stands
-  # between two licensees and this header is only defence in depth.
+  # application does, and may carry the licensee in a cookie, a client
+  # certificate or a subdomain as easily as in Authorization. A shared
+  # cache keyed only on Authorization would then serve one licensee's
+  # packument to another quite happily, which is why `private` is what
+  # actually stands between two callers and this header is only defence in
+  # depth.
   #
   # Accept-Encoding is in there because a compressing proxy in front of
   # these JSON and text bodies would otherwise let one encoding's stored
@@ -82,30 +84,60 @@ module Paquette::ConditionalGet
     "Authorization, Accept-Encoding"
   end
 
+  # What every response leaving either server goes through, whichever
+  # handler made it - an error, the placeholder page, a legacy Marshal
+  # index nobody ever gave a validator.
+  #
+  # Anything a handler did not label is `private, no-store`: it carries no
+  # validator, so there is nothing a client could revalidate, and there is
+  # no reason for a shared cache to so much as consider it. Vary always
+  # names Authorization, merged into whatever Vary is there already.
+  #
+  # The headers come out as a Rack::Headers. Handlers here spell names in
+  # title case and Rack::Files in lowercase, and a plain Hash would let one
+  # response carry both `Cache-Control` and `cache-control` - which a cache
+  # is entitled to read as whichever of the two it finds first.
+  def with_private_caching(response)
+    status, headers, body = response
+    headers = Rack::Headers[headers]
+    headers["cache-control"] ||= "private, no-store"
+    headers["vary"] = vary_with_authorization(headers["vary"])
+    [status, headers, body]
+  end
+
+  def vary_with_authorization(vary)
+    fields = vary.to_s.split(",").map(&:strip).reject(&:empty?)
+    return "*" if fields.include?("*")
+
+    fields << "Authorization" unless fields.any? { |field| field.casecmp?("Authorization") }
+    fields.join(", ")
+  end
+
   # A 200 with the validator and the caching directives attached. An absent
   # etag (fail-closed) still gets the directives: the response is then
   # simply uncacheable-without-asking rather than mislabelled.
   def cacheable(response, etag)
     status, headers, body = response
-    headers = headers.merge(cache_directives)
-    headers["ETag"] = etag if etag
+    headers = Rack::Headers[headers].merge!(cache_directives)
+    headers["etag"] = etag if etag
     [status, headers, body]
   end
 
   # A 304 repeats the validator and the directives. One that omitted them
-  # would teach the client nothing and would show a shared cache no
-  # `private`, which is worse than not answering conditionally at all.
+  # would teach the client nothing, and would leave a shared cache to
+  # update its stored headers from a response that says nothing about who
+  # may keep it.
   def not_modified(etag, extra: {})
-    headers = cache_directives(max_age: extra.key?("Last-Modified") ? IMMUTABLE_MAX_AGE : nil)
-    headers["ETag"] = etag if etag
-    [304, headers.merge(extra), []]
+    headers = Rack::Headers[cache_directives(max_age: extra.key?("Last-Modified") ? IMMUTABLE_MAX_AGE : nil)]
+    headers["etag"] = etag if etag
+    [304, headers.merge!(extra), []]
   end
 
   # A response that must never be stored by anything, for content that is
   # the caller's identity itself.
   def uncacheable(response)
     status, headers, body = response
-    [status, headers.merge("Cache-Control" => "no-store", "Vary" => vary_header), body]
+    [status, Rack::Headers[headers].merge!("cache-control" => "private, no-store", "vary" => vary_header), body]
   end
 
   # If-None-Match wins over If-Modified-Since when both are present, which
@@ -194,15 +226,15 @@ module Paquette::ConditionalGet
     # rest of these servers still spell them in title case. Rack::Headers
     # reads either way and emits the lowercase ones, so the two conventions
     # can meet here without producing a response carrying both spellings of
-    # one header.
+    # one header - with_private_caching does the same for every response.
     headers = Rack::Headers[headers]
 
     # Rack::Files honours Range but never advertises it, so a client that
     # looks before it leaps is told nothing. Everything here is a seekable
     # file on disk, so the answer is unconditionally yes.
-    headers["Accept-Ranges"] = "bytes"
-    headers["ETag"] = etag if etag
-    headers["Last-Modified"] = last_modified
+    headers["accept-ranges"] = "bytes"
+    headers["etag"] = etag if etag
+    headers["last-modified"] = last_modified
     headers.merge!(cache_directives(max_age: IMMUTABLE_MAX_AGE))
 
     [status, headers, body]

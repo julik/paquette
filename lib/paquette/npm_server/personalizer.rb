@@ -57,10 +57,6 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
     Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
   end
 
-  def private_to_caller?
-    true
-  end
-
   def package_file_path(package_name, version)
     original_path = __getobj__.package_file_path(package_name, version)
     return original_path unless original_path && File.exist?(original_path)

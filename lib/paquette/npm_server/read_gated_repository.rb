@@ -33,12 +33,6 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     Paquette::CacheValidation.derive_validator(inner, "read-gate", @gate_key)
   end
 
-  # A gated packument is one licensee's list of what they may have, and a
-  # gated tarball is bytes another licensee would have been refused.
-  def private_to_caller?
-    true
-  end
-
   def package_names
     super.select { |name| entitled?(name: name) }
   end

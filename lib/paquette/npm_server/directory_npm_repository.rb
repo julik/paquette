@@ -55,12 +55,6 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     fingerprint
   end
 
-  # A directory of packages is the same directory for everybody; the
-  # wrappers are what make a response caller-specific.
-  def private_to_caller?
-    false
-  end
-
   def package_names
     Measurometer.instrument("paquette.npm_repository.package_names") do
       names = []

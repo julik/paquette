@@ -11,6 +11,9 @@ group :test do
   # suite free to float forward.
   gem "minitest-mock"
   gem "minitest-parallel_fork", "~> 2.1"
+  # The shared cache the README tells embedders to put in front, so the
+  # suite can show it never replays one caller's response to another.
+  gem "rack-cache"
   gem "rack-test"
   gem "rake"
   # Pinned, unlike everything else here. Floating the dependencies is how a

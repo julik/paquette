@@ -2,13 +2,13 @@
 
 - Serve conditional GETs on `/versions`, `/names` and `/info/`, with a 304 skipping the compact index render entirely
 - Derive HTTP cache validators from the whole repository wrapper stack, and emit none at all when a layer cannot describe itself
-- Mark gated and personalized responses `Cache-Control: private`, so a shared cache cannot replay one licensee's index to another
+- Mark every response `Cache-Control: private` with `Vary: Authorization`, never `public`, so a shared cache in front cannot replay an authorized download or index to a caller the embedder's gate would have refused (security)
 - Add `gate_key:` to both `ReadGatedRepository` classes, the caller-supplied name a gate needs before it may be cached
-- Add `cache_validator`, `private_to_caller?` and `gem_checksum` to the repository protocols
+- Add `cache_validator` and `gem_checksum` to the repository protocols
 - Serve `.gem` downloads and npm tarballs as immutable, with an `ETag`, `Last-Modified` and `Range` support on Rack's own file serving
 - Answer conditional GETs on npm packuments and dist-tags, and never store `/-/whoami`
 - Fold each `dist-tags.json` mtime into the npm fingerprint as whole nanoseconds rather than a float
-- Document how to put rack-cache or Rails' Rack::Cache integration in front of a Paquette server
+- Document what rack-cache or Rails' Rack::Cache in front of a Paquette server does and does not store
 - Serve only absolute http(s) URLs for `homepage` and the `*_uri` gemspec metadata keys, and for the npm packument `homepage`
 - Name each gem's `required_rubygems_version` in the compact index, and bump the sidecar cache format so warm caches re-derive it
 - Accept every version RubyGems publishes, not just three-segment ones — a gem pushed at `0.2` or `0.17` used to be written to disk and then served to nobody

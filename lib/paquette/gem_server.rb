@@ -249,6 +249,12 @@ class Paquette::GemServer
   end
 
   def call(env)
+    with_private_caching(dispatch(env))
+  end
+
+  private
+
+  def dispatch(env)
     Measurometer.instrument("paquette.gem_server.call") do
       request = Rack::Request.new(env)
       route = @@routes.match(request)
@@ -260,8 +266,6 @@ class Paquette::GemServer
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
   end
-
-  private
 
   def handle_dependencies(request)
     gems = request.params["gems"]

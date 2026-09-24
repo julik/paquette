@@ -1,9 +1,10 @@
 require "etc"
 require "minitest/autorun"
 
-# Explicit because minitest 6 stopped pulling it in behind autorun. The suite
-# has always used Minitest::Mock; on 5.x it happened to be there already, so
-# the missing require sat latent until the lockfile stopped pinning 5.25.
+# Minitest::Mock and Object#stub both live here, and minitest 6 moved the file
+# out into the minitest-mock gem. On 5.x autorun pulled it in for free, so the
+# suite used both without ever requiring it — latent until the lockfile stopped
+# pinning 5.25. See the Gemfile for why the dependency is spelled out.
 require "minitest/mock"
 
 # One forked process per test class, rather than minitest's threads: the suite

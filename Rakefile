@@ -4,13 +4,27 @@ require "rake/testtask"
 # Default task runs tests
 task default: :test
 
-# Test task configuration
+# Test task configuration. test/conformance is deliberately not in here: it
+# shells out to the external gem_server_conformance RSpec CLI, which is a
+# different kind of slow and a different kind of dependency from the rest.
+# `rake test:conformance` runs it on its own.
 Rake::TestTask.new do |t|
   t.libs << "test"
-  t.test_files = FileList["test/**/*_test.rb"]
+  t.test_files = FileList["test/**/*_test.rb"].exclude("test/conformance/**/*_test.rb")
   t.verbose = true
   # No -w: the warnings that show up are rack's and rubygems', not ours, and
   # they bury the dots.
+  t.warning = false
+end
+
+# Runs the RubyGems compact-index conformance suite against a live paquette.
+# Kept out of the default :test run because it shells out; skips cleanly when
+# the gem_server_conformance gem is not installed, unless
+# PAQUETTE_REQUIRE_CONFORMANCE says the run must have it.
+Rake::TestTask.new("test:conformance") do |t|
+  t.libs << "test"
+  t.test_files = FileList["test/conformance/**/*_test.rb"]
+  t.verbose = true
   t.warning = false
 end
 
@@ -28,6 +42,7 @@ desc "Show available tasks"
 task :help do
   puts "Available tasks:"
   puts "  rake test        - Run all tests (default)"
+  puts "  rake test:conformance - Run the RubyGems conformance suite against a live server"
   puts "  rake standard    - Check code style with Standard"
   puts "  rake standard:fix - Auto-fix code style issues"
   puts "  rake clean       - Clean up temporary files"

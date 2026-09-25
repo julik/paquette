@@ -288,32 +288,6 @@ Paquette does not cache anything itself. It emits correct HTTP cache headers and
 
 Paquette will try to emit sensible ETags for most endpoints, and there is support for partial responses.
 
-### Public or private, per request
-
-Paquette does not require authentication, so an open registry is a real configuration, and it gets headers a CDN can use. Whether a response is `public` is decided per request. It is `public` only when all three hold:
-
-1. **The request carries no credential** - no `Authorization` header and no `Cookie` header.
-2. **Nothing in the repository stack varies by caller** - no `ReadGatedRepository` and no `Personalizer` anywhere in it. A gate may decide by something Paquette never sees (an IP, a header), so even two anonymous callers can get different answers from it. A repository class that does not answer `#varies_by_caller?` is assumed to vary.
-3. **The server was not built with `shared_caching: false`** - see below.
-
-Otherwise it is `private`. Every labelled response carries `Vary: Authorization, Cookie, Accept-Encoding`, and every response at all carries at least `Vary: Authorization`.
-
-| Response | Anonymous, open stack | Credential, gated or personalized stack, or `shared_caching: false` |
-| --- | --- | --- |
-| `.gem` download, npm tarball (and their 304s) | `public, max-age=31536000, immutable` | `private, max-age=31536000, immutable` |
-| `/versions`, `/names`, `/info/:gem_name`, packument, dist-tags (and their 304s) | `public, no-cache` | `private, no-cache` |
-| `/-/whoami` | `private, no-store` | `private, no-store` |
-| Everything else - errors and 404s, the legacy Marshal indexes, `/quick/*`, `/api/v1/*`, the index page | `private, no-store` | `private, no-store` |
-
-A credentialed response is never `public`. If you want an extra bit of safety, set `shared_caching: false` like so:
-
-```ruby
-Paquette::GemServer.new(gem_repo, shared_caching: false)
-Paquette::NpmServer.new(npm_repo, shared_caching: false)
-```
-
-This makes every response `private`, as if every request carried a credential. Set it when you authorize by something Paquette cannot see, in front of an ungated repository: an IP allowlist, mutual TLS, a custom header, draconian WAF, odd API gateway... those things.
-
 ### Putting a cache in front
 
 Under plain Rack, with [rack-cache](https://github.com/rtomayko/rack-cache):

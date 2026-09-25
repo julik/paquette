@@ -571,7 +571,7 @@ class Paquette::GemServer
     etag = etag_for("compact-names")
     return not_modified(etag) if if_none_match_satisfied?(etag)
 
-    cacheable(compact_ok("---\n#{@repository.gem_names.join("\n")}\n"), etag)
+    cacheable_with_ranges(compact_ok("---\n#{@repository.gem_names.join("\n")}\n"), etag)
   end
 
   # The conditional check is deliberately the first thing here, in front of
@@ -582,17 +582,17 @@ class Paquette::GemServer
   # a repacked gem per version. Answering "nothing changed" must cost a
   # digest of the corpus fingerprint and not one byte more.
   def handle_compact_versions
-    # Weak, and it has to be. The body carries `created_at:` stamped from
-    # Time.now at render time, so two renders of an unchanged corpus are
-    # semantically the same index and are *not* byte-identical — which is
-    # exactly the distinction W/ was invented for. Claiming a strong
-    # validator here would be a lie, and a strong ETag is the one a client
-    # is entitled to use for If-Range byte arithmetic.
-    etag = etag_for("compact-versions", weak: true)
+    # Strong, which it was not until `created_at:` stopped coming from the
+    # clock (see compact_index_created_at). Two renders of an unchanged
+    # corpus are now byte-identical, so the validator can promise byte
+    # equality — and a strong validator is the one a client is entitled to
+    # do byte arithmetic against, which is what makes the range serving
+    # below worth anything.
+    etag = etag_for("compact-versions")
     return not_modified(etag) if if_none_match_satisfied?(etag)
 
     response = Measurometer.instrument("paquette.gem_server.compact_versions") { render_compact_versions }
-    cacheable(response, etag)
+    cacheable_with_ranges(response, etag)
   end
 
   # A 304 here cannot outlive the gem it describes. Every validator on this
@@ -608,7 +608,7 @@ class Paquette::GemServer
     body = compact_info_body(gem_name)
     return not_found("Not Found") if body.nil?
 
-    cacheable(compact_ok(body), etag)
+    cacheable_with_ranges(compact_ok(body), etag)
   end
 
   # Rendered per request, and it renders every /info/ file in the corpus to
@@ -625,11 +625,6 @@ class Paquette::GemServer
     # Sort versions for each gem
     gem_versions.each { |name, versions| versions.sort! }
 
-    # Generate the content in the official format
-    lines = []
-    lines << "created_at: #{Time.now.utc.iso8601}"
-    lines << "---"
-
     # The third column is the MD5 of this gem's /info/ file, not of anything
     # about the version list. Bundler compares it against the MD5 of the info
     # file it already has on disk and re-fetches when they differ — so a
@@ -643,15 +638,20 @@ class Paquette::GemServer
     # way to checksum what /info/ would return is to render it. That is also
     # what makes it correct under a Personalizer, where each licensee's info
     # file carries their own gem checksums.
-    gem_versions.sort.each do |name, versions|
+    rows = gem_versions.sort.map do |name, versions|
       versions_str = versions.join(",")
       checksum = Measurometer.instrument("paquette.gem_server.compact_info_checksum") do
         Digest::MD5.hexdigest(compact_info_body(name).to_s)
       end
-      lines << "#{name} #{versions_str} #{checksum}"
+      "#{name} #{versions_str} #{checksum}"
     end
 
     Measurometer.add_distribution_value("paquette.gem_server.compact_versions_gems", gem_versions.size)
+
+    # The header goes on last so the publication times are read after the
+    # rows have been rendered: on a DirectoryGemRepository both come out of
+    # the same per-version sidecar, and rendering first leaves it warm.
+    lines = ["created_at: #{compact_index_created_at(gem_versions)}", "---", *rows]
 
     # Terminated, not merely separated. The compact index is a line-oriented
     # format and every line in it ends with a newline — including the last
@@ -659,9 +659,59 @@ class Paquette::GemServer
     # fetches this file in ranges and appends what it gets is the one that
     # notices: without the final newline the next chunk lands on the end of
     # the previous row.
-    content = lines.join("\n") + "\n"
+    content = lines.join("
+") + "
+"
 
     [200, {"Content-Type" => COMPACT_INDEX_CONTENT_TYPE}, [content]]
+  end
+
+  # A corpus with nothing in it, and a corpus whose publication times
+  # nobody here can establish, both get the epoch: a constant is what
+  # "derived from the corpus" comes to when the corpus says nothing.
+  EMPTY_CORPUS_CREATED_AT = Time.at(0).utc.iso8601
+
+  # The `created_at:` of /versions, which is the oldest publication time in
+  # the corpus and emphatically not Time.now.
+  #
+  # This line used to be stamped from the clock at render time, and that
+  # single field is what kept the /versions validator weak: two renders of
+  # an unchanged corpus differed in their first line, so the server could
+  # not honestly promise byte equality. It also made byte ranges worse than
+  # useless. Bundler >= 2.5 keeps its copy of this document, asks for the
+  # tail with `Range: bytes=N-`, appends it and checks the result against
+  # Repr-Digest — and a body whose *prefix* moves on every render fails that
+  # check every time, so the client would re-download the whole index after
+  # doing the ranged request first.
+  #
+  # rubygems.org can stamp a real creation time because its /versions is a
+  # materialized, append-only file; the time it records is the time that
+  # file came into being, and it does not move as gems are pushed. Paquette
+  # renders the document per request from the corpus, and building such a
+  # file is a different feature. The oldest publication time is the nearest
+  # honest reading of the same idea — the index has existed, in the sense
+  # that it has had something in it, since its oldest gem was published —
+  # and it has the property this needs: it is a pure function of the corpus,
+  # and it does not move when a gem is pushed, because a push is nearly
+  # always newer than the oldest gem already there. So the common change
+  # leaves the header alone and only the rows below it move.
+  #
+  # `published_at` is the repository protocol's own answer, so a wrapper
+  # that hides versions (CooldownRepository) or one that reads publication
+  # times out of a table of its own is followed here rather than
+  # second-guessed. A repository that has never heard of it gets the epoch.
+  def compact_index_created_at(gem_versions)
+    return EMPTY_CORPUS_CREATED_AT unless @repository.respond_to?(:published_at)
+
+    oldest = Measurometer.instrument("paquette.gem_server.compact_versions_created_at") do
+      times = gem_versions.flat_map do |name, versions|
+        versions.map { |version| @repository.published_at(name, version) }
+      end
+      times.compact.min
+    end
+    return EMPTY_CORPUS_CREATED_AT if oldest.nil?
+
+    oldest.to_time.getutc.iso8601
   end
 
   # The body of an /info/ file, or nil when the gem is unknown here.

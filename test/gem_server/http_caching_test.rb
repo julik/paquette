@@ -48,18 +48,47 @@ class HttpCachingTest < Minitest::Test
       etag = first[1]["ETag"]
       refute_nil etag, path
 
-      # Strong, not weak: these bodies are byte-identical across renders,
-      # unlike /versions which stamps a created_at.
+      # Strong, not weak: these bodies are byte-identical across renders.
       refute etag.start_with?("W/"), "#{path} should carry a strong validator"
 
       assert_equal 304, get(app, path, "HTTP_IF_NONE_MATCH" => etag)[0], path
     end
   end
 
-  def test_versions_validator_is_weak_because_the_body_carries_a_timestamp
-    etag = get(plain_app, "/versions")[1]["ETag"]
-    assert etag.start_with?("W/"),
-      "/versions renders a fresh created_at every time, so it cannot claim byte equality"
+  # The validator on /versions is strong, and it may be because the body is
+  # a pure function of the corpus: `created_at:` is the oldest publication
+  # time in it rather than the wall clock, so two renders of an unchanged
+  # corpus are the same bytes. This is the property everything below about
+  # ranges rests on, so it is asserted directly and not only through the
+  # tag.
+  def test_versions_renders_the_same_bytes_twice_and_claims_a_strong_validator
+    app = plain_app
+
+    first = get(app, "/versions")
+    second = get(app, "/versions")
+
+    assert_equal body_of(first), body_of(second), "/versions must not move while the corpus stands still"
+    refute body_of(first).start_with?("created_at: #{Time.now.utc.year}"),
+      "created_at must come from the corpus, not from the clock"
+    refute first[1]["ETag"].start_with?("W/"), "a deterministic body earns a strong validator"
+  end
+
+  def test_created_at_is_the_oldest_publication_time_in_the_corpus
+    repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
+    oldest = repository.gem_versions.map { |name, version| repository.published_at(name, version) }.compact.min
+
+    created_at = body_of(get(plain_app, "/versions")).lines.first
+    assert_equal "created_at: #{oldest.getutc.iso8601}\n", created_at
+  end
+
+  # An empty corpus has no publication time to speak of, and the answer has
+  # to be a constant rather than "now" - otherwise the one case with nothing
+  # in it is the one case that renders differently every time.
+  def test_an_empty_corpus_still_renders_a_constant_created_at
+    Dir.mktmpdir do |dir|
+      app = Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(dir))
+      assert_equal "created_at: 1970-01-01T00:00:00Z", body_of(get(app, "/versions")).lines.first.chomp
+    end
   end
 
   def test_a_stale_etag_does_not_get_a_304

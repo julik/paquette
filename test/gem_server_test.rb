@@ -472,11 +472,11 @@ class GemServerTest < Minitest::Test
 
       session.get "/specs.4.8"
       specs = Marshal.load(session.last_response.body)
-      assert_equal [["minuscule_test", "0.1.0", "ruby"]], specs
+      assert_equal [["minuscule_test", Gem::Version.new("0.1.0"), "ruby"]], specs
 
       session.get "/latest_specs.4.8"
       specs = Marshal.load(session.last_response.body)
-      assert_equal [["minuscule_test", "0.1.0", "ruby"]], specs
+      assert_equal [["minuscule_test", Gem::Version.new("0.1.0"), "ruby"]], specs
     end
   end
 

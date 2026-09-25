@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Report a platform gem's real platform, with a bare version beside it, in `/specs.4.8`, `/latest_specs.4.8`, the dependency API, `/api/v1/versions` and search — all five used to advertise `nokogiri-1.16.0-java` as version `"1.16.0-java"` on platform `"ruby"`, which is a version no client can resolve on a platform that is not the gem's
+- Carry a `Gem::Version` rather than a String in the legacy Marshal indexes, as rubygems.org does — `Gem::SpecFetcher` sorts what it unmarshals, and Strings sort `1.10.0` below `1.9.0`
+- Name the latest version of each gem per *platform* in `/latest_specs.4.8`, so a java or arm64-darwin build is not hidden behind the plain-ruby one
+- Serve `/api/v1/dependencies` and `/api/v1/dependencies.json`, which were documented and implemented but had no route; the unsuffixed one answers Marshal, the way Bundler's legacy fallback reads it
+- Report the gem's own authors, summary and platform from `/api/v1/search.json` instead of the placeholders it used to send for every gem
 - Serve conditional GETs on `/versions`, `/names` and `/info/`, with a 304 skipping the compact index render entirely
 - Derive HTTP cache validators from the whole repository wrapper stack, and emit none at all when a layer cannot describe itself
 - Never answer a request carrying `Authorization` or a `Cookie`, or one served through a gate or a personalizer, with `Cache-Control: public`, so a shared cache in front cannot replay an authorized download or index to a caller the embedder's gate would have refused; everything else caller-specific is `private` with `Vary: Authorization, Cookie, Accept-Encoding` (security)

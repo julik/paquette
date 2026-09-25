@@ -179,12 +179,26 @@ gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gem.paquett
 The RubyGems API in Paquette supports the following endpoints:
 
 - `GET /` - Repository info
-- `GET /api/v1/dependencies` - Gem dependencies
+- `GET /api/v1/dependencies` - Gem dependencies, as Marshal
+- `GET /api/v1/dependencies.json` - the same thing as JSON
 - `GET /api/v1/versions` - Available gem versions
 - `GET /api/v1/names` - Available gem names
 - `GET /api/v1/search.json` - Search gems
 - `GET /gems/{gemname-version.gem}` - Download gem file
 - `POST /api/v1/gems` - Upload gem (basic implementation)
+- `GET /specs.4.8`, `GET /latest_specs.4.8` (and their `.gz` variants) - the legacy Marshal indexes
+- `GET /names`, `GET /versions`, `GET /info/{gemname}` - the compact index
+
+### Platform gems
+
+A gem built for a platform is stored, downloaded and indexed under the filename RubyGems gives it - `nokogiri-1.16.0-java.gem` - so the same name and version can exist for `ruby`, `java` and `arm64-darwin` side by side, and each is downloaded and yanked on its own.
+
+Where the platform ends up in a response depends on the format, and both of these are what rubygems.org does:
+
+- The compact index (`/info/{gemname}` and the version lists in `/versions`) keeps the platform glued onto the version column, as `1.16.0-java`. That *is* the wire format there; Bundler splits it apart itself.
+- Everywhere else - `/specs.4.8` and `/latest_specs.4.8`, `/api/v1/dependencies`, `/api/v1/versions`, `/api/v1/search.json` - the version is bare and the platform is its own field. The legacy Marshal indexes carry `[name, Gem::Version, platform]` triples, and `/latest_specs.4.8` names the latest version of each gem *per platform*, so a java build never hides behind a newer plain-ruby one.
+
+`gem push` still files a gem under its bare version, so pushing a platform build of a name and version that already exists is refused as a duplicate. Put platform builds in the gems directory as files for now.
 
 ### What `/api/v1/versions` does and does not sanitise
 

@@ -101,7 +101,7 @@ gem_repo = Paquette::GemServer::CooldownRepository.new(gem_repo, interval: 7 * 2
 gem_server = Paquette::GemServer.new(gem_repo)
 ```
 
-A version that is still cooling does not appear in `/names`, `/versions`, `/info/`, `/specs.4.8` or `/latest_specs.4.8`, and it does not download - it 404s, same as a gem that is not there. A gem whose every version is still cooling disappears from the index entirely rather than showing up with an empty version list. The interval is in seconds (Paquette has no ActiveSupport, so there is no `7.days` to write), and a version whose age is exactly the interval is served.
+A version that is still cooling does not appear in `/names`, `/versions`, `/info/`, `/specs.4.8`, `/latest_specs.4.8` or `/prerelease_specs.4.8`, and it does not download - it 404s, same as a gem that is not there. A gem whose every version is still cooling disappears from the index entirely rather than showing up with an empty version list. The interval is in seconds (Paquette has no ActiveSupport, so there is no `7.days` to write), and a version whose age is exactly the interval is served.
 
 The point is that a bad release should not be resolvable into a customer's lockfile the instant it is pushed: the cooldown is the window in which you can still yank it before anyone has picked it up. It also makes a serviceable release channel - point your conservative customers at a server wrapped in this and they get every release a week late, out of the same corpus, without a second copy of anything. Like the other wrappers it is read-only; wrap the bare repository for the endpoint that accepts pushes.
 
@@ -184,6 +184,11 @@ The RubyGems API in Paquette supports the following endpoints:
 - `GET /api/v1/versions` - Available gem versions
 - `GET /api/v1/names` - Available gem names
 - `GET /api/v1/search.json` - Search gems
+- `GET /specs.4.8`, `GET /specs.4.8.gz` - Legacy Marshal index of every released version
+- `GET /latest_specs.4.8`, `GET /latest_specs.4.8.gz` - The newest release of each gem
+- `GET /prerelease_specs.4.8`, `GET /prerelease_specs.4.8.gz` - Every prerelease version
+- `GET /names`, `GET /versions`, `GET /info/{gemname}` - Compact index
+- `GET /quick/Marshal.4.8/{gemname-version}.gemspec.rz` - Marshalled gemspec
 - `GET /gems/{gemname-version.gem}` - Download gem file
 - `POST /api/v1/gems` - Upload gem (basic implementation)
 - `GET /specs.4.8`, `GET /latest_specs.4.8` (and their `.gz` variants) - the legacy Marshal indexes

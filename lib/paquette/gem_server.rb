@@ -116,6 +116,14 @@ class Paquette::GemServer
       handle_latest_specs("4.8.gz")
     end
 
+    r.get "/prerelease_specs.4.8" do
+      handle_prerelease_specs("4.8")
+    end
+
+    r.get "/prerelease_specs.4.8.gz" do
+      handle_prerelease_specs("4.8.gz")
+    end
+
     # Compact index endpoints
     r.get "/names" do
       handle_compact_names
@@ -531,6 +539,19 @@ class Paquette::GemServer
     end
   end
 
+  def handle_prerelease_specs(version)
+    specs = generate_prerelease_specs_array
+
+    specs_data = Measurometer.instrument("paquette.gem_server.marshal_specs") { marshal_dump_4_8(specs) }
+
+    if version.include?(".gz")
+      specs_data = gzip_compress(specs_data)
+      [200, {"Content-Type" => "application/x-gzip"}, [specs_data]]
+    else
+      [200, {"Content-Type" => "application/octet-stream"}, [specs_data]]
+    end
+  end
+
   def handle_compact_names
     etag = etag_for("compact-names")
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -657,7 +678,30 @@ class Paquette::GemServer
   # for why the split is exact.
   def generate_specs_array
     Measurometer.instrument("paquette.gem_server.generate_specs_array") do
-      @repository.gem_versions.filter_map { |name, version_column| spec_tuple(name, version_column) }
+      @repository.gem_versions.filter_map do |name, version_column|
+        tuple = spec_tuple(name, version_column)
+        tuple unless tuple.nil? || tuple[1].prerelease?
+      end
+    end
+  end
+
+  # Every prerelease in the corpus, in the same [name, version, platform]
+  # shape the other two specs endpoints use. rubygems.org partitions the
+  # legacy index this way: specs.4.8 and latest_specs.4.8 carry releases
+  # only, prerelease_specs.4.8 carries everything else, and a gem whose
+  # every version is a prerelease appears only here.
+  #
+  # The prerelease question is asked of the Gem::Version spec_tuple parsed
+  # and never of the version column it came from. "1.16.0-java" is a java
+  # *release*, and Gem::Version reads that column as the prerelease
+  # 1.16.0.pre.java — so splitting the platform off first is the whole of
+  # what keeps every platform build out of this document.
+  def generate_prerelease_specs_array
+    Measurometer.instrument("paquette.gem_server.generate_prerelease_specs_array") do
+      @repository.gem_versions.filter_map do |name, version_column|
+        tuple = spec_tuple(name, version_column)
+        tuple if tuple && tuple[1].prerelease?
+      end
     end
   end
 
@@ -704,7 +748,7 @@ class Paquette::GemServer
       latest = {}
       @repository.gem_versions.each do |name, version_column|
         tuple = spec_tuple(name, version_column)
-        next unless tuple
+        next if tuple.nil? || tuple[1].prerelease?
 
         key = [tuple[0], tuple[2]]
         latest[key] = tuple if !latest[key] || tuple[1] > latest[key][1]

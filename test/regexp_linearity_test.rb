@@ -106,6 +106,72 @@ class RegexpLinearityTest < Minitest::Test
     assert_nil Paquette::GemServer.split_gem_spec_name(("é" * max) + "-6.2.0")
   end
 
+  # split_version_column takes the other half of the same segment, and it
+  # takes it with String#split rather than with a pattern — deliberately,
+  # because no pattern can make this split: "1.0.0-java" is a well-formed
+  # prerelease *version* as far as Gem::Version's own grammar is
+  # concerned. Gem::Version rewriting "-" into ".pre." at construction is
+  # what makes the first dash unambiguous. These are the cases that would
+  # have to be reconsidered if it ever grew a regexp.
+  def test_the_version_column_splits_into_a_version_and_a_platform
+    {
+      "6.2.0" => ["6.2.0", "ruby"],
+      "1.16.0-java" => ["1.16.0", "java"],
+      "1.16.0-arm64-darwin" => ["1.16.0", "arm64-darwin"],
+      "1.16.0-x86_64-linux-musl" => ["1.16.0", "x86_64-linux-musl"],
+      "0.2" => ["0.2", "ruby"],
+      "1.0.pre" => ["1.0.pre", "ruby"],
+      # A trailing dash leaves no platform behind, so the column is read
+      # as carrying none rather than as carrying an empty one.
+      "1.0.0-" => ["1.0.0", "ruby"],
+      "" => ["", "ruby"]
+    }.each do |column, expected|
+      assert_equal expected, Paquette::GemServer.split_version_column(column), column.inspect
+    end
+  end
+
+  # The dash the split pivots on, in the shapes that make a backtracking
+  # splitter take a client-chosen amount of time — plus a string shaped
+  # like a platform suffix that is not one, and bytes that are not valid
+  # UTF-8, which String#split answers rather than raising over.
+  def test_the_version_column_split_answers_pathological_input_promptly
+    size = 20_000
+    candidates = [
+      "-" * size,
+      "1.0.0" + ("-" * size),
+      ("1.0.0-" * size),
+      ("1.0.0-java" * size),
+      "1.0.0-not-a-platform-at-all-" + ("x" * size),
+      "1.0.0-java\n/etc/passwd",
+      "1.0.0-\xE2".b,
+      "1.0.0-\xFF".b,
+      ("\xFF" * size).b
+    ]
+
+    took = elapsed do
+      candidates.each do |candidate|
+        number, platform = Paquette::GemServer.split_version_column(candidate)
+        refute_nil number, candidate[0, 16].inspect
+        refute_empty platform, candidate[0, 16].inspect
+        # Whatever came back, the two halves are exactly the input with
+        # at most the one pivot dash removed — nothing has been invented.
+        assert candidate.bytesize >= number.bytesize, candidate[0, 16].inspect
+      end
+    end
+
+    assert took < 1.0, "splitting pathological input took #{took}s"
+  end
+
+  # The segment never reaches the splitter in the first place: a filename
+  # is refused by split_gem_filename before anything asks what its
+  # platform is. This is the belt to that brace — a newline in the column
+  # must not come back as a platform, because the legacy index and the
+  # dependency API interpolate nothing but still hand it to a client.
+  def test_a_newline_in_the_segment_never_becomes_a_version_column
+    assert_nil Paquette::GemServer.split_gem_filename("nokogiri-1.16.0-java\n1.0.0.gem")
+    assert_nil Paquette::GemServer.split_gem_spec_name("nokogiri-1.16.0-java\nforged")
+  end
+
   def test_gem_name_patterns_are_anchored_against_an_injected_newline
     assert_nil Paquette::GemServer.split_gem_filename("zip_kit-6.2.0.gem\n/etc/passwd")
     assert_nil Paquette::GemServer.split_gem_spec_name("zip_kit-6.2.0\nanything")

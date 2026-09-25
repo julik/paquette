@@ -81,6 +81,20 @@ class Paquette::GemServer
       handle_names
     end
 
+    # The legacy dependency API, which Bundler falls back to when the
+    # compact index is not available and which `gem` still asks for. The
+    # unsuffixed path answers Marshal and the .json one answers JSON,
+    # which is how rubygems.org distinguishes them — a Bundler that gets
+    # JSON out of the unsuffixed path raises out of Marshal.load, so the
+    # two cannot share a body.
+    r.get "/api/v1/dependencies" do |gems: nil|
+      handle_dependencies(gems, as: :marshal)
+    end
+
+    r.get "/api/v1/dependencies.json" do |gems: nil|
+      handle_dependencies(gems, as: :json)
+    end
+
     r.get "/api/v1/search.json" do |query: nil|
       handle_search(query)
     end
@@ -223,6 +237,38 @@ class Paquette::GemServer
     match && [match[1], match[2]]
   end
 
+  # The version column split into the two things it actually holds:
+  # "1.0.0-java" into ["1.0.0", "java"], and a column carrying no platform
+  # into ["1.0.0", "ruby"].
+  #
+  # This lives here rather than in the repository for the same reason the
+  # two splits above do. The version column is this class's question, and
+  # a repository holding a second opinion about it is what once made a gem
+  # pushed at "0.2" invisible to every endpoint. So the repository goes on
+  # publishing the glued column — the compact index wants it glued, that
+  # is the correct wire format there, and gem_file_path is named after it
+  # — and every reader that needs the halves apart asks here. One place,
+  # one rule, whichever direction it is being read in.
+  #
+  # There is no pattern, and that is deliberate rather than lazy: no
+  # regexp can make this split, because "1.0.0-java" is a perfectly good
+  # *version* as far as Gem::Version::VERSION_PATTERN is concerned — the
+  # dash is its prerelease separator. What settles it is the other end:
+  # Gem::Version#initialize rewrites "-" into ".pre." the moment a version
+  # is constructed, so the version string a published spec carries can
+  # never contain a dash, and the first dash in the column is therefore
+  # always the one the platform was joined on. A plain split on that dash
+  # is not an approximation of the rule; it is the rule.
+  #
+  # The authority on a stored gem's platform is still spec.platform, and
+  # callers that are holding a spec anyway use that. This is for the
+  # callers that are not — the whole-corpus index endpoints, where a spec
+  # read per version would be a tar walk and a YAML parse per gem.
+  def self.split_version_column(version_column)
+    number, platform = version_column.to_s.split("-", 2)
+    [number.to_s, (platform.nil? || platform.empty?) ? Gem::Platform::RUBY : platform]
+  end
+
   # Build a gem server backed by `repository`. Reads, writes, and yanks
   # all flow through this one object — whether writes are accepted depends
   # on the wrapper chain the caller assembled. A ReadGatedRepository, for
@@ -275,43 +321,50 @@ class Paquette::GemServer
     bad_request(e.message)
   end
 
-  def handle_dependencies(request)
-    gems = request.params["gems"]
-
-    # Handle different parameter formats
-    if gems.is_a?(String)
-      # Split comma-separated gem names
-      gems = gems.split(",").map(&:strip)
-    elsif gems.nil?
-      gems = []
-    end
-
-    # If no gems specified, return empty array
-    if gems.empty?
-      return json_ok([])
+  # One entry per name+version+platform the caller asked about, in the
+  # shape rubygems.org serves: `:number` is the bare version and
+  # `:platform` is its own field, and the two are never glued together the
+  # way the compact index glues them. A client handed "1.0.0-java" as a
+  # number has been handed a version string nothing can resolve.
+  #
+  # The platform comes out of the version column rather than out of the
+  # spec on purpose. gem_dependencies reads the spec, but it reads it
+  # behind the repository protocol and hands back only the dependencies,
+  # so taking spec.platform here would mean a second tar walk and YAML
+  # parse per version on a path Bundler hits with every gem in a Gemfile
+  # at once. The column already carries the platform the push wrote into
+  # the filename, which is spec.platform by construction.
+  def handle_dependencies(gems, as:)
+    names = case gems
+    when String then gems.split(",").map(&:strip).reject(&:empty?)
+    when Array then gems.map { |name| name.to_s.strip }.reject(&:empty?)
+    else []
     end
 
     dependencies = []
     Measurometer.instrument("paquette.gem_server.dependencies") do
-      gems.each do |gem_name|
-        gem_versions = @repository.versions_for_gem(gem_name)
-        gem_versions.each do |version|
-          gem_dependencies = @repository.gem_dependencies(gem_name, version)
+      names.each do |gem_name|
+        @repository.versions_for_gem(gem_name).each do |version_column|
+          number, platform = Paquette::GemServer.split_version_column(version_column)
           dependencies << {
             name: gem_name,
-            number: version,
-            platform: "ruby",
-            dependencies: gem_dependencies
+            number: number,
+            platform: platform,
+            # Pairs, not the repository's hashes: Bundler reads this as
+            # `Gem::Dependency.new(dep[0], dep[1])` straight off the
+            # unmarshalled array, and rubygems.org's JSON says the same
+            # thing in the same shape.
+            dependencies: @repository.gem_dependencies(gem_name, version_column).map do |dep|
+              [dep[:name], dep[:requirements]]
+            end
           }
         end
       end
     end
 
-    json_ok(dependencies)
-  end
+    return json_ok(dependencies) if as == :json
 
-  def handle_dependencies_json(request)
-    handle_dependencies(request)
+    [200, {"Content-Type" => "application/octet-stream"}, [Marshal.dump(dependencies)]]
   end
 
   def handle_versions
@@ -323,7 +376,11 @@ class Paquette::GemServer
         spec = @repository.gem_spec(name, version)
         versions << {
           name: name,
-          number: version,
+          # The spec's own version, not the column it is filed under: the
+          # column carries the platform suffix for a platform gem, and
+          # this endpoint already has a `platform` field to put it in.
+          # The spec is read here anyway, so it is the authority for both.
+          number: spec.version.to_s,
           platform: spec.platform.to_s,
           authors: spec.authors,
           info: spec.description || "",
@@ -426,20 +483,31 @@ class Paquette::GemServer
     not_found(e.message)
   end
 
+  # The spec is read for every gem whose name matches, which is what makes
+  # the platform, the authors and the summary the gem's own rather than a
+  # placeholder. The read is confined to the matches: a query nothing
+  # matches costs a directory listing, and only a query matching the whole
+  # corpus costs what /api/v1/versions costs.
   def handle_search(query)
     query ||= ""
     results = []
 
     Measurometer.instrument("paquette.gem_server.search") do
-      @repository.gem_versions.each do |name, version|
+      @repository.gem_versions.each do |name, version_column|
         next unless name.include?(query)
+
+        spec = @repository.gem_spec(name, version_column)
+        next unless spec
 
         results << {
           name: name,
-          version: version,
-          platform: "ruby",
-          authors: ["Unknown"],
-          info: "Uploaded to Paquette"
+          # Bare, with the platform beside it — the same split
+          # /api/v1/versions makes, and for the same reason.
+          version: spec.version.to_s,
+          platform: spec.platform.to_s,
+          authors: Array(spec.authors),
+          # The same field /api/v1/versions serves under this name.
+          info: spec.description || spec.summary || ""
         }
       end
     end
@@ -570,17 +638,39 @@ class Paquette::GemServer
     end
   end
 
+  # One [name, Gem::Version, platform] triple per gem in the corpus, which
+  # is what rubygems.org's own specs.4.8 unmarshals to — verified against
+  # a fetched index, where every row is [String, Gem::Version, String].
+  #
+  # The Gem::Version is not decoration. Gem::SpecFetcher turns each row
+  # into a Gem::NameTuple and then sorts and compares tuples, and a String
+  # in that slot compares as a String: "1.10.0" sorts below "1.9.0" and
+  # the client resolves to the wrong gem. Marshal carries a Gem::Version
+  # as its own string anyway (marshal_dump is `[@version]`), so the wire
+  # cost is a few bytes and every client that reads this file has the
+  # class loaded already.
+  #
+  # The platform is split off the version column rather than read off a
+  # spec: this endpoint walks the whole corpus and has never opened a gem
+  # to do it, and adding a tar walk and a YAML parse per version here
+  # would make the cheap index the expensive one. See split_version_column
+  # for why the split is exact.
   def generate_specs_array
-    # Generate specs array in the format expected by RubyGems/Bundler
-    # Each spec is [gem_name, version, platform]
-    # Use only basic Ruby types to ensure Marshal 4.8 compatibility
     Measurometer.instrument("paquette.gem_server.generate_specs_array") do
-      specs = []
-      @repository.gem_versions.each do |name, version|
-        specs << [name.to_s, version.to_s, "ruby"]
-      end
-      specs
+      @repository.gem_versions.filter_map { |name, version_column| spec_tuple(name, version_column) }
     end
+  end
+
+  # One row of a legacy index, or nil for a version column Gem::Version
+  # will not accept. The column is whatever the filename on disk said, and
+  # a push cannot write a malformed one — SpecValidator refuses it — but a
+  # file dropped into the gems directory by hand can be anything, and one
+  # such file must not take the whole index down with an ArgumentError.
+  def spec_tuple(name, version_column)
+    number, platform = Paquette::GemServer.split_version_column(version_column)
+    return nil unless Gem::Version.correct?(number)
+
+    [name.to_s, Gem::Version.new(number), platform]
   end
 
   def handle_latest_specs(version)
@@ -599,31 +689,37 @@ class Paquette::GemServer
     end
   end
 
+  # The latest version of each gem *per platform*, not per name. A corpus
+  # holding nokogiri 1.16.0 for ruby, java and arm64-darwin publishes
+  # three rows here, exactly as rubygems.org's latest_specs.4.8 does — one
+  # row per name would hide two of those builds from every client that
+  # resolves off this index, and which two would depend on the sort.
+  #
+  # Comparing Gem::Version objects rather than the version columns they
+  # came from is the other half of the same fix: "1.16.0-java" parses as
+  # 1.16.0.pre.java, a *prerelease*, so a glued column compared as a
+  # version ranks every platform build below the plain one.
   def generate_latest_specs_array
-    # Generate latest specs array - only the latest version of each gem
     Measurometer.instrument("paquette.gem_server.generate_latest_specs_array") do
-      latest_versions = {}
-      @repository.gem_versions.each do |name, version|
-        if !latest_versions[name] || Gem::Version.new(version) > Gem::Version.new(latest_versions[name])
-          latest_versions[name] = version
-        end
-      end
+      latest = {}
+      @repository.gem_versions.each do |name, version_column|
+        tuple = spec_tuple(name, version_column)
+        next unless tuple
 
-      specs = []
-      latest_versions.each do |name, version|
-        specs << [name.to_s, version.to_s, "ruby"]
+        key = [tuple[0], tuple[2]]
+        latest[key] = tuple if !latest[key] || tuple[1] > latest[key][1]
       end
-      specs
+      latest.values
     end
   end
 
+  # Marshal's own format is 4.8 and has been since 1.8, so this is
+  # Marshal.dump with a guard on the shape rather than a format choice.
+  # The only class in the graph beyond Array and String is Gem::Version,
+  # which every client reading these files has loaded before it asks —
+  # see generate_specs_array for why it is there.
   def marshal_dump_4_8(obj)
-    # Create Marshal data in format 4.8 for compatibility with Bundler
-    # Use only basic Ruby types to ensure compatibility
-    specs_array = obj.is_a?(Array) ? obj : []
-
-    # Simple Marshal.dump should work with basic types
-    Marshal.dump(specs_array)
+    Marshal.dump(obj.is_a?(Array) ? obj : [])
   end
 
   def gzip_compress(data)

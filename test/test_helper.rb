@@ -170,6 +170,42 @@ module HostileGemHelpers
   end
 end
 
+# Real .gem files for the platform builds a corpus holds alongside the
+# plain-ruby one — "nokogiri-1.16.0-java.gem" and friends. Built rather
+# than committed: the whole point of the fixture is that name, version and
+# platform combine into the filename the way RubyGems combines them, and a
+# checked-in binary would be a snapshot of that rule rather than the rule.
+module PlatformGemHelpers
+  # The spec is built with a real Gem::Platform, so `file_name` and
+  # `full_name` are RubyGems' own: "a-1.0.0.gem" for ruby, and
+  # "a-1.0.0-java.gem" for anything else.
+  def platform_gem_spec(name:, version:, platform: "ruby", dependencies: {})
+    spec = Gem::Specification.new
+    spec.name = name
+    spec.version = Gem::Version.new(version)
+    spec.platform = platform
+    spec.summary = "#{name} for #{platform}"
+    spec.description = "A #{platform} build of #{name}"
+    spec.authors = ["Platform Fixture"]
+    spec.homepage = "https://example.com/#{name}"
+    spec.files = []
+    dependencies.each { |dep_name, requirement| spec.add_runtime_dependency(dep_name.to_s, requirement) }
+    spec
+  end
+
+  # Writes the gem into `gems_dir` under the layout DirectoryGemRepository
+  # expects, and returns its path.
+  def write_platform_gem(gems_dir, name:, version:, platform: "ruby", dependencies: {})
+    spec = platform_gem_spec(name: name, version: version, platform: platform, dependencies: dependencies)
+    package_dir = File.join(gems_dir, name)
+    FileUtils.mkdir_p(package_dir)
+
+    path = File.join(package_dir, spec.file_name)
+    File.binwrite(path, gem_bytes_for(spec))
+    path
+  end
+end
+
 module NpmTarballHelpers
   # The mtime npm itself stamps on every file it packs (1985-10-26).
   NPM_EPOCH = 499162500
@@ -269,6 +305,7 @@ module Minitest
   class Test
     include NpmTarballHelpers
     include HostileGemHelpers
+    include PlatformGemHelpers
     include ExternalTooling
     include MalformedRequestHelpers
     include TimingHelpers

@@ -261,11 +261,13 @@ class CooldownRepositoryTest < Minitest::Test
   def test_latest_specs_names_the_latest_served_version
     @app = Paquette::GemServer.new(cooldown)
 
+    # A Gem::Version in the middle column, which is what rubygems.org's own
+    # legacy index carries and what Gem::SpecFetcher sorts tuples by.
     get "/latest_specs.4.8"
-    assert_equal [["aged_gem", "1.0.0", "ruby"]], Marshal.load(last_response.body)
+    assert_equal [["aged_gem", Gem::Version.new("1.0.0"), "ruby"]], Marshal.load(last_response.body)
 
     get "/specs.4.8"
-    assert_equal [["aged_gem", "1.0.0", "ruby"]], Marshal.load(last_response.body)
+    assert_equal [["aged_gem", Gem::Version.new("1.0.0"), "ruby"]], Marshal.load(last_response.body)
   end
 
   def test_versions_checksum_describes_the_info_file_that_is_served

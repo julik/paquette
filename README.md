@@ -14,10 +14,16 @@ Things are somewhat in flux but Paquette is usable alright.
 
 This is a Ruby library so you will need Ruby installed. To try a minimal setup, do a `bundle install` and start `bin/dev`. Try pushing a gem into Paquette and then adding the local server to your `Gemfile` - and then do a `bundle install` in your application for that custom gem.
 
-However, that is not how Paquette is primarily meant to be used. It is meant to be integrated into a larger Rails or Rack application. The key Paquette concepts are:
+However, that is not how Paquette is primarily meant to be used. It is meant to be integrated into a larger Rails or Rack application, and otherwise bent to your will in various (slightly unhinged) ways. Just a few use cases Paquette was designed for:
+
+- Hosting your internal package registry (why get the jFrog and the kitchen sink?)
+- Distributing your packages under specific authentication
+- Distributing your packages with licensing
+
+The key Paquette concepts are:
 
 - The serving app object - this is what poses as a gem/NPM repo. It's a Rack app.
-- The repository object - that's the frontend for your stored packages.
+- The repository object - that's the frontend for your stored packages. The basic implementation just exposes a dir.
 - The repository wrappers - that's how you can control fulfillment from Paquette.
 
 A very basic example: in your Rails app, define a Paquette server with gems inside your app's `storage/`:
@@ -62,9 +68,11 @@ gem_server = Paquette::GemServer.new(gem_repo)
 
 Now the holder of the `license` stored in your `ActiveSupport::Current` for the request will only receive the gems included in their license's `package_names` list. And you can limit version access as well. This affects serving the actual packages, serving the indexes and anything else.
 
-The `gate_key:` (the npm `ReadGatedRepository` takes one too) is optional and is only used for HTTP caching. Your gate is a block, and nothing inside Paquette can work out which subset of the corpus it selects - so if you want Paquette to emit `ETag`s on the index endpoints, you have to say who this gate is for. Pass something that identifies the licensee *and* changes whenever their entitlements change (a Rails `cache_key` does both). Leave it out and Paquette emits no `ETag` at all rather than a possibly-wrong one - see [HTTP caching](#http-caching).
+The `gate_key:` (the npm `ReadGatedRepository` takes one too) is optional and is only used for HTTP caching. Broadly speaking, it is the user or license ID which alters the ETag of the response. If you pass none the response won't be cacheable - see [HTTP caching](#http-caching).
 
-Paquette also includes a _personalization_ wrapper.
+### Package personalization
+
+Paquette includes a _personalization_ wrapper which allows every package to be marked with license details of the downlaoder. See it as a "soft-DRM" in the style of Pragmatic Programmers back in the day.
 
 > [!IMPORTANT]
 > Personalizing a package changes its checksum, and the checksum may become unique for every license. Often, this is exactly what you want. However, if you _change_ how you personalize a package for a specific user, their package manager may detect the changed checksum and assume the package has been tampered with. So - if you do personalize, either let your users know that package checksums will change when you alter the personalization flow, or never change how packages get personalized.
@@ -93,45 +101,29 @@ gem_repo = Paquette::GemServer::Personalizer.new(
 gem_server = Paquette::GemServer.new(gem_repo)
 ```
 
-There is also a _cooldown_ wrapper, which withholds versions that were published less than a given interval ago:
+All the packages passing through personalization will be repackaged for this specific `personalization_key` and cached. The initial request for the package index may be slow if checksums and sizes have to be provided (that depends on the API endpoint and the registry used).
+
+### Cooldown
+
+There is a _cooldown_ wrapper, which withholds versions that were published less than a given interval ago:
 
 ```ruby
 # ...the rest as above
-gem_repo = Paquette::GemServer::CooldownRepository.new(gem_repo, interval: 7 * 24 * 60 * 60)
+cooldown_seconds = 7 * 24 * 60 * 60
+gem_repo = Paquette::GemServer::CooldownRepository.new(gem_repo, interval: cooldown_seconds)
 gem_server = Paquette::GemServer.new(gem_repo)
 ```
 
-A version that is still cooling does not appear in `/names`, `/versions`, `/info/`, `/specs.4.8`, `/latest_specs.4.8` or `/prerelease_specs.4.8`, and it does not download - it 404s, same as a gem that is not there. A gem whose every version is still cooling disappears from the index entirely rather than showing up with an empty version list. The interval is in seconds (Paquette has no ActiveSupport, so there is no `7.days` to write), and a version whose age is exactly the interval is served.
-
-The point is that a bad release should not be resolvable into a customer's lockfile the instant it is pushed: the cooldown is the window in which you can still yank it before anyone has picked it up. It also makes a serviceable release channel - point your conservative customers at a server wrapped in this and they get every release a week late, out of the same corpus, without a second copy of anything. Like the other wrappers it is read-only; wrap the bare repository for the endpoint that accepts pushes.
+A version that is still cooling does not appear in `/names`, `/versions`, `/info/`, `/specs.4.8`, `/latest_specs.4.8` or `/prerelease_specs.4.8`, and it does not download - it 404s, as if the gem version were not present.
 
 > [!IMPORTANT]
 > By default the publication date is `spec.date`, the date recorded in the gemspec - which is **publisher-controlled and records the build time, not the moment the gem arrived on your server.** A gem built in March and pushed in June is already past a seven-day cooldown when it lands.
 
-The default is `spec.date` because it is a property of the immutable gem bytes. It is not the file mtime, because an mtime is a property of your filesystem right now: an rsync, a container rebuild or a restore from backup resets every one of them, which would make the whole corpus look freshly published and put every gem into cooldown at once - a self-inflicted outage for every customer on the cooldown channel. And it is not a timestamp minted into the sidecar cache, because that cache is an optimization that may be deleted and regenerated at any time, which would have the same effect. `spec.date` survives all of that, and is cached in the sidecar precisely because it can always be re-derived.
+The default is `spec.date` because it is a property of the immutable gem bytes.
 
-If you need the stronger property - when the artifact actually appeared here - pass your own source. Anyone embedding Paquette in a Rails app has a table for this:
+## Wiring it all together
 
-```ruby
-gem_repo = Paquette::GemServer::CooldownRepository.new(
-  gem_repo,
-  interval: 7 * 24 * 60 * 60,
-  published_at: ->(name:, version:) { GemPush.where(name: name, version: version).pick(:created_at) },
-
-  # Injectable so tests do not have to sleep
-  clock: -> { Time.now }
-)
-```
-
-A custom source may read state that changes while the corpus does not, so Paquette cannot tell when to re-read it, and a cooldown over one emits no `ETag` - every index request is served in full. To get one back, also pass `published_at_validator:`, a callable returning a string that changes whenever any answer your source gives would (or `nil` for "cannot say"):
-
-```ruby
-published_at_validator: -> { GemPush.maximum(:updated_at)&.iso8601(6) }
-```
-
-Returning `nil` from `published_at:` means "I do not know when this was published", and an unknown date **fails open** - the version is served. That is deliberate: a cooldown is a delay policy, not an authorization boundary, and failing closed would turn one missing timestamp into a broken `bundle install`. If a version must not be served at all, gate it with `ReadGatedRepository`, which is the wrapper whose job that is.
-
-You may want to construct your own Rack application when wiring all that up though:
+Since Paquette is very modular and is supposed to be assembled per use case, you will likely want to construct your own Rack application to hold the bits together:
 
 ```ruby
 def call(env)
@@ -157,9 +149,11 @@ end
 
 The NPM server is assembled exactly the same way, out of the same kind of parts - see [Usage for NPM packages](#usage-for-npm-packages).
 
-Because the wrappers are plain Ruby objects composed at the call site, per-user state (the `user` variable) is captured by ordinary closures. Drop a wrapper to disable that layer; add another by slotting in one more constructor. Whether the server will accept pushes and yanks is decided by what you build — wrap the base repo in `ReadonlyRepository` and writes are blocked; hand the server a bare `DirectoryGemRepository` (or your own wrapper that permits writes) and they go through.
+## Hostname limitations
 
 The server will run on `http://localhost:9292` by default. Note that the NPM registry and the RubyGems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
+
+## Publishing gems into Paquette
 
 You can publish gems two ways.
 
@@ -198,25 +192,13 @@ The RubyGems API in Paquette supports the following endpoints:
 
 A gem built for a platform is stored, downloaded and indexed under the filename RubyGems gives it - `nokogiri-1.16.0-java.gem` - so the same name and version can exist for `ruby`, `java` and `arm64-darwin` side by side, and each is downloaded and yanked on its own.
 
-Where the platform ends up in a response depends on the format, and both of these are what rubygems.org does:
-
-- The compact index (`/info/{gemname}` and the version lists in `/versions`) keeps the platform glued onto the version column, as `1.16.0-java`. That *is* the wire format there; Bundler splits it apart itself.
-- Everywhere else - `/specs.4.8` and `/latest_specs.4.8`, `/api/v1/dependencies`, `/api/v1/versions`, `/api/v1/search.json` - the version is bare and the platform is its own field. The legacy Marshal indexes carry `[name, Gem::Version, platform]` triples, and `/latest_specs.4.8` names the latest version of each gem *per platform*, so a java build never hides behind a newer plain-ruby one.
+Where the platform ends up in a response depends on the format, Paquette follows Rubygems conventions.
 
 `gem push` files each build under that same RubyGems filename, so the three builds of one release are three artifacts rather than one pushed three times. What follows from that:
 
-- Pushing `nokogiri-1.16.0-java` after `nokogiri-1.16.0` succeeds. Pushing the *same* platform twice is a 409, as it always was for a plain-ruby gem.
-- Two spellings of one platform are one artifact. RubyGems parses `x86_64-darwin20` and `x86_64-darwin-20` into the same `Gem::Platform`, so the second push of the pair is the duplicate it looks like rather than a second file under a name nothing will ask for.
-- `gem yank nokogiri -v 1.16.0 --platform java` takes down that build and leaves its siblings downloadable. An absent or blank `platform` param means `ruby` — the plain build — and never "every platform of this version". The version may also arrive with the platform already glued to it (`version=1.16.0-java`), which is the column as `/info/` publishes it.
-- Tombs are per artifact too, so a yanked java build does not stand in the way of the ruby build being pushed afterwards, and does stand in the way of itself.
+### URL filtering in package metadata
 
-The platform is uploader-controlled and ends up in a filename, so it is validated alongside the name and the version before anything touches the filesystem: a bounded charset that admits the dashes a real platform needs (`x86_64-linux`, `universal-darwin-20`) and nothing that could become a path separator, a leading dot, a `..`, a NUL, a newline or invalid UTF-8. The yank endpoint's params go through the same rules.
-
-A plain-ruby gem's filename is unchanged, so an existing gems directory keeps working as it is.
-
-### What `/api/v1/versions` does and does not sanitise
-
-Most of what that endpoint returns comes straight out of the uploaded gemspec, so it is written by whoever pushed the gem. Two fields are filtered before they go out: `homepage`, and every `*_uri` key in `metadata`. Each is served only when it is an absolute `http`/`https` URL with a host, and replaced with `""` (or dropped, for a metadata key) when it is not — `gem build` only warns about a `javascript:` or `data:` homepage, so a crafted gem can carry one. The npm packument's top-level `homepage` is filtered the same way; its `repository` and `bugs` are not, because `git://` and `git+ssh://` are legitimate there, and neither are the per-version documents under `versions`, which pass `package.json` through whole.
+Most of what that endpoints return comes straight out of the uploaded gemspec, so it is written by whoever pushed the gem. Two fields are filtered before they go out: `homepage`, and every `*_uri` key in `metadata`. Each is served only when it is an absolute `http`/`https` URL with a host, and replaced with `""` (or dropped, for a metadata key) when it is not — `gem build` only warns about a `javascript:` or `data:` homepage, so a crafted gem can carry one. The npm packument's top-level `homepage` is filtered the same way; its `repository` and `bugs` are not, because `git://` and `git+ssh://` are legitimate there, and neither are the per-version documents under `versions`, which pass `package.json` through whole.
 
 Everything else — `authors`, `summary`, `description`, `info`, the non-URI keys of `metadata` — is passed through unchanged and is still uploader-controlled text. If you render any of it in a page of your own, escape it there.
 
@@ -302,23 +284,9 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 
 ## HTTP caching
 
-Paquette does not cache anything itself. It emits correct HTTP cache headers and answers conditional requests, and leaves the actual caching to a cache you put in front of it.
+Paquette does not cache anything itself. It emits correct HTTP cache headers and answers conditional requests, and leaves the actual caching to a cache you put in front of it. I usually use `Rack::Cache` which is fairly reliable. You can put a CDN in front of Paquette if you know that it handles the `Vary: Authorization` bits correctly.
 
-### What the server emits
-
-`GET /versions`, `GET /names` and `GET /info/:gem_name` carry an `ETag` and honour `If-None-Match` with a `304 Not Modified`. This is worth having on `/versions` in particular: rendering it means rendering and MD5-ing every gem's `/info/` body for the whole corpus, so a 304 turns the most expensive request this server serves into a digest of the corpus fingerprint.
-
-Those three also carry `Accept-Ranges: bytes`, a `Repr-Digest: sha-256=:...:` (and the obsolete `Digest:` spelling of the same value), and answer a single byte range with a `206 Partial Content`. This is what lets Bundler >= 2.5 update the compact index incrementally: it keeps its own copy, asks for the tail with `Range: bytes=N-`, appends what comes back, and checks the result against `Repr-Digest` - which is the digest of the **whole** document even on a 206, and without which Bundler will not append at all. A `Range` this server will not serve - several ranges at once, a malformed header, a first byte past the end - is ignored and answered with the whole document rather than a `416`, which is what RFC 9110 permits and what keeps a client that guessed an offset wrong installing. `Range` is evaluated after the conditional check, so a range request carrying a matching `If-None-Match` is still a 304, and `If-Range` is honoured against the strong `ETag`.
-
-For that to be worth anything the document has to be a pure function of the corpus, and on `/versions` it is: the `created_at:` line is the **oldest publication time in the corpus** (`#published_at`, so a `CooldownRepository` or a `published_at:` of your own is followed rather than second-guessed), not the wall clock. rubygems.org can stamp a real creation time because its `/versions` is a materialized, append-only file whose header never moves; Paquette renders the document per request, and a header stamped from `Time.now` moved every byte offset in it on every render - which made the `ETag` weak by necessity and would have made a ranged fetch *worse* than a plain one, since the append would fail its digest check and the client would download everything anyway. The oldest publication time reads the same idea honestly, and it does not move when a gem is pushed. So `/versions` now carries a strong `ETag`, like `/names` and `/info/:gem_name` always have. An empty corpus - which has no publication time at all - renders `created_at: 1970-01-01T00:00:00Z`.
-
-Rows are still sorted by name rather than appended in publication order, so a push only extends the tail when the gem sorts last; anything else moves rows below the change, Bundler's digest check fails and it refetches the whole document, exactly as it would have without any of this. Serving a materialized append-only index is a different feature and Paquette does not have one.
-
-`GET /gems/:gem_filename` carries an `ETag`, a `Last-Modified`, `Accept-Ranges: bytes` and `Cache-Control: max-age=31536000, immutable` (`public` or `private` - see below), and honours `If-None-Match`, `If-Modified-Since`, and `Range` (including multiple ranges, `416` for an unsatisfiable one, and `If-Range`). The `immutable` is honest: a `.gem` file at a given path never changes, because a yank renames it away and a name+version can never be pushed twice.
-
-The npm server does the same on its own surfaces. `GET /:package` (the packument) and `GET /-/package/:package/dist-tags` carry an `ETag` and answer `If-None-Match` with a 304 - the npm client honours ETag on packuments, so this is the equivalent of `/versions`. `GET /:package/-/:tarball` is served exactly like a gem download, and its `ETag` is the very `dist.integrity` value the packument published, because npm refuses to install a tarball that disagrees with the document that pointed at it. `GET /-/whoami` is `Cache-Control: private, no-store` and carries no validator at all: it is the caller's identity, and there is no key under which storing it would be safe.
-
-Range serving on files is Rack's own `Rack::Files#serving`, so this adds no dependency; the compact index documents are rendered rather than read off disk, and their single-range handling is Paquette's own.
+Paquette will try to emit sensible ETags for most endpoints, and there is support for partial responses.
 
 ### Public or private, per request
 
@@ -337,22 +305,14 @@ Otherwise it is `private`. Every labelled response carries `Vary: Authorization,
 | `/-/whoami` | `private, no-store` | `private, no-store` |
 | Everything else - errors and 404s, the legacy Marshal indexes, `/quick/*`, `/api/v1/*`, the index page | `private, no-store` | `private, no-store` |
 
-The index endpoints get `no-cache` rather than `no-store`, so a cache - Bundler's on-disk compact index, npm's metadata cache, or a CDN on an open registry - can keep a copy and send `If-None-Match`, and every use is revalidated. It is `no-cache` rather than a short `max-age` because a push or a yank then shows up on the very next request rather than a `max-age` later, and the revalidation is answered with a 304 off the corpus fingerprint without rendering anything.
-
-### Why a credentialed response is never `public`
-
-It is normal to serve the *same URL* ungated to one caller (the owner's publishing token reading the unwrapped repository) and gated to the next. A shared cache keys on the URL and cannot tell those two apart. RFC 9111 says a shared cache must not store the response to a request that carried `Authorization` - unless the response says `public`, which is exactly what that directive overrides. Rack::Cache implements that rule to the letter, so a `public` download handed to the publisher would be stored, and the next anonymous request for the URL would be answered out of the cache without your gate ever running. Paquette therefore never answers a request that carries a credential with `public`.
-
-**`Cache-Control: private` is the load-bearing control.** `Vary` is defence in depth: a Vary-honouring cache such as Rack::Cache will not hand the anonymous copy it stored to a request carrying `Authorization` or `Cookie`. It is not sufficient on its own - Paquette does not resolve identity, your application does, and many caches ignore `Vary` (see the CDN section below).
-
-### `shared_caching: false`
+A credentialed response is never `public`. If you want an extra bit of safety, set `shared_caching: false` like so:
 
 ```ruby
 Paquette::GemServer.new(gem_repo, shared_caching: false)
 Paquette::NpmServer.new(npm_repo, shared_caching: false)
 ```
 
-This makes every response `private`, as if every request carried a credential. Set it when you authorize by something Paquette cannot see, in front of an ungated repository: an IP allowlist, mutual TLS, a custom header checked in your own middleware, a VPN, a signed URL. Without it, an anonymous request that your middleware let through would be answered `public`, and a shared cache in front of that middleware would replay it to callers the middleware would have refused. You do not need it when every request carries `Authorization` or a `Cookie`, or when the repository is wrapped in a `ReadGatedRepository` or a `Personalizer`.
+This makes every response `private`, as if every request carried a credential. Set it when you authorize by something Paquette cannot see, in front of an ungated repository: an IP allowlist, mutual TLS, a custom header, draconian WAF, odd API gateway... those things.
 
 ### Putting a cache in front
 
@@ -374,44 +334,11 @@ Under Rails, `config.action_dispatch.rack_cache = true` does the same. Put your 
 
 On an open registry, anonymous downloads are then served out of the cache and index documents are revalidated against Paquette with a cheap 304. Authorized, gated and personalized responses are never stored; each of those requests reaches your gate and Paquette every time, and the client's own cache still revalidates cheaply. If the server-side cost of those is what you are after, cache inside your application - the personalizer already keeps repacked artifacts on disk.
 
-### CDNs
+### Caching validators
 
-A CDN (Cloudflare, Fastly, CloudFront) is a shared cache like any other, with one important difference: **most do not honour `Vary: Authorization`.** Cloudflare, for one, [does not consider `Vary` values in caching decisions by default](https://developers.cloudflare.com/cache/concepts/cache-control/), apart from `Accept-Encoding` and, with Vary for Images, image formats; [other `Vary` values are respected only if you configure the Cache Rules Vary setting](https://developers.cloudflare.com/cache/concepts/vary/). Cloudflare also [stores a response to a request carrying `Authorization` when the response says `public`, `must-revalidate` or `s-maxage`](https://developers.cloudflare.com/cache/concepts/cache-control/). At the edge, then, `public` on an authorized response would be exactly the leak described above, and it is why Paquette never sends it - nor `must-revalidate` or `s-maxage`, on anything.
-
-What that means in practice:
-
-- **Anonymous requests to an open registry can be cached at the edge.** Note that Cloudflare [caches by file extension only and does not cache HTML or JSON by default](https://developers.cloudflare.com/cache/concepts/default-cache-behavior/) - and `.gem` and `.tgz` are not on its default list, nor are extensionless paths like `/versions`; you need a Cache Rule making these paths eligible for cache, with origin `Cache-Control` respected. With Origin Cache Control enabled, Cloudflare stores `no-cache` responses and revalidates them on every use; without it, it does not cache them at all.
-- **Authorized responses are not cached at the edge.** They are `private`, and every one reaches your origin. The client still revalidates cheaply with `ETag` and a 304.
-- **A stored anonymous copy may be handed to an authorized caller** by a CDN that ignores `Vary`. That exposes nothing - the copy was public - but if your application gives credentialed callers a *different* view of the same URL (say, the owner's token reads an unwrapped repository while anonymous callers get a smaller open one), configure the CDN to bypass its cache for requests that carry `Authorization` or a `Cookie`.
-- **Caching per credential at the edge** would need a cache key that includes the credential. That is CDN-specific, it is your decision and not Paquette's, and Paquette will still mark those responses `private` - the CDN has to be told to override that.
-- If your origin authorizes by IP, mTLS or a header your CDN adds, set `shared_caching: false`.
-
-### How the validator is derived
-
-The validator itself is derived from the whole wrapper stack, not just from the corpus:
-
-- The directory repository contributes its `fingerprint` - a digest of what is on disk, which moves on every push and yank. On the npm side it also folds in each `dist-tags.json` mtime, because a dist-tag write rewrites that file in place and moves no path at all.
-- `Personalizer` mixes in its personalization key, so one licensee's index can never validate another's.
-- `ReadGatedRepository` mixes in the `gate_key:` you supplied, **and emits no validator at all if you did not supply one.** That is deliberate. An entitlement gate is an arbitrary block; guessing that two of them are the same gate is how one customer ends up with another customer's index. No `ETag` means every request is served in full, which is slow and recoverable.
-- `CooldownRepository` mixes in its interval and how many of the known publish times have cooled. What it serves changes with the clock while the corpus stands still, so the inner validator alone would answer 304 to a client holding the index from before a version cooled. But versions cool in the order they were published, so that count moves exactly when the servable set does. The publish times are read once per inner validator and binary-searched per request, which means the wrapper should be built once rather than per request. With a custom `published_at:` it emits no validator unless you also pass `published_at_validator:` (see above).
-
-On the npm side the packument validator also folds in the base URL the request was made against, since the document embeds absolute tarball URLs built from it. Host is part of any cache key already, but scheme is not.
-
-Personalization is worse on the npm side than on the gem side, and worth understanding before you cache anything. A gem `Personalizer` changes the bytes of a `.gem` and the checksum the index publishes for it. An npm `Personalizer` changes the *packument itself*, because `dist.integrity` is recomputed per licensee and the document carries one per version. Hand a second licensee a packument cached for the first and npm receives integrity hashes that cannot match the tarball it downloads next - which it treats as tampering and refuses to install.
+Paquette allows the repo wrappers to alter the validator (the ETag). The validator itself is derived from the whole wrapper stack, not just from the corpus, wrappers are written to contribute to the ETag in a meaningful way.
 
 A `nil` validator propagates outward, so a `Personalizer` wrapped around a keyless gate emits no `ETag` either.
-
-### For your own repository classes
-
-If you have written a repository of your own, these optional methods hook into this (defined on `Paquette::GemServer::GemRepository` and `Paquette::NpmServer::NpmRepository` with safe defaults, so an existing class keeps working untouched):
-
-- `#cache_validator` - a short string that changes whenever anything you would serve changes, or `nil` for "do not cache this". Defaults to `nil`.
-- `#varies_by_caller?` - whether two callers can get different answers out of you. Defaults to `true`, which keeps every response `private`; `DirectoryGemRepository` and `DirectoryNpmRepository` say `false`, and `ReadGatedRepository` and `Personalizer` say `true`. A wrapper that does not change what a caller sees can simply delegate it.
-- `#gem_checksum(name, version)` - the SHA256 of the `.gem` bytes you would actually serve, used for the download `ETag`. Defaults to `nil`, which falls back to size and mtime.
-
-The npm repository protocol has `#cache_validator` and `#varies_by_caller?` with the same meaning; instead of `#gem_checksum` it reads the tarball's integrity off `#dist_for`.
-
-If you are writing a wrapper, mix yourself into the layer below with `Paquette::CacheValidation.derive_validator(inner_validator, "your-layer", your_key)`, which returns `nil` if either argument is `nil`.
 
 ## The index page
 

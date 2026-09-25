@@ -1,5 +1,11 @@
 ## Unreleased
 
+- Store, index, download and yank a platform build as its own artifact. `DirectoryGemRepository` keyed a gem by name and version alone, so a push of `nokogiri-1.16.0-java` wanted the plain build's path and was refused 409 "already exists"; a gem is now filed under the filename `Gem::Specification#file_name` gives it, which leaves a plain-ruby gem's path exactly where it was
+- Make `GemAlreadyExists` and `GemYanked` mean "this name, version *and* platform", so a yanked java build neither hides its ruby sibling nor blocks it from being pushed
+- Take `platform` on `DELETE /api/v1/gems/yank`, the param `gem yank --platform` sends. An absent or blank one means `ruby` and yanks only the plain build; a version that already carries the platform (`1.16.0-java`) is accepted too
+- Validate an uploaded gemspec's `platform` before it becomes a filename — a bounded charset that admits the dashes a real platform needs and refuses path separators, a leading dot, `..`, NUL, newlines and invalid UTF-8 (security)
+- Validate the `gem_name`, `version` and `platform` params of a yank, which reached `File.join` unexamined (security)
+- Drop the `/third push/` exclusion from the conformance suite: it runs 550 examples now, up from 104
 - Report a platform gem's real platform, with a bare version beside it, in `/specs.4.8`, `/latest_specs.4.8`, the dependency API, `/api/v1/versions` and search — all five used to advertise `nokogiri-1.16.0-java` as version `"1.16.0-java"` on platform `"ruby"`, which is a version no client can resolve on a platform that is not the gem's
 - Carry a `Gem::Version` rather than a String in the legacy Marshal indexes, as rubygems.org does — `Gem::SpecFetcher` sorts what it unmarshals, and Strings sort `1.10.0` below `1.9.0`
 - Name the latest version of each gem per *platform* in `/latest_specs.4.8`, so a java or arm64-darwin build is not hidden behind the plain-ruby one

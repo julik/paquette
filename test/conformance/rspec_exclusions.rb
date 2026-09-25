@@ -28,13 +28,6 @@ end
 # call naming :full_description replaces the first, and only the last rule
 # would bite.
 PAQUETTE_EXCLUDED_GROUPS = [
-  # Platform gems collide on push. DirectoryGemRepository keys a gem by name
-  # and version alone, so "a-0.2.0-java" wants the same path as "a-0.2.0" and
-  # the second push is refused 409 "already exists". Every step from "third
-  # push" onwards is downstream of that push. Left to its own change: it is a
-  # storage-layout question, not a response-formatting one.
-  /third push/,
-
   # The ETag on a compact index file. The suite requires it to be the MD5 of
   # the body, so that the third column of /versions and the ETag of the
   # matching /info/ are the same string. Paquette derives its ETag from the
@@ -44,13 +37,35 @@ PAQUETTE_EXCLUDED_GROUPS = [
   # all. Digesting the body would undo both.
   /have the same etag|has matching etags/,
 
-  # A gem whose every version has been yanked. rubygems.org keeps answering
-  # 200 with an empty "---\n" info file; paquette answers 404, because its
-  # repository knows which .gem files are on disk and nothing else, so "no
-  # versions left" and "never heard of it" are one answer to it. /names no
-  # longer lists such a gem either, so the two endpoints agree — they just
-  # agree on 404. Telling the two apart means the repository publishing its
-  # tombs, which is more than a response tweak.
+  # Every /info/("a") body from the point gem "a" has had its only version
+  # yanked, for two reasons that both live below the platform work.
+  #
+  # The first is that group itself. rubygems.org keeps answering 200 with an
+  # empty "---\n" info file for a gem whose every version has been yanked;
+  # paquette answers 404, because its repository knows which .gem files are
+  # on disk and nothing else, so "no versions left" and "never heard of it"
+  # are one answer to it. /names no longer lists such a gem either, so the
+  # two endpoints agree — they just agree on 404. Telling the two apart
+  # means the repository publishing its tombs, which is more than a response
+  # tweak. The `.*` is what carries that forward: the suite expresses each
+  # later body as the parent's plus a delta, so once the parent body
+  # diverges every descendant does too, whatever paquette serves.
+  #
+  # The second only appears once platform builds are in the corpus, and it
+  # is worth naming even though this filter would hide it anyway. The suite
+  # expects /info/ lines in *push* order — "0.2.0", then
+  # "0.2.0-x86-mingw32", then "0.2.0-java" — because rubygems.org appends a
+  # row per push. Paquette renders the document from a directory listing and
+  # sorts it, which puts "0.2.0-java" before "0.2.0-x86-mingw32". A
+  # directory-backed corpus does not record the order it was written in, and
+  # the two candidates for recovering it are both worse than sorting: an
+  # mtime is a property of this filesystem right now rather than of the gem
+  # (see CooldownRepository#published_time on what an rsync does to those),
+  # and a sequence counter is durable state this repository deliberately
+  # does not keep. Bundler sorts the lines it reads, so the order is not
+  # load-bearing for a client — it is load-bearing for a byte-comparison
+  # against a server that appends. That is the same append-only question
+  # /versions is excluded for, one endpoint along.
   /after yanking only gem.*get_info\("a"\)/
 ].freeze
 

@@ -84,8 +84,10 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   #
   # Raises InvalidGem when the payload can't be opened as a gem or its spec
   # claims something a server should not act on, GemTooLarge past the cap,
-  # GemYanked for a tombed name+version, and GemAlreadyExists if the
-  # name+version is already on disk.
+  # GemYanked for a tombed name+version+platform, and GemAlreadyExists if
+  # that name, version *and* platform is already on disk. The platform is
+  # part of all three: "a-0.2.0-java" and "a-0.2.0" are two artifacts, and
+  # yanking or re-pushing either has nothing to say about the other.
   def add_gem(gem_payload, max_bytes: nil)
     raise InvalidGem, "Empty gem payload" if gem_payload.nil?
 
@@ -115,17 +117,27 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
 
     # Before anything touches the filesystem with them. Every field below
     # this line came out of a YAML document the uploader wrote.
-    name, version = Paquette::GemServer::SpecValidator.validate!(spec)
+    name, version, platform = Paquette::GemServer::SpecValidator.validate!(spec)
 
-    raise GemYanked, "#{name}-#{version} was yanked and cannot be republished" if tomb_exists?(name, version)
-    raise GemAlreadyExists, "#{name}-#{version} already exists" if gem_exists?(name, version)
+    # The key, and the filename. A java build and a plain-ruby build of one
+    # name and version are two artifacts, not one artifact pushed twice, so
+    # everything below — the tomb, the duplicate check, the destination, the
+    # sidecar — is keyed by the column rather than by the version alone.
+    # For a plain-ruby gem the column *is* the version, so nothing about an
+    # existing corpus moves.
+    version_column = Paquette::GemServer.version_column(version, platform)
 
-    destination = gem_file_path(name, version)
-    # Braces to the validator's belt. SpecValidator::NAME already excludes
-    # "/" and a leading dot, so this cannot fire today — which is the
-    # point: it is the check that keeps holding if that pattern is ever
-    # widened, and it costs one expand_path per push.
-    raise InvalidGem, "Gem #{name}-#{version} resolves outside the gems directory" unless within_gems_dir?(destination)
+    raise GemYanked, "#{name}-#{version_column} was yanked and cannot be republished" if tomb_exists?(name, version_column)
+    raise GemAlreadyExists, "#{name}-#{version_column} already exists" if gem_exists?(name, version_column)
+
+    destination = gem_file_path(name, version_column)
+    # Braces to the validator's belt. SpecValidator::NAME and ::PLATFORM
+    # both exclude "/" and a leading dot, so this cannot fire today — which
+    # is the point: it is the check that keeps holding if either pattern is
+    # ever widened, and it costs one expand_path per push.
+    unless within_gems_dir?(destination)
+      raise InvalidGem, "Gem #{name}-#{version_column} resolves outside the gems directory"
+    end
 
     FileUtils.mkdir_p(File.dirname(destination))
     FileUtils.mv(tmp.path, destination)
@@ -194,11 +206,20 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     File.expand_path(path).start_with?(root)
   end
 
-  # Yanks a gem by renaming its .gem file to .gem.tomb. The tomb prevents
-  # the same name+version from being re-pushed later. Raises GemNotFound
-  # when the gem was never present or already yanked.
+  # Yanks a gem by renaming its .gem file to .gem.tomb. `version` is a
+  # version column, so it carries the platform for a platform build and the
+  # tomb is per-artifact: yanking "a-0.2.0-java" leaves "a-0.2.0" and
+  # "a-0.2.0-x86-mingw32" downloadable, and does not stand in the way of
+  # either being pushed later. Raises GemNotFound when the gem was never
+  # present or already yanked.
   def yank_gem(gem_name, version)
     gem_path = gem_file_path(gem_name, version)
+    # The same braces add_gem puts on its destination, for the same reason
+    # and against a worse outcome: nothing upstream of a repository is
+    # obliged to have validated anything, and a yank whose name escaped the
+    # corpus is a rename of a file that was never ours. GemServer#handle_yank
+    # validates its params, so this cannot fire from there.
+    raise GemNotFound, "#{gem_name}-#{version} not found" unless within_gems_dir?(gem_path)
     raise GemNotFound, "#{gem_name}-#{version} not found" unless File.exist?(gem_path)
 
     Measurometer.instrument("paquette.gem_repository.yank_gem") do
@@ -269,6 +290,14 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
   end
 
+  # `version` is a version column throughout this class — the number with
+  # the platform glued on for a platform build, the bare number for a
+  # plain-ruby one — so the path this builds is byte for byte the filename
+  # `Gem::Specification#file_name` would have produced for the same gem.
+  # That is the whole storage design in one line, and it is why the read
+  # side needed no changes: split_gem_filename already takes this apart
+  # into a name and a column, and split_version_column takes the column
+  # apart into a number and a platform.
   def gem_file_path(gem_name, version)
     File.join(@gems_dir, gem_name, "#{gem_name}-#{version}.gem")
   end

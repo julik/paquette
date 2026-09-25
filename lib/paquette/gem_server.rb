@@ -284,6 +284,27 @@ class Paquette::GemServer
     [number.to_s, (platform.nil? || platform.empty?) ? Gem::Platform::RUBY : platform]
   end
 
+  # The other direction: a bare version and a platform back into the one
+  # column both the filename and the compact index carry. "1.0.0" plus
+  # "java" is "1.0.0-java", and "1.0.0" plus "ruby" — or nil, or "" — is
+  # "1.0.0", because the plain build is the one whose platform is not
+  # written down anywhere.
+  #
+  # That asymmetry is not a quirk to paper over, it is the format: this
+  # is exactly what Gem::Specification#full_name does, so a push writing
+  # its gem at this column writes it at the filename RubyGems itself
+  # would have produced, and a corpus predating platform support keeps
+  # every path it already had.
+  #
+  # Pairs with split_version_column, and lives beside it for the same
+  # reason: one class holds the rule, whichever direction it is read in.
+  def self.version_column(version, platform)
+    platform = platform.to_s
+    return version.to_s if platform.empty? || platform == Gem::Platform::RUBY
+
+    "#{version}-#{platform}"
+  end
+
   # Build a gem server backed by `repository`. Reads, writes, and yanks
   # all flow through this one object — whether writes are accepted depends
   # on the wrapper chain the caller assembled. A ReadGatedRepository, for
@@ -458,7 +479,10 @@ class Paquette::GemServer
     spec = Measurometer.instrument("paquette.gem_server.read_push_body") do
       @repository.add_gem(@request.body, max_bytes: @max_push_bytes)
     end
-    text_ok("Successfully registered gem: #{spec.name}-#{spec.version}")
+    # full_name rather than name-version: it is the platform build that was
+    # registered, and saying "a-0.2.0" for all three of them would report
+    # the same success three times over.
+    text_ok("Successfully registered gem: #{spec.full_name}")
   rescue ReadonlyRepository::WriteNotAllowed => e
     [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemYanked => e
@@ -483,19 +507,34 @@ class Paquette::GemServer
     nil
   end
 
+  # `gem yank a -v 1.0.0 --platform java` sends the platform as its own
+  # param and omits it entirely for a plain-ruby gem, so an absent or blank
+  # platform means "ruby" — and "ruby" is the build whose column carries no
+  # suffix. Getting that wrong in either direction destroys the wrong
+  # artifact: treating a missing platform as "all of them" would take the
+  # java and arm64 builds down with the plain one.
+  #
+  # The params are validated before they become a path. They are as
+  # client-chosen as a pushed gemspec's fields are, and until this was here
+  # a gem_name of "../../../srv/other" was handed straight to File.join.
   def handle_yank
     gem_name = @request.params["gem_name"]
     version = @request.params["version"]
+    platform = @request.params["platform"]
 
-    return bad_request("Missing gem_name") if gem_name.nil? || gem_name.empty?
-    return bad_request("Missing version") if version.nil? || version.empty?
+    return bad_request("Missing gem_name") if gem_name.nil? || gem_name.to_s.empty?
+    return bad_request("Missing version") if version.nil? || version.to_s.empty?
 
-    @repository.yank_gem(gem_name, version)
-    text_ok("Successfully yanked gem: #{gem_name}-#{version}")
+    gem_name, version_column = SpecValidator.validate_reference!(gem_name, version, platform)
+
+    @repository.yank_gem(gem_name, version_column)
+    text_ok("Successfully yanked gem: #{gem_name}-#{version_column}")
   rescue ReadonlyRepository::WriteNotAllowed => e
     [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemNotFound => e
     not_found(e.message)
+  rescue DirectoryGemRepository::InvalidGem => e
+    bad_request(e.message)
   end
 
   # The spec is read for every gem whose name matches, which is what makes

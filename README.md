@@ -442,6 +442,14 @@ bundle exec rake test
 
 Most of it is ordinary Ruby, but we also have a few end-to-end tests, that require Docker and Node. You don't need either for using Paquette though.
 
+RubyGems' own compact-index conformance suite runs separately, because it shells out to the `gem_server_conformance` RSpec binary:
+
+```bash
+bundle exec rake test:conformance
+```
+
+It boots a gem server over a bare `DirectoryGemRepository` and drives the suite against it over HTTP. `test/conformance/rspec_exclusions.rb` lists the examples Paquette knowingly does not pass and why — read it before concluding that a green run means full conformance. Without the `gem_server_conformance` gem installed the test skips; set `PAQUETTE_REQUIRE_CONFORMANCE=1` to turn that skip into a failure, which is what CI wants.
+
 ## License
 
 Paquette is offered under the terms of the [O'Sassy license](https://osaasy.dev/) - basically, **don't make it into your own product or a service.** Use it to sell your libraries. And godspeed!

@@ -184,9 +184,15 @@ class Paquette::GemServer::GemRepository
     required_rubygems = spec.required_rubygems_version
     rubygems = requirement_string(required_rubygems) if required_rubygems && required_rubygems.to_s != ">= 0"
 
+    # And the same for "ruby:". A gem that constrains no Ruby version has
+    # nothing to say in that field, and ">= 0" is not a quieter way of
+    # saying nothing — it is a constraint the client then carries around.
+    required_ruby = spec.required_ruby_version
+    ruby = requirement_string(required_ruby) if required_ruby && required_ruby.to_s != ">= 0"
+
     {
       "dependencies" => deps,
-      "ruby" => spec.required_ruby_version&.to_s || ">= 0",
+      "ruby" => ruby,
       "rubygems" => rubygems,
       "checksum" => checksum,
       # Not part of any rendered line — compact_info_line_from_fields
@@ -212,7 +218,17 @@ class Paquette::GemServer::GemRepository
     # No space between the dependency list and the pipe, but one after the
     # version — which means a gem without dependencies gets "1.0.0 |...",
     # exactly what rubygems.org serves for such a gem.
-    line = "#{version} #{deps}|checksum:#{fields.fetch("checksum")},ruby:#{fields.fetch("ruby")}"
+    line = "#{version} #{deps}|checksum:#{fields.fetch("checksum")}"
+
+    # "ruby:" is absent, not ">= 0", for a gem that constrains nothing —
+    # the same rule "rubygems:" below already followed, and for the same
+    # reason: rubygems.org omits the field and rubygems' own conformance
+    # suite asks for the line without it. Read with [] rather than fetch()
+    # so a fields hash assembled before this distinction existed still
+    # renders; a nil there now means "no constraint" rather than "key
+    # missing", which is what the sidecar format number is for.
+    ruby = fields["ruby"]
+    line << ",ruby:#{ruby}" if ruby
 
     # "rubygems:" comes after "ruby:" and before the "created_at:" that
     # rubygems.org appends and Paquette does not, and it is absent — not

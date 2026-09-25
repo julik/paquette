@@ -112,16 +112,18 @@ class GemServerTest < Minitest::Test
   def test_compact_index_names
     get "/names"
     assert_equal 200, last_response.status
-    assert_equal "text/plain", last_response.content_type
+    assert_equal Paquette::GemServer::COMPACT_INDEX_CONTENT_TYPE, last_response.content_type
 
-    names = last_response.body.split("\n")
-    assert_equal ["minuscule_test", "zip_kit"], names.sort
+    # The format's own marker first, then one name per line, then the
+    # newline that terminates the last of them.
+    assert_equal "---\nminuscule_test\nzip_kit\n", last_response.body
   end
 
   def test_compact_index_versions
     get "/versions"
     assert_equal 200, last_response.status
-    assert_equal "text/plain", last_response.content_type
+    assert_equal Paquette::GemServer::COMPACT_INDEX_CONTENT_TYPE, last_response.content_type
+    assert last_response.body.end_with?("\n"), "every line of the compact index is terminated, the last one included"
 
     lines = last_response.body.split("\n")
 
@@ -158,7 +160,7 @@ class GemServerTest < Minitest::Test
   def test_compact_index_info
     get "/info/zip_kit"
     assert_equal 200, last_response.status
-    assert_equal "text/plain", last_response.content_type
+    assert_equal Paquette::GemServer::COMPACT_INDEX_CONTENT_TYPE, last_response.content_type
 
     lines = last_response.body.split("\n")
 
@@ -317,7 +319,7 @@ class GemServerTest < Minitest::Test
 
       # And the index it was aiming at is untouched.
       session.get "/names"
-      assert_equal "", session.last_response.body
+      assert_equal "---\n\n", session.last_response.body
     end
   end
 
@@ -457,7 +459,7 @@ class GemServerTest < Minitest::Test
       assert Dir.exist?(File.join(dir, "minuscule_test", ".paquette-cache"))
 
       session.get "/names"
-      assert_equal ["minuscule_test"], session.last_response.body.split("\n")
+      assert_equal ["---", "minuscule_test"], session.last_response.body.split("\n")
 
       session.get "/versions"
       gem_rows = session.last_response.body.split("\n")[2..]

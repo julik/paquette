@@ -236,7 +236,7 @@ class CooldownRepositoryTest < Minitest::Test
     @app = Paquette::GemServer.new(cooldown)
 
     get "/names"
-    assert_equal "aged_gem", last_response.body.strip
+    assert_equal "---\naged_gem\n", last_response.body
 
     get "/info/aged_gem"
     assert_equal ["---", "1.0.0"], last_response.body.lines.map { |line| line.split(" ").first }
@@ -552,7 +552,9 @@ class CooldownRepositoryTest < Minitest::Test
     @app = Paquette::GemServer.new(repository)
 
     get "/names"
-    assert_equal expect.keys.sort, last_response.body.split("\n").reject(&:empty?).sort
+    # Past the format's "---" marker, which /names carries like every other
+    # file in the compact index.
+    assert_equal expect.keys.sort, last_response.body.split("\n").drop(1).reject(&:empty?).sort
 
     expect.each do |gem_name, versions|
       get "/info/#{gem_name}"

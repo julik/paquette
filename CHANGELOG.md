@@ -7,6 +7,11 @@
 - Report the gem's own authors, summary and platform from `/api/v1/search.json` instead of the placeholders it used to send for every gem
 - Serve `/prerelease_specs.4.8` and `/prerelease_specs.4.8.gz`, which `gem install --pre` and mirroring tools fetch and which used to 404
 - Keep prereleases out of `/specs.4.8` and `/latest_specs.4.8`, which used to list them alongside releases, so a gem with only prereleases no longer has a "latest" release
+- Run RubyGems' own `gem_server_conformance` suite against a live gem server as `rake test:conformance`, with every example Paquette does not pass listed and explained in `test/conformance/rspec_exclusions.rb`
+- Serve `/names` with the format's `---` marker and a terminating newline, and terminate the last line of `/versions` too
+- Answer the compact index endpoints as `text/plain; charset=utf-8` rather than an unqualified `text/plain`, which RFC 2046 reads as US-ASCII
+- Leave `ruby:` out of a compact index line for a gem that constrains no Ruby version, the way `rubygems:` already was, and join a multi-clause Ruby requirement with `&` rather than a comma that would read as another field; the sidecar cache format is bumped so warm caches re-derive it
+- Stop listing a gem in `/names` once its last version has been yanked, which had `/names` announcing a gem whose `/info/` answered 404
 - Serve conditional GETs on `/versions`, `/names` and `/info/`, with a 304 skipping the compact index render entirely
 - Derive HTTP cache validators from the whole repository wrapper stack, and emit none at all when a layer cannot describe itself
 - Never answer a request carrying `Authorization` or a `Cookie`, or one served through a gate or a personalizer, with `Cache-Control: public`, so a shared cache in front cannot replay an authorized download or index to a caller the embedder's gate would have refused; everything else caller-specific is `private` with `Vary: Authorization, Cookie, Accept-Encoding` (security)

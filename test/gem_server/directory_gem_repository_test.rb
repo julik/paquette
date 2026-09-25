@@ -362,6 +362,10 @@ class DirectoryGemRepositoryTest < Minitest::Test
       assert_equal [], repo.versions_for_gem("minuscule_test")
       assert_equal [], repo.gem_versions
       assert_equal [], repo.compact_info("minuscule_test")
+      # The package directory survives the yank; the gem does not. Listing
+      # the directory anyway had /names announcing a gem whose /info/
+      # answered 404 — the index disagreeing with itself.
+      assert_equal [], repo.gem_names
     end
   end
 

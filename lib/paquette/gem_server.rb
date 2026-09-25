@@ -58,6 +58,13 @@ class Paquette::GemServer
 
   GEM_FILE_EXTENSION = ".gem"
 
+  # The three compact index endpoints say their charset out loud, which
+  # `text/plain` on its own does not: RFC 2046 makes an unqualified
+  # text/plain US-ASCII, and a gem name, a licence or a requirement in one
+  # of these bodies is UTF-8. rubygems.org sends this exact string, and
+  # rubygems' own conformance suite checks for it byte for byte.
+  COMPACT_INDEX_CONTENT_TYPE = "text/plain; charset=utf-8"
+
   @@routes = Paquette::Routes.draw do |r|
     # Root endpoint
     r.get "/" do
@@ -552,11 +559,19 @@ class Paquette::GemServer
     end
   end
 
+  # The same "---" marker and trailing newline every other file in this
+  # format carries. It used to send the bare names, which is what a reader
+  # that splits on newlines and ignores what it does not recognise would
+  # never notice — and rubygems' conformance suite is not that reader: it
+  # asks for "---\na\nb\n" byte for byte, and for "---\n\n" when the corpus
+  # is empty. The empty case is why the names are joined and then given one
+  # newline rather than each getting one of their own: an empty corpus still
+  # owes the marker a line of its own plus the empty line after it.
   def handle_compact_names
     etag = etag_for("compact-names")
     return not_modified(etag) if if_none_match_satisfied?(etag)
 
-    cacheable(text_ok(@repository.gem_names.join("\n")), etag)
+    cacheable(compact_ok("---\n#{@repository.gem_names.join("\n")}\n"), etag)
   end
 
   # The conditional check is deliberately the first thing here, in front of
@@ -593,7 +608,7 @@ class Paquette::GemServer
     body = compact_info_body(gem_name)
     return not_found("Not Found") if body.nil?
 
-    cacheable(text_ok(body), etag)
+    cacheable(compact_ok(body), etag)
   end
 
   # Rendered per request, and it renders every /info/ file in the corpus to
@@ -638,9 +653,15 @@ class Paquette::GemServer
 
     Measurometer.add_distribution_value("paquette.gem_server.compact_versions_gems", gem_versions.size)
 
-    content = lines.join("\n")
+    # Terminated, not merely separated. The compact index is a line-oriented
+    # format and every line in it ends with a newline — including the last
+    # one, and including the "---" of an otherwise empty index. A client that
+    # fetches this file in ranges and appends what it gets is the one that
+    # notices: without the final newline the next chunk lands on the end of
+    # the previous row.
+    content = lines.join("\n") + "\n"
 
-    [200, {"Content-Type" => "text/plain"}, [content]]
+    [200, {"Content-Type" => COMPACT_INDEX_CONTENT_TYPE}, [content]]
   end
 
   # The body of an /info/ file, or nil when the gem is unknown here.
@@ -842,6 +863,15 @@ class Paquette::GemServer
 
   def text_ok(data)
     [200, {"Content-Type" => "text/plain"}, [data]]
+  end
+
+  # text_ok for a compact index body, which is the one text/plain this
+  # server sends that has to name its charset. Separate from text_ok rather
+  # than a flag on it, because everything else text_ok answers - a push
+  # receipt, a refusal - is a sentence for a human and not a file a client
+  # parses.
+  def compact_ok(data)
+    [200, {"Content-Type" => COMPACT_INDEX_CONTENT_TYPE}, [data]]
   end
 
   def not_found(message = "Not Found")

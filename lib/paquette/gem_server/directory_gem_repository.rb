@@ -221,10 +221,17 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     File.exist?(tomb_file_path(gem_name, version))
   end
 
+  # A directory is not a gem; a .gem file in it is. Yanking renames the
+  # last .gem away and leaves the directory behind, and listing that
+  # directory made /names announce a gem whose /info/ answers 404 — the
+  # index disagreeing with itself, which is what rubygems' conformance
+  # suite catches. The extra glob per package is the price of the two
+  # endpoints agreeing.
   def gem_names
     Measurometer.instrument("paquette.gem_repository.gem_names") do
-      Dir.glob(File.join(@gems_dir, "*")).select { |path| File.directory?(path) }.map do |package_path|
-        File.basename(package_path)
+      Dir.glob(File.join(@gems_dir, "*")).select { |path| File.directory?(path) }.filter_map do |package_path|
+        name = File.basename(package_path)
+        name unless versions_for_gem(name).empty?
       end.sort
     end
   end
@@ -419,7 +426,12 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # meaning of a key. It costs each deployment one re-derivation pass
   # spread over ordinary traffic, which is the price of never serving a
   # line the current code would not have rendered.
-  SIDECAR_FORMAT_VERSION = 2
+  # Version 3 changed what "ruby" means: it used to be ">= 0" for a gem
+  # with no Ruby constraint and is now nil, so the field is left out of
+  # the line entirely. A version-2 sidecar still holds the ">= 0" and
+  # would go on rendering it forever, which is exactly the invisible
+  # staleness this number exists to end.
+  SIDECAR_FORMAT_VERSION = 3
 
   def derive_sidecar(gem_name, version, gem_file, stat)
     Measurometer.instrument("paquette.gem_repository.derive_sidecar") do

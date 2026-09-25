@@ -5,6 +5,10 @@ gemspec
 gem "puma"
 
 group :test do
+  # The RubyGems compact-index conformance suite, an external RSpec CLI that
+  # drives a live server over HTTP. Only `rake test:conformance` shells out to
+  # it, and that test skips cleanly when the gem is absent.
+  gem "gem_server_conformance"
   gem "minitest"
   # Minitest 6 extracted Mock and Object#stub into their own gem; 5.x still
   # bundles them. Depending on it explicitly works on both and keeps the

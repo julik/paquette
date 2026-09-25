@@ -79,6 +79,41 @@ class GemRepositoryTest < Minitest::Test
     assert_nil fields.fetch("rubygems")
   end
 
+  # "ruby:" follows the same rule "rubygems:" does, and for the same
+  # reason: a gem that constrains no Ruby version has nothing to say in
+  # that field. RubyGems defaults required_ruby_version to ">= 0", so
+  # without this every line in the index carried a constraint the gemspec
+  # never made — and rubygems' own conformance suite asks for the line
+  # without it.
+  def test_omits_ruby_for_the_default_requirement
+    unconstrained = spec { |s| s.required_ruby_version = ">= 0" }
+    line = Paquette::GemServer::GemRepository.compact_info_line("1.0.0", unconstrained, CHECKSUM)
+
+    assert_equal "1.0.0 |checksum:#{CHECKSUM}", line
+    refute_includes line, "ruby:"
+  end
+
+  # And the field is nil in the cached hash rather than absent, so a
+  # sidecar written from it round-trips through JSON and still says "no
+  # constraint" when it is read back.
+  def test_fields_carry_the_ruby_key_even_when_there_is_no_constraint
+    fields = Paquette::GemServer::GemRepository.compact_info_fields(spec { |s| s.required_ruby_version = ">= 0" }, CHECKSUM)
+
+    assert fields.key?("ruby")
+    assert_nil fields.fetch("ruby")
+  end
+
+  # A comma in this column would read as the start of another field, so
+  # the clauses of a multi-clause Ruby requirement join with "&" — the
+  # same rule the dependency and "rubygems:" columns already followed.
+  def test_joins_multiple_ruby_clauses_with_an_ampersand
+    multi = spec { |s| s.required_ruby_version = [">= 3.1", "< 4"] }
+    line = Paquette::GemServer::GemRepository.compact_info_line("1.0.0", multi, CHECKSUM)
+
+    assert_equal "1.0.0 |checksum:#{CHECKSUM},ruby:>= 3.1&< 4", line
+    refute_includes line.split("ruby:").fetch(1), ","
+  end
+
   # A fields hash from somewhere other than compact_info_fields still
   # renders the line it rendered before this field existed, rather than
   # raising a KeyError on a request.

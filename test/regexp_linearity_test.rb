@@ -37,6 +37,7 @@ class RegexpLinearityTest < Minitest::Test
       "ConditionalGet::BYTE_OFFSET" => Paquette::ConditionalGet::BYTE_OFFSET,
       "SpecValidator::NAME" => Paquette::GemServer::SpecValidator::NAME,
       "SpecValidator::VERSION" => Paquette::GemServer::SpecValidator::VERSION,
+      "SpecValidator::PLATFORM" => Paquette::GemServer::SpecValidator::PLATFORM,
       "SpecValidator::FORBIDDEN_IN_FIELD" => Paquette::GemServer::SpecValidator::FORBIDDEN_IN_FIELD,
       "NpmRepository::VERSION" => Paquette::NpmServer::NpmRepository::VERSION
     }
@@ -248,6 +249,84 @@ class RegexpLinearityTest < Minitest::Test
     assert Paquette::NpmServer::NpmRepository.valid_version?("1.0.0")
   end
 
+  # PLATFORM is the one upload-side pattern whose charset *has* to admit
+  # the dash, because a real platform is full of them — so it is the one
+  # where "bounded, anchored and unambiguous" has to be shown rather than
+  # assumed. The dash is only ever a separator between segments and never
+  # inside one, which is what keeps a client-chosen run of dashes from
+  # sliding a split point along.
+  def test_the_platform_pattern_accepts_every_platform_rubygems_publishes
+    ["java", "dalvik", "x86-mingw32", "x64-mingw-ucrt", "arm64-darwin", "x86_64-linux",
+      "x86_64-linux-musl", "universal-darwin-20", "sparc-solaris-2.10", "x64-mswin64_140"].each do |candidate|
+      assert_equal candidate, platform_of(candidate), candidate
+    end
+  end
+
+  # Everything that would make a platform into a path, a second index line
+  # or a filename nobody meant. A platform reaches File.join, so a "/" or a
+  # leading dot in it is the whole of a traversal.
+  def test_the_platform_pattern_refuses_anything_that_could_become_a_path
+    ["..", ".", "../..", "a/b", "a\\b", "/etc/passwd", "-java", ".java", "java/..",
+      "java\n0.0.1 |checksum:deadbeef", "java\r\n", "java\0", "java ruby", "java\t",
+      "a" * 65, "a-" * 40, "-", "a..b", "java%2F..", "~/java", "java;rm"].each do |candidate|
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem, candidate.inspect) do
+        platform_of(candidate)
+      end
+    end
+  end
+
+  def test_the_platform_pattern_answers_pathological_input_promptly
+    size = 20_000
+    candidates = [
+      "-" * size,
+      "a-" * size,
+      ("java-" * size),
+      ("x86_64-linux-" * size),
+      ("a" * size) + "-java",
+      ("a" * size) + "/",
+      ("a" * size) + "\n",
+      ("." * size)
+    ]
+
+    took = elapsed do
+      candidates.each do |candidate|
+        assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem, candidate[0, 16].inspect) do
+          platform_of(candidate)
+        end
+      end
+    end
+
+    assert took < 1.0, "matching pathological platforms took #{took}s"
+  end
+
+  # The pattern is never run against bytes that are not valid UTF-8 —
+  # scannable refuses those first — but the refusal has to be the
+  # validator's decision rather than an ArgumentError out of a match, and
+  # the platform is now one of the fields it covers.
+  def test_the_validator_refuses_a_platform_that_is_not_valid_utf8
+    ["java\xFF".b, "\xE2".b, "java\xE2".b, "\xFF".b].each do |bytes|
+      assert_raises(Paquette::GemServer::DirectoryGemRepository::InvalidGem, bytes.inspect) do
+        platform_of(bytes)
+      end
+    end
+  end
+
+  # version_column is split_version_column read backwards, and the two have
+  # to agree or a gem is written at a path no reader will ever ask for.
+  def test_the_version_column_round_trips_through_both_halves_of_the_rule
+    [["6.2.0", "ruby"], ["1.16.0", "java"], ["1.16.0", "arm64-darwin"],
+      ["1.16.0", "x86_64-linux-musl"], ["0.2", "ruby"]].each do |number, platform|
+      column = Paquette::GemServer.version_column(number, platform)
+      assert_equal [number, platform], Paquette::GemServer.split_version_column(column), column
+    end
+
+    # nil and "" are what a yank request carries for a plain-ruby gem, and
+    # both have to mean the suffixless column rather than a trailing dash.
+    assert_equal "1.0.0", Paquette::GemServer.version_column("1.0.0", nil)
+    assert_equal "1.0.0", Paquette::GemServer.version_column("1.0.0", "")
+    assert_equal "1.0.0", Paquette::GemServer.version_column("1.0.0", "ruby")
+  end
+
   def test_spec_validator_patterns_refuse_an_absurdly_long_field
     name = Paquette::GemServer::SpecValidator::NAME
 
@@ -311,6 +390,23 @@ class RegexpLinearityTest < Minitest::Test
   end
 
   private
+
+  # The platform as the validator sees it: pushed inside a gemspec, which
+  # is the only way an uploader can choose one. A Gem::Specification will
+  # not take an arbitrary String through `platform=` — it normalizes —
+  # so the hostile value is written straight onto the ivar the validator
+  # reads, which is what a YAML document loaded off an upload does too.
+  def platform_of(platform)
+    spec = Gem::Specification.new
+    spec.name = "widgets"
+    spec.version = Gem::Version.new("1.0.0")
+    spec.summary = "s"
+    spec.authors = ["a"]
+    spec.instance_variable_set(:@new_platform, platform)
+    spec.instance_variable_set(:@original_platform, platform)
+
+    Paquette::GemServer::SpecValidator.validate!(spec).last
+  end
 
   def route_patterns
     [Paquette::GemServer, Paquette::NpmServer].flat_map do |server|

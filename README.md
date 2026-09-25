@@ -203,7 +203,16 @@ Where the platform ends up in a response depends on the format, and both of thes
 - The compact index (`/info/{gemname}` and the version lists in `/versions`) keeps the platform glued onto the version column, as `1.16.0-java`. That *is* the wire format there; Bundler splits it apart itself.
 - Everywhere else - `/specs.4.8` and `/latest_specs.4.8`, `/api/v1/dependencies`, `/api/v1/versions`, `/api/v1/search.json` - the version is bare and the platform is its own field. The legacy Marshal indexes carry `[name, Gem::Version, platform]` triples, and `/latest_specs.4.8` names the latest version of each gem *per platform*, so a java build never hides behind a newer plain-ruby one.
 
-`gem push` still files a gem under its bare version, so pushing a platform build of a name and version that already exists is refused as a duplicate. Put platform builds in the gems directory as files for now.
+`gem push` files each build under that same RubyGems filename, so the three builds of one release are three artifacts rather than one pushed three times. What follows from that:
+
+- Pushing `nokogiri-1.16.0-java` after `nokogiri-1.16.0` succeeds. Pushing the *same* platform twice is a 409, as it always was for a plain-ruby gem.
+- Two spellings of one platform are one artifact. RubyGems parses `x86_64-darwin20` and `x86_64-darwin-20` into the same `Gem::Platform`, so the second push of the pair is the duplicate it looks like rather than a second file under a name nothing will ask for.
+- `gem yank nokogiri -v 1.16.0 --platform java` takes down that build and leaves its siblings downloadable. An absent or blank `platform` param means `ruby` — the plain build — and never "every platform of this version". The version may also arrive with the platform already glued to it (`version=1.16.0-java`), which is the column as `/info/` publishes it.
+- Tombs are per artifact too, so a yanked java build does not stand in the way of the ruby build being pushed afterwards, and does stand in the way of itself.
+
+The platform is uploader-controlled and ends up in a filename, so it is validated alongside the name and the version before anything touches the filesystem: a bounded charset that admits the dashes a real platform needs (`x86_64-linux`, `universal-darwin-20`) and nothing that could become a path separator, a leading dot, a `..`, a NUL, a newline or invalid UTF-8. The yank endpoint's params go through the same rules.
+
+A plain-ruby gem's filename is unchanged, so an existing gems directory keeps working as it is.
 
 ### What `/api/v1/versions` does and does not sanitise
 

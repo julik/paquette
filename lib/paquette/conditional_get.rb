@@ -1,5 +1,6 @@
 require "rack"
 require "time"
+require "digest"
 
 # Conditional GET and cache directives, shared by both servers.
 #
@@ -152,6 +153,126 @@ module Paquette::ConditionalGet
     headers = Rack::Headers[headers].merge!(cache_directives)
     headers["etag"] = etag if etag
     [status, headers, body]
+  end
+
+  # The same, for an index document a client is allowed to fetch in pieces:
+  # `cacheable` plus `Accept-Ranges`, the digest of the representation, and
+  # a 206 when the request asked for a single satisfiable byte range.
+  #
+  # This is what makes Bundler >= 2.5 fetch the compact index incrementally.
+  # It keeps its own copy of /versions and /info/NAME, asks for the tail
+  # with `Range: bytes=N-`, appends what comes back to the copy it holds,
+  # and checks the result against `Repr-Digest` - which therefore carries
+  # the digest of the *whole* representation even on a 206, which is what
+  # RFC 9530 means by a representation digest. Without it Bundler will not
+  # append at all and re-downloads the whole document after every change.
+  #
+  # The body has to be in hand already: the digest is over all of it, and
+  # the endpoints this serves render into a String anyway. A file on disk
+  # goes through serve_immutable_file and Rack::Files instead.
+  #
+  # `Digest:` alongside it is the RFC 3230 spelling, obsolete but still what
+  # some intermediaries read; it costs one header and the same digest.
+  def cacheable_with_ranges(response, etag)
+    status, headers, body = cacheable(response, etag)
+    content = +""
+    body.each { |chunk| content << chunk }
+
+    digest = Digest::SHA256.base64digest(content)
+    headers["accept-ranges"] = "bytes"
+    headers["repr-digest"] = "sha-256=:#{digest}:"
+    headers["digest"] = "sha-256=#{digest}"
+
+    range = requested_byte_range(content.bytesize, etag)
+    return [status, headers, [content]] if range.nil?
+
+    headers["content-range"] = "bytes #{range.begin}-#{range.end}/#{content.bytesize}"
+    [206, headers, [content.byteslice(range)]]
+  end
+
+  # The single byte range this request asks of a body of `size` bytes, or
+  # nil for "serve the whole thing".
+  #
+  # nil rather than a 416 for everything this cannot or will not serve - a
+  # malformed header, a unit that is not bytes, several ranges at once, a
+  # first byte past the end. RFC 9110 lets a server ignore Range and answer
+  # 200, every client has to cope with that (it is what happens whenever a
+  # cache or proxy in the middle strips the header), and a 416 to a Bundler
+  # that merely guessed the tail wrong would turn a cheap mistake into a
+  # failed install.
+  #
+  # Called after the conditional check, never before it: a range request
+  # carrying an If-None-Match that matches is a 304, not a 206.
+  def requested_byte_range(size, etag)
+    header = @request.get_header("HTTP_RANGE")
+    return nil if header.nil? || size.zero?
+    return nil unless if_range_allows_range?(etag)
+
+    parse_byte_range(header, size)
+  end
+
+  # If-Range on these endpoints, which the client uses to say "send me the
+  # range only if the document is still the one I hold, otherwise send the
+  # whole thing". Absent, it allows the range. Present, only a strong tag
+  # equal to ours does: a weak validator says nothing about byte offsets,
+  # a date says nothing about a body that is not a file, and a stack that
+  # emits no ETag has nothing to compare - each of those gets the whole
+  # document, which is always a correct answer.
+  def if_range_allows_range?(etag)
+    if_range = @request.get_header("HTTP_IF_RANGE")
+    return true if if_range.nil?
+
+    !etag.nil? && !etag.start_with?("W/") && if_range.strip == etag
+  end
+
+  # The longest Range header worth looking at. A single byte range is two
+  # numbers and a dash; anything longer is a multi-range request or junk,
+  # and both of those are answered with the whole body.
+  MAX_RANGE_HEADER_BYTES = 128
+
+  # One offset, bounded. 19 digits is more than the bytes any index this
+  # serves could ever have, and the bound is the point: this string is
+  # client-chosen, and `\d+` would let a caller hand us a megabyte of
+  # digits to convert to an Integer. A longer run does not match, so it is
+  # simply not a range we honour (see parse_byte_range for why that is a
+  # 200 rather than a 416).
+  BYTE_OFFSET = /\A[0-9]{1,19}\z/
+
+  # `bytes=first-last`, with either side optionally empty, and nothing else.
+  #
+  # Parsed with string operations rather than a pattern over the whole
+  # header, per AGENTS.md: the only regexp here runs over a run of digits
+  # that has already been split out and length-capped.
+  def parse_byte_range(header, size)
+    spec = header.to_s.strip
+    return nil if spec.bytesize > MAX_RANGE_HEADER_BYTES
+    return nil unless spec.start_with?("bytes=")
+
+    first, dash, last = spec.delete_prefix("bytes=").partition("-")
+    return nil if dash.empty?
+    return nil unless first.empty? || first.match?(BYTE_OFFSET)
+    return nil unless last.empty? || last.match?(BYTE_OFFSET)
+    return suffix_byte_range(last, size) if first.empty?
+
+    first_byte = first.to_i
+    return nil if first_byte >= size
+
+    last_byte = last.empty? ? size - 1 : [last.to_i, size - 1].min
+    return nil if last_byte < first_byte
+
+    first_byte..last_byte
+  end
+
+  # `bytes=-N` asks for the final N bytes. A bare `bytes=-` names no number
+  # and `bytes=-0` asks for nothing; neither is satisfiable, so both get the
+  # whole body.
+  def suffix_byte_range(last, size)
+    return nil if last.empty?
+
+    length = last.to_i
+    return nil if length.zero?
+
+    [size - length, 0].max..(size - 1)
   end
 
   # A 304 repeats the validator and the directives. One that omitted them

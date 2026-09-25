@@ -57,8 +57,9 @@ PAQUETTE_EXCLUDED_GROUPS = [
 # /versions is rendered per request rather than appended to. The suite asserts
 # the file grows by one row per push and is compacted only by an explicit
 # rebuild, and that `created_at:` carries the time of that rebuild; paquette
-# has no versions file to append to, always serves the compacted form, and
-# stamps created_at from the clock at render time. Materializing an
+# has no versions file to append to and always serves the compacted form. Its
+# `created_at:` is the oldest publication time in the corpus, which is stable
+# across renders but is not the rebuild stamp the suite looks for. Materializing an
 # append-only index is the one thing this exercise deliberately did not do.
 #
 # Skipped rather than filtered out, so the group's before(:all) still issues
@@ -77,20 +78,20 @@ RSpec.configure do |config|
   end
 end
 
-# The compact index response headers, on /names and /info. Beyond the ETag
-# above, the suite requires `accept-ranges: bytes` and the RFC 9530 `digest` /
-# `repr-digest` pair. Paquette serves no Range requests, and advertising
-# accept-ranges over a body it re-renders per request would invite a client to
-# splice two different renders together; the digest headers would then be
-# describing a representation the next request does not reproduce. Redefined
-# rather than filtered because the examples using it are bare `it { … }` with
-# nothing to filter on, and the groups they sit in hold other examples that do
-# pass and are worth keeping.
+# The compact index response headers, on /names and /info. `accept-ranges:
+# bytes` and the RFC 9530 `digest` / `repr-digest` pair are served now and
+# satisfy this matcher; what is left is the ETag alone, for the reason given
+# above — the suite wants the MD5 of the body, and paquette derives its tag
+# from the corpus fingerprint so that a conditional request can be answered
+# without rendering the document, and so that a gated or personalized stack
+# can decline to name a response at all. Redefined rather than filtered
+# because the examples using it are bare `it { … }` with nothing to filter
+# on, and the groups they sit in hold other examples that do pass and are
+# worth keeping.
 RSpec::Matchers.define :be_valid_compact_index_reponse do
   match do |_response|
     PaquetteConformanceSkips.skip!(
-      "paquette serves no Range requests, so it sends neither accept-ranges nor digest/repr-digest, " \
-      "and its ETag is a corpus fingerprint rather than a digest of the body"
+      "paquette's ETag on a compact index file is a corpus fingerprint rather than a digest of the body"
     )
   end
 end

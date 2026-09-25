@@ -32,6 +32,9 @@ class RegexpLinearityTest < Minitest::Test
       # /info/ request, and the line now carries a "rubygems:" field after
       # the one it is looking for.
       "GemRepository.replace_checksum" => /checksum:[0-9a-f]+/,
+      # One offset out of a client-chosen Range header, already split out
+      # and length-capped before it gets here.
+      "ConditionalGet::BYTE_OFFSET" => Paquette::ConditionalGet::BYTE_OFFSET,
       "SpecValidator::NAME" => Paquette::GemServer::SpecValidator::NAME,
       "SpecValidator::VERSION" => Paquette::GemServer::SpecValidator::VERSION,
       "SpecValidator::FORBIDDEN_IN_FIELD" => Paquette::GemServer::SpecValidator::FORBIDDEN_IN_FIELD,

@@ -374,6 +374,24 @@ class GemServerTest < Minitest::Test
     end
   end
 
+  # A repository wrapper may read the push once for its own purposes — a
+  # date check, a scan — and rewind for the repository underneath. Each
+  # rewind starts the count over, so a body read twice is not refused for
+  # being twice as large.
+  def test_capped_body_starts_its_count_over_on_rewind
+    body = Paquette::GemServer::CappedBody.new(StringIO.new("a" * 64), 64)
+
+    assert_equal 64, body.read.bytesize
+    body.rewind
+    assert_equal 64, body.read.bytesize
+  end
+
+  def test_capped_body_refuses_one_byte_past_the_cap
+    body = Paquette::GemServer::CappedBody.new(StringIO.new("a" * 65), 64)
+
+    assert_raises(Paquette::GemServer::CappedBody::TooLarge) { body.read }
+  end
+
   def test_yank_removes_gem_from_listings
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)

@@ -19,6 +19,14 @@ module Paquette
 
   self.regexp_timeout = DEFAULT_REGEXP_TIMEOUT
 
+  # The largest package push either server accepts, in bytes — the default
+  # for the `max_push_bytes:` keyword both take. 50MB is what rubygems.org
+  # allows and comfortably more than any package anyone has a reason to
+  # publish — the number is here to bound what one request can make the
+  # process do, not to be a quota. `nil` removes the cap, which is a
+  # decision to make knowingly.
+  MAX_PUSH_SIZE_BYTES = 50 * 1024 * 1024
+
   # Autoloaded rather than required: an application embedding the gem server
   # should not pay for the npm side, and nothing here needs a load order.
   # Absolute paths because config.ru and bin/dev reach this file through

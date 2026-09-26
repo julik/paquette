@@ -40,7 +40,8 @@
 - Refuse any pushed gemspec field longer than 2KB
 - Validate the npm package version, which reached the filesystem as a path component the same way
 - Parse an uploaded gemspec with YAML alias expansion disabled
-- Stream a gem push to disk instead of buffering it in memory, and cap it with `max_push_bytes:`
+- Stream a gem push to disk instead of buffering it in memory, and cap it with `max_push_bytes:` on the server — `Paquette::MAX_PUSH_SIZE_BYTES` (50MB) unless told otherwise. The cap is the server's rule and the server's enforcement: `DirectoryGemRepository#add_gem` takes the payload and nothing else
+- Cap npm request bodies with the same `max_push_bytes:` keyword on `NpmServer` — a publish carries the whole tarball base64-encoded in JSON, and used to be read without a limit
 
 ## 0.2.0
 

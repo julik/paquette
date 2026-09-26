@@ -310,22 +310,6 @@ class DirectoryGemRepositoryTest < Minitest::Test
     end
   end
 
-  def test_add_gem_refuses_a_payload_over_max_bytes
-    binary = File.binread(@minuscule_fixture)
-
-    Dir.mktmpdir do |tmp|
-      repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)
-
-      assert_raises(Paquette::GemServer::DirectoryGemRepository::GemTooLarge) do
-        repo.add_gem(binary, max_bytes: binary.bytesize - 1)
-      end
-
-      assert_equal [], Dir.glob(File.join(tmp, "**", "*.gem"))
-      # The exact size still fits: the cap is a maximum, not a strict less-than.
-      assert repo.add_gem(binary, max_bytes: binary.bytesize)
-    end
-  end
-
   def test_add_gem_rejects_an_empty_io
     Dir.mktmpdir do |tmp|
       repo = Paquette::GemServer::DirectoryGemRepository.new(tmp)

@@ -316,13 +316,48 @@ class Paquette::GemServer
   # IndexPage, which is the default and takes the sentence to print.
   DEFAULT_BLURB = "This server provides RubyGems packages. Point your gem source at it and bundle as usual."
 
-  # The largest push this server will accept, in bytes. 50MB is what
-  # rubygems.org allows and comfortably more than any gem anyone has a
-  # reason to publish — the number is here to bound what one request can
-  # make the process do, not to be a quota. `nil` removes the cap, which
-  # is a decision to make knowingly.
-  DEFAULT_MAX_PUSH_BYTES = 50 * 1024 * 1024
+  # What the repository is handed on a push: the request body, with the
+  # push cap riding along. The cap is the server's rule — a repository
+  # stores gems and has no opinion about how large a request may be — but
+  # the repository owns the one copy loop the payload goes through, so the
+  # server cannot count bytes there itself. Instead it hands over a body
+  # that refuses to yield more than `max_bytes`.
+  class CappedBody
+    class TooLarge < StandardError; end
 
+    def initialize(io, max_bytes)
+      @io = io
+      @max_bytes = max_bytes
+      @bytes_read = 0
+    end
+
+    # The one method IO.copy_stream requires of a source that is not an
+    # IO. Raises the moment the count passes the cap, so an oversized
+    # body is caught by having produced one byte too many rather than by
+    # being read to its end to be measured — the point of the cap is to
+    # not read the rest.
+    def read(*args)
+      chunk = @io.read(*args)
+      if chunk
+        @bytes_read += chunk.bytesize
+        raise TooLarge, "Gem payload exceeds the #{@max_bytes} byte limit" if @bytes_read > @max_bytes
+      end
+      chunk
+    end
+
+    # The repository rewinds a body before copying it, and a wrapper in
+    # front of it may read the payload once and rewind for the next
+    # reader. The count starts over with every rewind so that "read
+    # twice" is not mistaken for "twice as large".
+    def rewind
+      @bytes_read = 0
+      @io.rewind if @io.respond_to?(:rewind)
+    end
+  end
+
+  # `max_push_bytes:` is the largest push this server will accept —
+  # Paquette::MAX_PUSH_SIZE_BYTES unless told otherwise, and `nil` removes
+  # the cap, which is a decision to make knowingly.
   #
   # `shared_caching: false` keeps every response `private`, as if every
   # request carried a credential. Set it when you authorize by something
@@ -331,7 +366,7 @@ class Paquette::GemServer
   # true, an anonymous request over an ungated, unpersonalized repository
   # is answered `public` so a CDN may keep it; see ConditionalGet.
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
-    max_push_bytes: DEFAULT_MAX_PUSH_BYTES, shared_caching: true)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true)
     @repository = repository
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
@@ -465,9 +500,9 @@ class Paquette::GemServer
   # Two guards, because one is not enough. CONTENT_LENGTH is checked before
   # a single byte is read, which is what keeps an announced 2GB push from
   # costing anything at all — but a chunked body declares no length, and a
-  # dishonest one declares whatever it likes, so the repository caps the
-  # actual copy too. The header check is the optimization; the copy cap is
-  # the guarantee.
+  # dishonest one declares whatever it likes, so the body itself stops
+  # yielding past the cap — see CappedBody. The header check is the
+  # optimization; the capped body is the guarantee.
   def handle_push
     declared = declared_content_length
     if @max_push_bytes && declared && declared > @max_push_bytes
@@ -476,8 +511,9 @@ class Paquette::GemServer
 
     Measurometer.add_distribution_value("paquette.gem_server.push_bytes", declared) if declared
 
+    body = @max_push_bytes ? CappedBody.new(@request.body, @max_push_bytes) : @request.body
     spec = Measurometer.instrument("paquette.gem_server.read_push_body") do
-      @repository.add_gem(@request.body, max_bytes: @max_push_bytes)
+      @repository.add_gem(body)
     end
     # full_name rather than name-version: it is the platform build that was
     # registered, and saying "a-0.2.0" for all three of them would report
@@ -489,7 +525,7 @@ class Paquette::GemServer
     [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemAlreadyExists => e
     [409, {"Content-Type" => "text/plain"}, [e.message]]
-  rescue DirectoryGemRepository::GemTooLarge => e
+  rescue CappedBody::TooLarge => e
     payload_too_large(e.message)
   rescue DirectoryGemRepository::InvalidGem => e
     bad_request(e.message)

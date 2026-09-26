@@ -13,6 +13,10 @@ class Paquette::NpmServer
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
 
+  # A request body past `max_push_bytes:`, answered 413 before the JSON
+  # parse — and before most of the read.
+  class PayloadTooLarge < StandardError; end
+
   # npm sends the scope separator percent-encoded for metadata but plain in
   # tarball URLs; normalizing makes a package name one path segment.
   SCOPED_PATH = %r{\A(/(?:-/package/)?)(@[^/%]+)/([^/]+)(/.*)?\z}
@@ -152,16 +156,22 @@ class Paquette::NpmServer
   # IndexPage, which is the default and takes the sentence to print.
   DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
 
+  # `max_push_bytes:` is the largest request body this server will read —
+  # a publish carries the whole tarball base64-encoded in JSON, so this is
+  # the push cap. Paquette::MAX_PUSH_SIZE_BYTES unless told otherwise, and
+  # `nil` removes the cap, which is a decision to make knowingly.
+  #
   # `shared_caching: false` keeps every response `private` - see the same
   # option on GemServer for when to set it.
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
-    shared_caching: true)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true)
     @repository = if repository.is_a?(String)
       DirectoryNpmRepository.new(repository)
     else
       repository
     end
     @placeholder_app = placeholder_app
+    @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
   end
 
@@ -187,6 +197,8 @@ class Paquette::NpmServer
     end
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
+  rescue PayloadTooLarge => e
+    payload_too_large(e.message)
   end
 
   def normalize_scoped_path(path)
@@ -417,15 +429,40 @@ class Paquette::NpmServer
   end
 
   # A publish body carries the whole tarball base64-encoded, so both the read
-  # and the parse are sized by the package, not by the request.
+  # and the parse are sized by the package, not by the request — which is why
+  # the push cap is enforced here, on the read itself. Two guards, as on the
+  # gem side: the declared length refuses an announced oversize before a byte
+  # is read, and the read stops one byte past the cap for the chunked or
+  # dishonest body that declared nothing.
   def parse_json_body
+    if @max_push_bytes && declared_content_length && declared_content_length > @max_push_bytes
+      raise PayloadTooLarge, "Request body exceeds the #{@max_push_bytes} byte limit"
+    end
+
     @request.body.rewind if @request.body.respond_to?(:rewind)
-    body = Measurometer.instrument("paquette.npm_server.read_body") { @request.body.read.to_s }
+    body = Measurometer.instrument("paquette.npm_server.read_body") do
+      (@max_push_bytes ? @request.body.read(@max_push_bytes + 1) : @request.body.read).to_s
+    end
+    if @max_push_bytes && body.bytesize > @max_push_bytes
+      raise PayloadTooLarge, "Request body exceeds the #{@max_push_bytes} byte limit"
+    end
     return nil if body.empty?
 
     Measurometer.add_distribution_value("paquette.npm_server.body_bytes", body.bytesize)
     Measurometer.instrument("paquette.npm_server.parse_body") { JSON.parse(body) }
   rescue JSON::ParserError
+    nil
+  end
+
+  # nil when the client did not announce one — a chunked upload, or a
+  # header that is not a number. Not an error on its own: it only means
+  # the cheap check cannot be made and the capped read has to do the work.
+  def declared_content_length
+    raw = @request.get_header("CONTENT_LENGTH")
+    return nil if raw.nil? || raw.to_s.empty?
+
+    Integer(raw, 10)
+  rescue ArgumentError, TypeError
     nil
   end
 
@@ -464,6 +501,10 @@ class Paquette::NpmServer
 
   def conflict(message = "Conflict")
     json_error(409, message)
+  end
+
+  def payload_too_large(message = "Payload Too Large")
+    json_error(413, message)
   end
 
   def server_error(message = "Internal Server Error")

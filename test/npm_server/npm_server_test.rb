@@ -242,6 +242,35 @@ class NpmServerTest < Minitest::Test
     assert_equal 400, last_response.status
   end
 
+  # An announced length over the cap costs nothing: it is refused before a
+  # byte of the body is read.
+  def test_publish_refuses_an_oversized_declared_length
+    capped = Paquette::NpmServer.new(@repository, max_push_bytes: 64)
+    session = Rack::Test::Session.new(Rack::MockSession.new(capped))
+
+    session.put "/new-package", npm_publish_body(name: "new-package", version: "1.0.0"),
+      {"CONTENT_TYPE" => "application/json"}
+
+    assert_equal 413, session.last_response.status
+    assert_nil @repository.versions_for_package("new-package").first
+  end
+
+  # And a length the client lied about does not get a free pass, because
+  # the cap is also enforced on the read itself.
+  def test_publish_refuses_a_body_larger_than_an_understated_content_length
+    capped = Paquette::NpmServer.new(@repository, max_push_bytes: 64)
+
+    env = Rack::MockRequest.env_for("/new-package",
+      "REQUEST_METHOD" => "PUT", "CONTENT_TYPE" => "application/json")
+    env["rack.input"] = StringIO.new(npm_publish_body(name: "new-package", version: "1.0.0"))
+    env["CONTENT_LENGTH"] = "10"
+
+    status, _headers, _body = capped.call(env)
+
+    assert_equal 413, status
+    assert_nil @repository.versions_for_package("new-package").first
+  end
+
   def test_publish_with_a_custom_dist_tag
     put "/tagged", npm_publish_body(name: "tagged", version: "1.0.0-beta.1", dist_tags: {"beta" => "1.0.0-beta.1"}),
       {"CONTENT_TYPE" => "application/json"}

@@ -12,8 +12,6 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
 
   class InvalidGem < StandardError; end
 
-  class GemTooLarge < StandardError; end
-
   class GemNotFound < StandardError; end
 
   class GemYanked < StandardError; end
@@ -77,18 +75,19 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # not worth a major version; it is wrapped and streamed through the same
   # path, so there is one copy loop rather than two.
   #
-  # `max_bytes` caps what is copied, and nil means uncapped — the default,
-  # so nothing changes for a caller that never asked for a limit. The cap
-  # is enforced on the copy rather than on a declared length because a
-  # chunked body has no declared length to enforce it on.
+  # There is no size cap here, on purpose. How large a request may be is
+  # the server's rule, not a storage concern, and GemServer enforces its
+  # `max_push_bytes:` by handing this method a body that refuses to yield
+  # past the cap. An embedder calling this directly is trusted the way any
+  # caller with filesystem access already is.
   #
   # Raises InvalidGem when the payload can't be opened as a gem or its spec
-  # claims something a server should not act on, GemTooLarge past the cap,
-  # GemYanked for a tombed name+version+platform, and GemAlreadyExists if
-  # that name, version *and* platform is already on disk. The platform is
-  # part of all three: "a-0.2.0-java" and "a-0.2.0" are two artifacts, and
-  # yanking or re-pushing either has nothing to say about the other.
-  def add_gem(gem_payload, max_bytes: nil)
+  # claims something a server should not act on, GemYanked for a tombed
+  # name+version+platform, and GemAlreadyExists if that name, version *and*
+  # platform is already on disk. The platform is part of all three:
+  # "a-0.2.0-java" and "a-0.2.0" are two artifacts, and yanking or
+  # re-pushing either has nothing to say about the other.
+  def add_gem(gem_payload)
     raise InvalidGem, "Empty gem payload" if gem_payload.nil?
 
     io = gem_payload.is_a?(String) ? StringIO.new(gem_payload) : gem_payload
@@ -98,16 +97,12 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     tmp.binmode
 
     copied = Measurometer.instrument("paquette.gem_repository.write_upload") do
-      # One byte past the cap, so an oversized body is caught by having
-      # produced that byte rather than by being read to its end to measure
-      # it — the point of the cap is to not read the rest.
-      max_bytes ? IO.copy_stream(io, tmp, max_bytes + 1) : IO.copy_stream(io, tmp)
+      IO.copy_stream(io, tmp)
     end
     tmp.close
 
     Measurometer.add_distribution_value("paquette.gem_repository.add_gem_bytes", copied)
     raise InvalidGem, "Empty gem payload" if copied.zero?
-    raise GemTooLarge, "Gem payload exceeds the #{max_bytes} byte limit" if max_bytes && copied > max_bytes
 
     spec = begin
       Measurometer.instrument("paquette.gem_repository.read_uploaded_spec") { read_uploaded_spec(tmp.path) }
@@ -177,7 +172,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # see it fail. That is the milder of the two failures — brief, and
   # failing in the safe direction — where the permanent version is silent
   # and forever. Older RubyGems without the accessor simply parse as they
-  # always did; the size cap in add_gem is the backstop there.
+  # always did; the server's push cap is the backstop there.
   def read_uploaded_spec(gem_path)
     # Gem::SafeYAML is only defined once RubyGems has pulled Psych in, and
     # Gem::Package does that lazily on the first spec it reads. Asking for

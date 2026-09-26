@@ -1,34 +1,41 @@
 require "rotp"
 
-# Verifies the one-time password on a publishing request. What counts as a
-# publishing request is the caller's business — this gate verifies, it does
-# not route. Everything protocol-shaped is the server's business: which
-# header carries the code and what a refusal looks like on the wire both
-# live in the `dialect:` collaborator each server class supplies — see
-# GemServer.otp_gate and NpmServer.otp_gate, which are how an application
-# should build one. What is left here is only what every dialect shares:
-# ask for the code, count nothing-and-empty as missing, verify against the
-# clock with drift, and say what happened in one word.
+# Verifies the one-time password on a publishing request. Protocol specifics
+# (which header carries the code, what a refusal looks like on the wire) live
+# in the `dialect:` collaborator each server class supplies — see
+# GemServer.otp_gate and NpmServer.otp_gate.
 class Paquette::OtpGate
   # What the gate decided. `reason` is a short machine-readable word for a
   # log line or a metric tag; `response` is the ready Rack refusal, and its
   # absence is the authorization.
+  #
+  # @!attribute reason
+  #   @return [String]
+  # @!attribute response
+  #   @return [Array, nil] a Rack response triplet, or nil when authorized
   Outcome = Data.define(:reason, :response) do
+    # @return [Boolean]
     def authorized? = response.nil?
   end
 
-  # `dialect` answers `code_in(env)` — the code its protocol's header
-  # carried, or nil — and `otp_missing` / `otp_rejected`, each a Rack
-  # response triplet. An empty code counts as missing, not as a wrong
-  # guess: a shell that expanded nothing did not guess.
+  # @param secret [String] the TOTP secret
+  # @param issuer [String] the TOTP issuer name
+  # @param dialect [Object] answers `code_in(env)` with the code the
+  #   protocol's header carried (or nil), and `otp_missing` / `otp_rejected`,
+  #   each a Rack response triplet
+  # @param drift [Integer] allowed clock drift in seconds, both directions
   def initialize(secret:, issuer:, dialect:, drift: 30)
     @totp = ROTP::TOTP.new(secret, issuer: issuer)
     @dialect = dialect
     @drift = drift
   end
 
+  # @param env [Hash] the Rack env
+  # @return [Outcome]
   def verify(env)
     code = @dialect.code_in(env)
+    # An empty code counts as missing, not as a wrong guess: a shell that
+    # expanded nothing did not guess.
     if code.nil? || code.empty?
       return Outcome.new(reason: "otp_missing", response: @dialect.otp_missing)
     end

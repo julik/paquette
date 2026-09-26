@@ -15,7 +15,7 @@ Gem::Specification.new do |spec|
 
   spec.required_ruby_version = ">= 3.1"
 
-  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("lib/paquette/index_page/*") + Dir.glob("test/**/*") + ["LICENSE.md", "README.md", "CHANGELOG.md"]
+  spec.files = Dir.glob("lib/**/*.rb") + Dir.glob("lib/paquette/index_page/*") + Dir.glob("sig/**/*.rbs") + Dir.glob("rbi/**/*.rbi") + Dir.glob("test/**/*") + ["LICENSE.md", "README.md", "CHANGELOG.md"]
   spec.require_paths = ["lib"]
 
   spec.add_dependency "rack", "~> 3.0"

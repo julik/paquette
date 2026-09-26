@@ -1,8 +1,11 @@
 require "measurometer"
 
+# Routes requests to Rack apps by the first label of the Host header, with an
+# optional fallback app for unmapped hosts.
 class Paquette::SubdomainRouter
   prepend Paquette::RegexpTimeout
 
+  # @yield [self] for configuring mappings via {#map} and {#fallback}
   def initialize(&block)
     @mappings = {}
     @fallback = nil
@@ -12,11 +15,12 @@ class Paquette::SubdomainRouter
     end
   end
 
+  # @param env [Hash] the Rack env
+  # @return [Array] a Rack response triplet
   def call(env)
     request = Rack::Request.new(env)
     host = request.host
 
-    # Extract subdomain from host
     subdomain = extract_subdomain(host)
 
     if subdomain && @mappings[subdomain]
@@ -28,7 +32,6 @@ class Paquette::SubdomainRouter
         if app.respond_to?(:call)
           app.call(env)
         else
-          # If it's a class, instantiate it
           app.new.call(env)
         end
       end
@@ -40,24 +43,28 @@ class Paquette::SubdomainRouter
     end
   end
 
+  # @param subdomain [String]
+  # @param to [Object] a Rack app, or a class that instantiates to one
+  # @return [void]
   def map(subdomain, to:)
     @mappings[subdomain] = to
   end
 
+  # @param to [Object] a Rack app called when no subdomain matches
+  # @return [void]
   def fallback(to:)
     @fallback = to
   end
 
   private
 
+  # @param host [String]
+  # @return [String, nil] the first host label, only when it is mapped
   def extract_subdomain(host)
-    # Handle localhost with port (e.g., localhost:9292)
     host = host.split(":").first if host.include?(":")
 
-    # Extract the first part of the hostname (subdomain)
     if (match = host.match(/\A([a-z\-\d]+)\./))
       subdomain = match[1]
-      # Only return if this subdomain is actually mapped
       @mappings.key?(subdomain) ? subdomain : nil
     end
   end

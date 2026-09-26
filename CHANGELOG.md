@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Document every method and attribute with YARD type tags, and cut the code comments down to what a thing does and why the non-obvious parts are the way they are. `rake yard` builds the docs; `rake rbi` and `rake rbs` generate `rbi/paquette.rbi` and `sig/paquette.rbs` from the tags via sord, and the signature files ship with the gem
 - Store, index, download and yank a platform build as its own artifact. `DirectoryGemRepository` keyed a gem by name and version alone, so a push of `nokogiri-1.16.0-java` wanted the plain build's path and was refused 409 "already exists"; a gem is now filed under the filename `Gem::Specification#file_name` gives it, which leaves a plain-ruby gem's path exactly where it was
 - Make `GemAlreadyExists` and `GemYanked` mean "this name, version *and* platform", so a yanked java build neither hides its ruby sibling nor blocks it from being pushed
 - Take `platform` on `DELETE /api/v1/gems/yank`, the param `gem yank --platform` sends. An absent or blank one means `ruby` and yanks only the plain build; a version that already carries the platform (`1.16.0-java`) is accepted too

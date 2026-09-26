@@ -7,25 +7,33 @@ require "digest"
 # Reads NPM packages from a directory; a scope is an ordinary directory:
 #   packages/npm/@acme/widgets/widgets-1.0.0.tgz
 class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepository
+  # Raised on a publish of a name@version already on disk.
   class PackageAlreadyExists < StandardError; end
 
+  # Raised when a payload cannot be read as a package, or its
+  # package.json claims something a server should not act on.
   class InvalidPackage < StandardError; end
 
+  # Raised on an unpublish of a package that is not there.
   class PackageNotFound < StandardError; end
 
+  # Raised on a publish of a tombed name@version.
   class PackageYanked < StandardError; end
 
   DIST_TAGS_FILE = "dist-tags.json"
 
+  # @param packages_dir [String] the corpus root, created if absent
   def initialize(packages_dir)
     @packages_dir = packages_dir
     FileUtils.mkdir_p(@packages_dir)
   end
 
   # A digest of what the corpus holds — see the gem-side twin. Tarball
-  # paths carry publishes and unpublishes (an unpublish renames to a
-  # tomb), but a dist-tag write edits dist-tags.json in place: no path
-  # moves, so the write shows only in the file's own mtime.
+  # paths carry publishes and unpublishes, but a dist-tag write edits
+  # dist-tags.json in place: no path moves, so the write shows only in the
+  # file's own mtime.
+  #
+  # @return [String]
   def fingerprint
     Measurometer.instrument("paquette.npm_repository.fingerprint") do
       d = Digest::SHA256.new
@@ -37,30 +45,31 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     end
   end
 
-  # Whole nanoseconds rather than the Float this used to fold in. A Float
-  # mtime loses precision at the top end of the range - the same reason the
-  # gem repository's sidecars keep integer nanoseconds - and two dist-tag
-  # writes landing inside one float tick would digest identically, which
-  # here means a client keeping a 304 for a tag that has since moved. The
-  # value only ever feeds a digest, so it was never as dangerous as an
-  # equality comparison, but the precision is free.
+  # Whole nanoseconds rather than a Float, which loses precision at the top
+  # of the range: two dist-tag writes landing inside one float tick would
+  # digest identically — a client keeping a 304 for a tag that has moved.
+  #
+  # @param path [String]
+  # @return [Integer]
   def mtime_ns(path)
     mtime = File.mtime(path)
     (mtime.to_i * 1_000_000_000) + mtime.nsec
   end
 
-  # The corpus fingerprint is this repository's whole contribution to an
-  # HTTP validator. The wrappers above add who is asking.
+  # @return [String]
   def cache_validator
     fingerprint
   end
 
   # A directory of packages is the same directory for everybody; the
   # wrappers are what make a response caller-specific.
+  #
+  # @return [Boolean]
   def varies_by_caller?
     false
   end
 
+  # @return [Array<String>]
   def package_names
     Measurometer.instrument("paquette.npm_repository.package_names") do
       names = []
@@ -76,6 +85,8 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   end
 
   # A directory listing per package in the corpus.
+  #
+  # @return [Array<Array(String, String)>]
   def package_versions
     Measurometer.instrument("paquette.npm_repository.package_versions") do
       package_names.flat_map do |package_name|
@@ -84,6 +95,8 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     end
   end
 
+  # @param package_name [String]
+  # @return [Array<String>]
   def versions_for_package(package_name)
     dir = package_dir(package_name)
     return [] unless dir && Dir.exist?(dir)
@@ -98,11 +111,13 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     end
   end
 
-  # nil rather than a path for anything that is not a name and a version,
-  # the same contract package_dir has — the version is a path component
-  # too, and checking it only on the publish path would leave the read
-  # path free to compose "1/../../secret" and serve whatever it landed on.
-  # Every caller here already treats nil as "no such package".
+  # nil rather than a path for anything that is not a name and a version —
+  # the version is a path component too, and checking it only on the
+  # publish path would leave the read path free to compose "1/../../secret".
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String, nil]
   def package_file_path(package_name, version)
     dir = package_dir(package_name)
     return nil unless dir
@@ -111,11 +126,17 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     File.join(dir, Paquette::NpmServer::NpmRepository.tarball_filename(package_name, version))
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Boolean]
   def package_exists?(package_name, version)
     path = package_file_path(package_name, version)
     !!path && File.exist?(path)
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash, nil]
   def package_info(package_name, version)
     path = package_file_path(package_name, version)
     return nil unless path && File.exist?(path)
@@ -123,6 +144,9 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     cached(path) { Paquette::Tarball.package_json(path) }
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash{String => String}]
   def package_dependencies(package_name, version)
     info = package_info(package_name, version)
     return {} unless info
@@ -131,6 +155,9 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   end
 
   # "latest" is recomputed from disk: a stored tag can outlive its version.
+  #
+  # @param package_name [String]
+  # @return [Hash{String => String}]
   def dist_tags(package_name)
     versions = versions_for_package(package_name)
     return {} if versions.empty?
@@ -142,10 +169,15 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   # Assembling this means reading the package.json out of every version's
   # tarball and hashing every one of them; the cache below is what keeps a
   # second request from paying for it again.
+  #
+  # @param package_name [String]
+  # @return [Hash, nil]
   def package_metadata(package_name)
     Measurometer.instrument("paquette.npm_repository.package_metadata") { build_metadata(package_name) }
   end
 
+  # @param package_name [String]
+  # @return [Hash, nil]
   def build_metadata(package_name)
     versions = versions_for_package(package_name)
     return nil if versions.empty?
@@ -175,17 +207,20 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
       "maintainers" => latest_info["maintainers"] || [],
       "repository" => latest_info["repository"],
       "bugs" => latest_info["bugs"],
-      # Filtered, unlike its neighbours: this is the one field here that a
-      # reader treats as "the link for this package", and `npm publish` does
-      # not check its scheme. `repository` and `bugs` are left alone on
-      # purpose — `git://` and `git+ssh://` are legitimate there, so the
-      # http(s) rule would refuse values that are doing their job.
+      # Filtered, unlike its neighbours: this is the one field a reader
+      # treats as "the link for this package". `repository` and `bugs` are
+      # left alone on purpose — `git://` and `git+ssh://` are legitimate
+      # there.
       "homepage" => Paquette::SafeUrl.http_url(latest_info["homepage"]),
       "readme" => readme_for(package_name, tags["latest"]) || ""
     }.compact
   end
 
   # Hashes are computed from the file, never taken from the publisher.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash{String => String}]
   def dist_for(package_name, version)
     path = package_file_path(package_name, version)
     return {} unless path && File.exist?(path)
@@ -198,6 +233,13 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   end
 
   # A republished version must never silently carry different bytes.
+  #
+  # @param binary_data [String] the tarball bytes
+  # @param dist_tags [Hash{String => String}]
+  # @return [Hash] the stored version's package.json
+  # @raise [InvalidPackage]
+  # @raise [PackageYanked]
+  # @raise [PackageAlreadyExists]
   def add_package(binary_data, dist_tags: {})
     raise InvalidPackage, "Empty package payload" if binary_data.nil? || binary_data.empty?
 
@@ -243,6 +285,11 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   end
 
   # The tomb stops the version being republished with different contents.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [nil]
+  # @raise [PackageNotFound]
   def yank_package(package_name, version)
     path = package_file_path(package_name, version)
     raise PackageNotFound, "#{package_name}@#{version} not found" unless path && File.exist?(path)
@@ -255,6 +302,13 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   end
 
   # "latest" follows the newest release on disk; pointing it elsewhere is refused.
+  #
+  # @param package_name [String]
+  # @param tag [String]
+  # @param version [String]
+  # @return [Hash{String => String}]
+  # @raise [InvalidPackage]
+  # @raise [PackageNotFound]
   def write_dist_tag(package_name, tag, version)
     raise InvalidPackage, "latest always follows the newest published version" if tag.to_s == "latest"
     raise PackageNotFound, "#{package_name}@#{version} not found" unless package_exists?(package_name, version)
@@ -263,11 +317,17 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     dist_tags(package_name)
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String, nil]
   def tomb_file_path(package_name, version)
     path = package_file_path(package_name, version)
     path && path + ".tomb"
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Boolean]
   def tomb_exists?(package_name, version)
     path = tomb_file_path(package_name, version)
     !!path && File.exist?(path)
@@ -276,12 +336,19 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   private
 
   # nil for a non-name, so "../../etc" resolves to no package, not a path.
+  #
+  # @param package_name [String]
+  # @return [String, nil]
   def package_dir(package_name)
     return nil unless Paquette::NpmServer::NpmRepository.valid_package_name?(package_name)
 
     File.join(@packages_dir, *package_name.split("/"))
   end
 
+  # @param dir [String]
+  # @yieldparam path [String]
+  # @yieldparam basename [String]
+  # @return [void]
   def each_child_dir(dir)
     Dir.children(dir).sort.each do |basename|
       path = File.join(dir, basename)
@@ -292,6 +359,10 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   end
 
   # mtimes, unlike Time.now, keep the document stable between requests.
+  #
+  # @param package_name [String]
+  # @param versions [Array<String>]
+  # @return [Hash{String => String}]
   def times_for(package_name, versions)
     times = {}
     mtimes = versions.filter_map do |version|
@@ -310,6 +381,9 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     times
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String, nil]
   def readme_for(package_name, version)
     path = package_file_path(package_name, version)
     return nil unless path && File.exist?(path)
@@ -323,11 +397,15 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     end
   end
 
+  # @param package_name [String]
+  # @return [String, nil]
   def dist_tags_path(package_name)
     dir = package_dir(package_name)
     dir && File.join(dir, DIST_TAGS_FILE)
   end
 
+  # @param package_name [String]
+  # @return [Hash{String => String}]
   def read_dist_tags(package_name)
     path = dist_tags_path(package_name)
     return {} unless path && File.exist?(path)
@@ -337,6 +415,9 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     {}
   end
 
+  # @param package_name [String]
+  # @param tags [Hash{String => String}]
+  # @return [void]
   def write_dist_tags(package_name, tags)
     path = dist_tags_path(package_name)
     return unless path
@@ -349,12 +430,19 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     end
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [void]
   def drop_dist_tags_for(package_name, version)
     tags = read_dist_tags(package_name).reject { |_tag, tagged| tagged == version }
     write_dist_tags(package_name, tags)
   end
 
   # Keyed on mtime + size so a replaced tarball is not served stale.
+  #
+  # @param path [String]
+  # @param aspect [Symbol]
+  # @return [Object] the cached block result
   def cached(path, aspect = :info)
     stat = File.stat(path)
     key = [path, aspect, stat.mtime.to_f, stat.size]

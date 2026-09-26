@@ -1,35 +1,23 @@
 require "rubygems/package"
 
-# Gem::Package that reads the files it packs from a directory of the caller's
-# choosing instead of from the working directory, and says nothing while it
-# does it.
-#
-# This exists because Gem::Package#add_files calls `File.lstat file` on each
-# entry of spec.files, and those entries are relative — so `gem build` only
-# works because the CLI has chdir'd into the unpacked gem first. A server
-# cannot do that. The working directory is process-global, and a repack that
-# chdir's for the length of a build moves every other thread in the process
-# with it: a concurrent request resolving a relative path during those
-# milliseconds resolves it inside somebody's gem.
-#
-# Overriding the two methods that reach outside — the one that opens files and
-# the one that writes to stdout — keeps everything else RubyGems': the metadata
-# member, the checksums member, the gzip framing, the tar headers. Nothing here
-# re-implements the .gem format, which is the part that must not drift, because
-# what a drifting .gem format looks like from a customer's terminal is a
-# checksum mismatch on a gem they paid for.
+# Gem::Package that reads the files it packs from a directory of the
+# caller's choosing instead of from the working directory, silently.
+# `gem build` only works because the CLI chdir's into the unpacked gem
+# first — and chdir is process-global, so a server cannot do that. Only the
+# two methods that reach outside are overridden; the .gem format itself
+# stays RubyGems'.
 class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
-  # +root+ is the directory spec.files are relative to, +file_name+ is where
-  # the finished gem is written, and +build_time+ is the timestamp stamped into
-  # the archive — see BuildTime for why that is a block around the build rather
-  # than an argument RubyGems takes.
+  # Validation is deliberately skipped, and not to save time: it resolves
+  # spec.files against the working directory and *prunes* to what it finds —
+  # run from the wrong directory it quietly builds a gem with no files in
+  # it. The caller prunes against +root+ instead.
   #
-  # Validation is deliberately skipped, and not to save time: Gem::Specification
-  # validation also resolves file names against the working directory, and it
-  # *prunes* spec.files to what it finds there rather than failing. Run from the
-  # wrong directory it does not raise — it quietly builds a gem with no files in
-  # it. The caller prunes against +root+ instead, which is the same check asked
-  # in the right place.
+  # @param spec [Gem::Specification]
+  # @param root [String] the directory spec.files are relative to
+  # @param file_name [String] where the finished gem is written
+  # @param build_time [Time] the timestamp stamped into the archive — see
+  #   BuildTime for why this is a block around the build, not an argument
+  # @return [String] file_name
   def self.build(spec, root, file_name, build_time:)
     Paquette::GemServer::GemRepacker::BuildTime.with(build_time) do
       package = new(file_name, nil)
@@ -41,10 +29,14 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
     file_name
   end
 
+  # @return [String]
   attr_accessor :root
 
   # The RubyGems original with @root joined onto every path it looks at. The
   # names written into the tar stay relative, which is what a .gem holds.
+  #
+  # @param tar [Gem::Package::TarWriter]
+  # @return [void]
   def add_files(tar)
     @spec.files.each do |file|
       source = File.join(@root, file)
@@ -64,10 +56,10 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
     end
   end
 
-  # Gem::Package#build reports what it built on stdout, which is what a person
-  # running `gem build` asked for and not what a request asked for. Swallowed
-  # here rather than by swapping Gem's UI out around the call, because that UI
-  # is another process-global and this is a method call.
+  # Gem::Package#build reports on stdout, which is what a person running
+  # `gem build` asked for and not what a request asked for.
+  #
+  # @return [void]
   def say(*)
   end
 end

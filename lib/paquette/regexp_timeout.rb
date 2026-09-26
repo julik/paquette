@@ -1,41 +1,26 @@
 require "rack/body_proxy"
 
-# Ceiling on any single regexp match, held for the duration of a request.
-# Every path here meets a regexp with a client-chosen string on the other
-# side, and those patterns are linear only until someone adds one that is not.
-#
-# Prepended into every Rack app in this gem rather than offered as a
-# middleware: the ceiling is a property of these apps, not a decision an
-# application embedding them should have to remember to make. Nesting is
-# free — a request through SubdomainRouter into GemServer arms it twice and
-# the count, not the innermost exit, is what releases it.
-#
-# Regexp.timeout is per match, not per request, and dispatch runs a dozen or
-# so — a bad request costs the timeout times the matches it survives, hence
-# the low default.
-#
-# It is also process-global rather than per-thread, so requests are counted
-# instead of set-and-restored: otherwise one thread lowers the ceiling out
-# from under a match another thread is inside. That count lives on the module
-# rather than in each including class, for the same reason — one process, one
-# ceiling. The release hangs off the body's #close because a gem download
-# returns an open File and reads it after #call has returned.
-#
-# An application wanting a different ceiling sets it once, at boot:
-#
-#   Paquette.regexp_timeout = 0.1
-#
+# Ceiling on any single regexp match, held for the duration of a request —
+# every path here meets a regexp with a client-chosen string on the other
+# side. Prepended into every Rack app in this gem; an application wanting a
+# different ceiling sets `Paquette.regexp_timeout` once, at boot.
 module Paquette::RegexpTimeout
   # 3.2 gained Regexp.timeout and its error; on 3.1 this stands aside. The
   # placeholder keeps the rescue from naming a constant that may not exist.
   SUPPORTED = Regexp.respond_to?(:timeout=)
   TimedOut = SUPPORTED ? Regexp::TimeoutError : Class.new(StandardError)
 
+  # Regexp.timeout is process-global, so requests are counted instead of
+  # set-and-restored: otherwise one thread lowers the ceiling out from under
+  # a match another thread is inside.
   @lock = Mutex.new
   @in_flight = 0
   @ambient = nil
 
   class << self
+    # Arms the process-wide regexp ceiling for one request.
+    #
+    # @return [void]
     def acquire
       @lock.synchronize do
         seconds = Paquette.regexp_timeout
@@ -50,6 +35,10 @@ module Paquette::RegexpTimeout
       end
     end
 
+    # Releases one request's hold; the last one out restores the ambient
+    # timeout.
+    #
+    # @return [void]
     def release
       @lock.synchronize do
         @in_flight -= 1
@@ -61,13 +50,17 @@ module Paquette::RegexpTimeout
       end
     end
 
-    # Same reasoning as Routes::MalformedRequest: it ran out of time on bytes
-    # the client sent.
+    # A 400, not a 500: it ran out of time on bytes the client sent.
+    #
+    # @param error [Exception]
+    # @return [Array] a Rack response triplet
     def timed_out(error)
       [400, {"Content-Type" => "text/plain"}, ["Request took too long to parse: #{error.class}"]]
     end
   end
 
+  # @param env [Hash] the Rack env
+  # @return [Array] a Rack response triplet
   def call(env)
     return super unless SUPPORTED
 
@@ -76,6 +69,8 @@ module Paquette::RegexpTimeout
 
     begin
       status, headers, body = super
+      # The release hangs off the body's #close because a gem download
+      # returns an open File and reads it after #call has returned.
       proxied = Rack::BodyProxy.new(body) { Paquette::RegexpTimeout.release }
       handed_off = true
       [status, headers, proxied]

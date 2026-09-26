@@ -1,8 +1,9 @@
 require "bundler/gem_tasks"
 require "rake/testtask"
 
-# Default task runs tests
-task default: :test
+# The default task is defined next to the YARD tasks below: it rebuilds
+# the signature files before running tests when the :docs group is
+# installed, and degrades to bare tests when it is not.
 
 # Test task configuration. test/conformance is deliberately not in here: it
 # shells out to the external gem_server_conformance RSpec CLI, which is a
@@ -54,7 +55,10 @@ begin
 
   desc "Generate docs and type signatures"
   task docs: [:yard, :rbi, :rbs]
+
+  task default: [:rbi, :rbs, :test]
 rescue LoadError
+  task default: :test
 end
 
 # Clean task

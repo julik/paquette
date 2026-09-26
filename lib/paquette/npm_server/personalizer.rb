@@ -7,23 +7,27 @@ require "measurometer"
 # Rewrites each served tarball on the fly to embed the licensee's key;
 # counterpart of GemServer::Personalizer.
 class Paquette::NpmServer::Personalizer < SimpleDelegator
-  # Checked here as well as in the repacker so a bad pair is refused where
-  # the stack is built, rather than on the first customer download.
-  #
-  # `files_for:` is the per-package edition of `files:`, for content that
-  # cannot be known before the tarball is looked at. Called with
-  # (package_name, version, original_path); returns a {path => content}
-  # hash to inject on top of `files:`, or nil — and nil means this package
-  # does not participate: it is served byte for byte. Without `files_for:`
-  # every tarball is personalized, which is what this class always did.
   # The caller keeps the two contracts spelled out on
-  # GemServer::Personalizer: the returned content depends only on the
+  # GemServer::Personalizer: what `files_for:` returns depends only on the
   # tarball and `personalization_key:`, and nil is a fact about the
   # package, never about the licensee.
   #
-  # `cache_dir:` is where personalized tarballs and opt-out markers are
-  # kept; the system temp directory is only a default, and an application
-  # with a cache directory of its own should say so.
+  # @param repository [Paquette::NpmServer::NpmRepository] the repository
+  #   to wrap
+  # @param license_key [String]
+  # @param magic_comment_replacements [Hash{String => String}] checked here
+  #   as well as in the repacker, so a bad pair is refused where the stack
+  #   is built rather than on the first customer download
+  # @param files [Hash{String => String}] files injected into every tarball
+  # @param package_json_extras [Hash, nil] merged into package.json;
+  #   defaults to a "paquette" key carrying the license key
+  # @param files_for [Proc, nil] per-package files, called with
+  #   (package_name, version, original_path); nil return means the package
+  #   is served byte for byte
+  # @param personalization_key [String, nil] everything the personalized
+  #   bytes depend on beyond the tarball itself
+  # @param cache_dir [String, nil] where personalized tarballs and opt-out
+  #   markers are kept; the system temp directory is only a default
   def initialize(repository, license_key:, magic_comment_replacements: {}, files: {},
     package_json_extras: nil, files_for: nil, personalization_key: nil, cache_dir: nil)
     Paquette::NpmRepacker.check_replacements!(magic_comment_replacements)
@@ -37,31 +41,27 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
     @cache_dir = cache_dir || File.join(Dir.tmpdir, "paquette_personalized_npm")
   end
 
-  # The wrapped validator with this personalizer's identity mixed in.
+  # The wrapped validator with this personalizer's identity mixed in — the
+  # packument carries per-licensee integrity hashes in the document
+  # itself. The key is the same digest that names the cached tarballs on
+  # disk, so the validator is exactly as strong as that cache.
   #
-  # This matters more here than on the gem side. dist_for below rewrites
-  # `integrity` per version, and the packument carries those hashes in the
-  # document itself - so the *response body* of a metadata request differs
-  # per licensee, not merely the tarball it points at. Serve one licensee's
-  # cached packument to another and npm receives integrity hashes that
-  # cannot match the tarball it downloads next, which it reports as
-  # tampering and refuses to install.
-  #
-  # The key is `personalization_digest`, the same digest that already names
-  # the personalized tarballs on disk: if two licensees could collide here
-  # they would already be colliding in that cache, and the second would be
-  # handed the first one's tarball. So this validator is exactly as strong
-  # as the caching the class already ships, and inherits its contract.
+  # @return [String, nil]
   def cache_validator
     inner = Paquette::CacheValidation.validator_of(__getobj__)
     Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
   end
 
-  # Every byte - and every dist.integrity - is baked for one licensee.
+  # Every byte — and every dist.integrity — is baked for one licensee.
+  #
+  # @return [Boolean]
   def varies_by_caller?
     true
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String, nil] the personalized (or pass-through) tarball path
   def package_file_path(package_name, version)
     original_path = __getobj__.package_file_path(package_name, version)
     return original_path unless original_path && File.exist?(original_path)
@@ -70,6 +70,10 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   end
 
   # The hashes must be the personalized tarball's; the URL stays the repository's.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash{String => String}]
   def dist_for(package_name, version)
     original_dist = __getobj__.dist_for(package_name, version)
     return original_dist if original_dist.empty?
@@ -85,10 +89,13 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
     end
   end
 
-  # The underlying `dist` hashes would fail every install.
-  # Every version has to be repacked and re-hashed before this document can
-  # be handed out, so a personalized metadata read costs a whole package
-  # where the plain one costs a cache lookup.
+  # The underlying `dist` hashes would fail every install. Every version
+  # has to be repacked and re-hashed before this document can be handed
+  # out, so a personalized metadata read costs a whole package where the
+  # plain one costs a cache lookup.
+  #
+  # @param package_name [String]
+  # @return [Hash, nil]
   def package_metadata(package_name)
     metadata = __getobj__.package_metadata(package_name)
     return nil unless metadata
@@ -105,10 +112,12 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   private
 
   # Keyed by everything that goes INTO the package: two licensees never
-  # share a file. The caches are consulted before the tarball is ever
-  # opened — the first request per file pays the look inside, every one
-  # after is two stat calls. See GemServer::Personalizer, whose scheme
-  # this is.
+  # share a file. See GemServer::Personalizer, whose scheme this is.
+  #
+  # @param original_path [String]
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String]
   def personalize(original_path, package_name, version)
     stat = File.stat(original_path)
     filename = "#{File.basename(package_name)}-#{version}-#{cache_digest(package_name, version, stat)}.tgz"
@@ -153,6 +162,11 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # The FULL package name — basename keying once served one scope's code as
   # another's. Stat identity, so a replaced tarball invalidates the cache
   # without re-hashing the corpus.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @param stat [File::Stat]
+  # @return [String]
   def cache_digest(package_name, version, stat)
     Digest::SHA256.hexdigest([
       package_name,
@@ -166,6 +180,11 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # Where "this package carries nothing to personalize" is written down.
   # Keyed by the package and its source identity alone, never by the
   # licensee — whether a package participates is a fact about the package.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @param stat [File::Stat]
+  # @return [String]
   def plain_marker_path(package_name, version, stat)
     digest = Digest::SHA256.hexdigest([
       package_name, version, stat.mtime.to_f, stat.size
@@ -174,6 +193,8 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   end
 
   # Stable across processes, so a restart does not orphan the cache.
+  #
+  # @return [String]
   def personalization_digest
     @personalization_digest ||= Digest::SHA256.hexdigest([
       @license_key,

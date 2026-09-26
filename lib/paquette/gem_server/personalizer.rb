@@ -4,46 +4,37 @@ require "digest"
 require "json"
 require "measurometer"
 
+# Wraps a gem repository and serves each gem repacked for one licensee —
+# magic comment lines replaced, files injected, the license key stamped
+# into the gemspec metadata — with the repacked gems and their checksums
+# cached on disk.
 class Paquette::GemServer::Personalizer < SimpleDelegator
-  # Here for the day the checksum sidecar's shape has to change: a file that
-  # says "1" can be told apart from whatever comes after it, and one written
-  # before anybody recorded a version cannot. Checked by nothing today — the
-  # reader keys off the fields it needs — which is what lets it cost nothing.
+  # Here for the day the checksum sidecar's shape has to change. Checked by
+  # nothing today — the reader keys off the fields it needs.
   CHECKSUM_SIDECAR_FORMAT_VERSION = 1
 
-  # `files:` is a {path => content} hash written into every gem this
-  # personalizer serves, exactly as GemRepacker takes it. It is what a
-  # per-licensee LICENSE file arrives through: the content is rendered by
-  # the caller, which is the only party that knows who the licensee is, and
-  # handed over already finished.
+  # Two rules make the caching sound, and they are the caller's to keep:
+  # what `files_for:` returns may depend on the gem file and
+  # `personalization_key:` and nothing else, and nil must be a fact about
+  # the file alone — it is remembered per file, never per licensee.
   #
-  # Unlike `magic_comment_replacements`, which rewrites a line inside
-  # **/*.rb, this puts whole files in and adds them to spec.files — so it
-  # can carry a .txt, which a magic comment never could.
-  #
-  # `files_for:` is the per-gem edition of `files:`, for content that
-  # cannot be known before the gem is looked at — a licensee header put
-  # above the agreement each version shipped, which differs gem by gem.
-  # It is called with (gem_name, version, original_path) and returns a
-  # {path => content} hash to inject on top of `files:`, or nil — and nil
-  # means this gem does not participate: it is served byte for byte as it
-  # sits on disk. Without `files_for:` every gem is personalized, which is
-  # what this class always did.
-  #
-  # Two rules make the caching below sound, and they are the caller's to
-  # keep. What `files_for:` returns may depend on the gem file and on
-  # `personalization_key:` and on nothing else — the key is the cache's
-  # name for "who this is for", so anything else the content depends on
-  # (a licensee's name, a ref) belongs in it. And whether it returns nil
-  # at all must be decided by the file alone: nil says the *package* opted
-  # out, which cannot vary by licensee, and is remembered per file so the
-  # question is never asked twice.
-  #
-  # `cache_dir:` is where the personalized gems (and the opt-out markers)
-  # are kept. The default is the system temp directory, which survives as
-  # a default only because it always worked; an application that has a
-  # cache directory of its own should say so, or these accumulate in a
-  # place nothing tends.
+  # @param repository [Paquette::GemServer::GemRepository] the repository
+  #   to wrap
+  # @param license_key [String] stamped into every served gem's metadata
+  # @param magic_comment_replacements [Hash{String => String}] whole
+  #   comment lines to replace in **/*.rb, marker => replacement
+  # @param files [Hash{String => String}] path => content, written into
+  #   every gem and added to spec.files — this is what a per-licensee
+  #   LICENSE file arrives through, rendered by the caller
+  # @param files_for [Proc, nil] the per-gem edition of `files:`, called
+  #   with (gem_name, version, original_path); returns a path => content
+  #   hash injected on top of `files:`, or nil meaning this gem is served
+  #   byte for byte as it sits on disk
+  # @param personalization_key [String, nil] everything the personalized
+  #   bytes depend on beyond the gem itself — a licensee id, a ref
+  # @param cache_dir [String, nil] where personalized gems and opt-out
+  #   markers are kept; defaults to the system temp directory, which an
+  #   application with a cache directory of its own should override
   def initialize(repository, license_key:, magic_comment_replacements: {}, files: {},
     files_for: nil, personalization_key: nil, cache_dir: nil)
     super(repository)
@@ -55,6 +46,9 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     @cache_dir = cache_dir || File.join(Dir.tmpdir, "paquette_personalized")
   end
 
+  # @param gem_name [String]
+  # @param version [String]
+  # @return [String, nil] the path of the personalized (or pass-through) gem
   def gem_file_path(gem_name, version)
     original_path = __getobj__.gem_file_path(gem_name, version)
     return original_path unless original_path && File.exist?(original_path)
@@ -62,36 +56,31 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     personalize_gem(original_path, gem_name, version)
   end
 
-  # The wrapped validator with this personalizer's own identity mixed in,
-  # so one licensee's cached index can never satisfy another's request.
+  # The wrapped validator with this personalizer's identity mixed in, so
+  # one licensee's cached index can never satisfy another's request. The
+  # key is the same digest that names the cached gems on disk, so this is
+  # exactly as strong as that cache; `files_for:` itself is not digested —
+  # a Proc cannot be, and the initializer's contract means it need not be.
   #
-  # The key is `personalization_digest` — the same digest that already
-  # names the personalized gems in the cache directory. That is the
-  # argument for it being enough: if two licensees could collide here,
-  # they would already be colliding on disk, and the second one would be
-  # handed the first one's gem. This validator is therefore exactly as
-  # strong as the personalized-gem cache the class already ships, and it
-  # inherits that cache's contract — what `files_for:` returns may depend
-  # on the gem and on `personalization_key:` and on nothing else, and
-  # anything else the personalized bytes depend on belongs in that key.
-  #
-  # Which is also why `files_for:` itself is not digested: a Proc cannot
-  # be, and the contract exists so that it does not have to be.
+  # @return [String, nil]
   def cache_validator
     inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
     Paquette::GemServer::GemRepository.derive_validator(inner, "personalizer", personalization_digest)
   end
 
   # Every byte this serves is baked for one licensee.
+  #
+  # @return [Boolean]
   def varies_by_caller?
     true
   end
 
-  # The checksum of what this personalizer would hand over: the repacked
-  # gem's, or the underlying one's for a gem served byte for byte. Same
-  # number, same cache, as the `checksum:` field compact_info publishes —
-  # a download ETag that disagreed with the index would make `bundle
-  # install` report a tampered gem.
+  # The checksum of what this personalizer would hand over — an ETag that
+  # disagreed with the index would read as a tampered gem.
+  #
+  # @param gem_name [String]
+  # @param version [String]
+  # @return [String, nil]
   def gem_checksum(gem_name, version)
     original = __getobj__.gem_file_path(gem_name, version)
     served = gem_file_path(gem_name, version)
@@ -105,16 +94,15 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   end
 
   # The wrapped repository's lines with the checksum swapped where the
-  # served file differs from the one on disk, and only there. The other
-  # fields of a line still describe the gem — repacking touches neither
-  # dependencies nor requirements — so re-deriving them from the spec per
-  # request, as this used to, paid the whole-corpus parse the sidecar
-  # cache underneath exists to avoid.
+  # served file differs from the one on disk, and only there — a repack
+  # touches no other field.
+  #
+  # @param gem_name [String]
+  # @return [Array<String>]
   def compact_info(gem_name)
     Measurometer.instrument("paquette.gem_personalizer.compact_info") do
       __getobj__.compact_info(gem_name).map do |line|
-        # The version column, platform suffix and all — the same
-        # first-column read ReadGatedRepository filters these lines by.
+        # The version column, platform suffix and all.
         version = line.split(" ", 2).first
         original = __getobj__.gem_file_path(gem_name, version)
         served = gem_file_path(gem_name, version)
@@ -127,26 +115,15 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
 
   private
 
-  # Keyed by everything that goes INTO the gem, not by the gem alone.
+  # The cache is keyed by everything that goes INTO the gem, never the gem
+  # alone — a per-licensee path is what keeps two racing licensees from
+  # receiving each other's copy. Consulted before the gem is ever opened:
+  # compact_info asks per version per request.
   #
-  # It used to be "#{gem_name}-#{version}-personalized.gem", which is the
-  # same path for every licensee: two of them racing on one download meant
-  # one customer receiving the other's copy, and what is personalized into
-  # it is by definition the other customer's. The digest below is what makes
-  # the cache a cache rather than a collision — same inputs, same file;
-  # different licensee, different file.
-  #
-  # It is also the reason repacking twice is cheap: identical inputs produce
-  # a byte-identical gem, so the second request for the same licensee finds
-  # the file already there and the checksum in the compact index still
-  # describes it.
-  #
-  # The caches are consulted before the gem is ever opened, and that order
-  # is load-bearing: compact_info above asks this question per line, so a
-  # registry serving an index asks it per version per request, and an
-  # answer that opened the gem each time would cost an unpack per line.
-  # The first request per gem file pays the look inside; every one after
-  # is two stat calls.
+  # @param original_gem_path [String]
+  # @param gem_name [String]
+  # @param version [String]
+  # @return [String]
   def personalize_gem(original_gem_path, gem_name, version)
     stat = File.stat(original_gem_path)
     personalized_path = cache_path(gem_name, version, stat)
@@ -177,12 +154,13 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     repack(original_gem_path, personalized_path, dynamic_files)
   end
 
-  # A directory we make here and give back here. The block form removes
-  # exactly what it created, so nothing in this method ever deletes a path
-  # somebody else chose — which is the only safe rule when the path came
-  # out of another object. Reaching for File.dirname of whatever you were
-  # handed and deleting it recursively is how a tidy-up ends up walking
-  # the system temp directory.
+  # The block form of mktmpdir removes exactly what it created, so nothing
+  # in this method ever deletes a path somebody else chose.
+  #
+  # @param original_gem_path [String]
+  # @param personalized_path [String]
+  # @param dynamic_files [Hash{String => String}]
+  # @return [String]
   def repack(original_gem_path, personalized_path, dynamic_files)
     FileUtils.mkdir_p(@cache_dir)
     Measurometer.instrument("paquette.gem_personalizer.repack") do
@@ -200,20 +178,12 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     personalized_path
   end
 
-  # The SHA256 of a personalized gem, remembered next to it.
+  # The SHA256 of a personalized gem, remembered next to it — the bytes at
+  # that path are fixed for as long as the path exists. Size and mtime are
+  # checked anyway: a stale checksum reads as a tampered gem.
   #
-  # compact_info needs this per version per request, and a personalized gem
-  # is the one thing here that is genuinely large — the corpus this was
-  # written for has versions north of four megabytes, and hashing all of
-  # them again is work whose answer cannot have changed: the file was named
-  # after everything that goes into it, so the bytes at that path are fixed
-  # for as long as the path exists.
-  #
-  # Size and mtime are checked anyway, the same way the repository's own
-  # sidecars check them. A cache directory is a place other things write
-  # too — a half-finished copy, a restored backup — and a stale checksum is
-  # the one failure mode worth spending two stat calls to avoid, because
-  # what it produces is a `bundle install` that reports the gem as tampered.
+  # @param served [String]
+  # @return [String]
   def served_checksum(served)
     Measurometer.instrument("paquette.gem_personalizer.checksum") do
       stat = File.stat(served)
@@ -232,10 +202,16 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
 
   # Alongside the gem rather than inside a directory of its own, so the two
   # are removed together by anything that sweeps this cache by age.
+  #
+  # @param served [String]
+  # @return [String]
   def checksum_sidecar_path(served)
     "#{served}.sha256"
   end
 
+  # @param served [String]
+  # @param stat [File::Stat]
+  # @return [String, nil]
   def read_checksum_sidecar(served, stat)
     fields = JSON.parse(File.read(checksum_sidecar_path(served)))
     return nil unless fields.is_a?(Hash)
@@ -247,14 +223,14 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     nil
   end
 
-  # Written through a tempfile and renamed, because rename within a
-  # directory is atomic and a reader must never see half a digest. Two
-  # writers racing hashed the same immutable file, so the loser's bytes and
-  # the winner's are the same bytes.
+  # Tempfile-and-rename, so a reader never sees half a digest. Failure is
+  # ignored on purpose: an unwritable cache costs a hash per request, not
+  # a failed request.
   #
-  # Failure is ignored on purpose. This is an optimization over a directory
-  # the caller chose, and a cache that cannot be written is a cache that
-  # costs a hash per request — not a request that fails.
+  # @param served [String]
+  # @param stat [File::Stat]
+  # @param checksum [String]
+  # @return [void]
   def write_checksum_sidecar(served, stat, checksum)
     tmp_path = "#{served}.#{Process.pid}.#{rand(2**32).to_s(16)}.sha256.tmp"
     File.write(tmp_path, JSON.generate(
@@ -274,12 +250,20 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
 
   # Whole nanoseconds. Float mtimes lose precision on large timestamps, and
   # this is compared for equality.
+  #
+  # @param stat [File::Stat]
+  # @return [Integer]
   def mtime_ns(stat)
     stat.mtime.to_i * 1_000_000_000 + stat.mtime.nsec
   end
 
   # Stat identity in the name, so a replaced source file misses the cache
   # without anything having to be invalidated.
+  #
+  # @param gem_name [String]
+  # @param version [String]
+  # @param stat [File::Stat]
+  # @return [String]
   def cache_path(gem_name, version, stat)
     digest = Digest::SHA256.hexdigest([
       personalization_digest, stat.mtime.to_f, stat.size
@@ -291,6 +275,11 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   # empty file whose presence is the fact. Keyed by the source identity
   # alone, never by the licensee: whether a gem participates is a fact
   # about the gem.
+  #
+  # @param gem_name [String]
+  # @param version [String]
+  # @param stat [File::Stat]
+  # @return [String]
   def plain_marker_path(gem_name, version, stat)
     digest = Digest::SHA256.hexdigest([stat.mtime.to_f, stat.size].join("\0"))[0, 24]
     File.join(@cache_dir, "#{gem_name}-#{version}-#{digest}.plain")
@@ -298,6 +287,8 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
 
   # Everything this personalizer would write into a gem, as one short hash.
   # Stable across processes, so a restart does not orphan the cache.
+  #
+  # @return [String]
   def personalization_digest
     @personalization_digest ||= Digest::SHA256.hexdigest([
       @license_key,

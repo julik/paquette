@@ -9,19 +9,22 @@ require "measurometer"
 # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
 # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
 class Paquette::NpmRepacker
+  # Raised when a marker survives the pass — see #verify_markers_applied.
   class MarkerNotApplied < StandardError; end
 
+  # Raised for a marker or replacement spanning several lines.
   class MultilineReplacement < StandardError; end
 
   # Binary assets and sourcemaps are copied through untouched.
   SOURCE_EXTENSIONS = %w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze
 
   # One line in, one line out — the rule the whole personalization scheme
-  # rests on, so a pair that cannot honour it is refused rather than bent to
-  # fit. A replacement carrying newlines used to have them flattened to
-  # spaces, which quietly published something other than what the caller
-  # wrote; a marker carrying newlines could never match a single line and
-  # would look like a package that simply had no marker in it.
+  # rests on (a changed line count shifts every sourcemap mapping below it),
+  # so a pair that cannot honour it is refused rather than bent to fit.
+  #
+  # @param replacements [Hash{String => String}]
+  # @return [void]
+  # @raise [MultilineReplacement]
   def self.check_replacements!(replacements)
     replacements.each do |marker, replacement|
       if marker.to_s.match?(/[\r\n]/)
@@ -36,6 +39,14 @@ class Paquette::NpmRepacker
     end
   end
 
+  # One-shot convenience for {#initialize} + {#repack}.
+  #
+  # @param npm_path [String]
+  # @param package_json_extras [Hash{String => Object}]
+  # @param magic_comment_replacements [Hash{String => String}]
+  # @param files [Hash{String => String}]
+  # @param into [String, nil]
+  # @return [String] the path of the repacked tarball
   def self.repack(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block)
     new(
       npm_path,
@@ -46,6 +57,14 @@ class Paquette::NpmRepacker
     ).repack(&block)
   end
 
+  # @param npm_path [String] path of the source tarball
+  # @param package_json_extras [Hash{String => Object}] keys merged into
+  #   package.json
+  # @param magic_comment_replacements [Hash{String => String}] whole comment
+  #   lines to replace, marker => replacement
+  # @param files [Hash{String => String}] files to inject, path relative to
+  #   the package root => content
+  # @param into [String, nil] destination path; a tmpdir when nil
   def initialize(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil)
     self.class.check_replacements!(magic_comment_replacements)
     @npm_path = npm_path
@@ -55,8 +74,10 @@ class Paquette::NpmRepacker
     @into = into
   end
 
-  # The block gets (input_io, output_io, path relative to the package root)
-  # and what it writes becomes the new content.
+  # @yieldparam input [StringIO] an entry's content
+  # @yieldparam output [StringIO] what is written here becomes the new content
+  # @yieldparam relative_path [String] path relative to the package root
+  # @return [String] the path of the repacked tarball
   def repack(&block)
     raise ArgumentError, "NPM package not found: #{@npm_path}" unless File.exist?(@npm_path)
 
@@ -78,16 +99,20 @@ class Paquette::NpmRepacker
 
   private
 
+  # @return [String]
   def destination
     path = @into || File.join(Dir.mktmpdir("npm_repacked"), "#{File.basename(@npm_path, ".tgz")}-repacked.tgz")
     FileUtils.mkdir_p(File.dirname(path))
     path
   end
 
+  # @param entry [Paquette::Tarball::Entry]
+  # @param root [String]
+  # @return [Paquette::Tarball::Entry]
   def rewrite(entry, root, &block)
-    # A tar entry name comes from an uploaded tarball, so it reaches here
-    # before anything has vetted its bytes; a regexp built around it would
-    # raise out of its own compile.
+    # delete_prefix, not a regexp: a tar entry name comes from an uploaded
+    # tarball, so it reaches here before anything has vetted its bytes, and
+    # a regexp built around it would raise out of its own compile.
     relative_path = entry.name.delete_prefix("#{root}/")
 
     content = if block
@@ -106,17 +131,19 @@ class Paquette::NpmRepacker
     with_content(entry, content)
   end
 
+  # @param relative_path [String]
+  # @return [Boolean]
   def replaceable?(relative_path)
     @magic_comment_replacements.any? && SOURCE_EXTENSIONS.include?(File.extname(relative_path))
   end
 
-  # A whole comment line is replaced by a whole comment line. Sourcemaps
+  # A whole comment line is replaced by a whole comment line: sourcemaps
   # restart their column counter at every line, so rewriting one line cannot
-  # disturb the mappings on any other; keeping the line a comment means no
-  # mapped token sits on the one line that did change.
-  # Line-wise over every source file in the package: the one part of a repack
-  # whose cost is set by how much code the package ships rather than by how
-  # many files it has.
+  # disturb the mappings on any other.
+  #
+  # @param content [String]
+  # @param relative_path [String]
+  # @return [String]
   def apply_magic_comment_replacements(content, relative_path)
     text = content.dup.force_encoding(Encoding::UTF_8)
     return content unless text.valid_encoding?
@@ -138,13 +165,14 @@ class Paquette::NpmRepacker
 
   # A marker still present after the pass was one the line-wise match could
   # not reach — `esbuild --minify` pulls a legal comment onto the end of a
-  # code line, and the package would then be served with no license key in it
-  # and nothing to say so. A marker that is simply absent is fine: most
-  # packages in a corpus carry no marker at all.
+  # code line — and the package would then be served with no license key in
+  # it and nothing to say so. Replacing it mid-line instead would shift
+  # sourcemap columns, which is exactly what the line-wise rule avoids.
   #
-  # Replacing it mid-line instead is not the fix. That would put the license
-  # text on a line with mapped tokens, which is the one edit that does shift
-  # sourcemap columns.
+  # @param text [String]
+  # @param relative_path [String]
+  # @return [void]
+  # @raise [MarkerNotApplied]
   def verify_markers_applied(text, relative_path)
     @magic_comment_replacements.each_key do |marker|
       next unless text.include?(marker)
@@ -155,6 +183,9 @@ class Paquette::NpmRepacker
     end
   end
 
+  # @param entries [Array<Paquette::Tarball::Entry>]
+  # @param root [String]
+  # @return [Array<Paquette::Tarball::Entry>]
   def apply_package_json_extras(entries, root)
     return entries if @package_json_extras.empty?
 
@@ -171,6 +202,10 @@ class Paquette::NpmRepacker
 
   # Injected files inherit the package's oldest mtime, keeping the tarball
   # independent of when they were added.
+  #
+  # @param entries [Array<Paquette::Tarball::Entry>]
+  # @param root [String]
+  # @return [Array<Paquette::Tarball::Entry>]
   def inject_files(entries, root)
     return entries if @files.empty?
 
@@ -185,6 +220,9 @@ class Paquette::NpmRepacker
     by_name.values
   end
 
+  # @param entry [Paquette::Tarball::Entry]
+  # @param content [String]
+  # @return [Paquette::Tarball::Entry]
   def with_content(entry, content)
     Paquette::Tarball::Entry.new(name: entry.name, mode: entry.mode, mtime: entry.mtime, content: content)
   end

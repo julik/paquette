@@ -2,59 +2,30 @@ require "rack/auth/abstract/handler"
 require "rack/auth/abstract/request"
 require "measurometer"
 
-# Rack authentication handler that extracts an opaque access token from either
-# a Bearer header or a Basic auth header (token-as-username). This makes the
-# server compatible with any HTTP client — machine-oriented clients like
-# Bundler, npm, pip and curl that only speak Basic auth can authenticate the
-# same way as clients that send a proper Bearer token.
-#
-# Accepting the token as the Basic auth username is a trick popularised by
-# GitHub's package registries and personal access tokens. Most package manager
-# CLIs configure credentials as a username/password pair and transmit them via
-# Basic auth — there is no built-in mechanism to send a Bearer header. By
-# treating the Basic username as the token (with an empty or sentinel password)
-# the customer can drop their token straight into their package manager config:
-#
-#   # Bundler
-#   bundle config set --global gems.example.com "pqt_token_here:"
-#
-#   # npm .npmrc
-#   //registry.example.com/:_auth=<base64 of "pqt_token_here:">
-#
-# The password field is either empty or the literal "x-oauth-token" — a
-# convention from GitHub that exists because some HTTP clients refuse to send
-# an empty password.
-#
-# Accepted schemes:
-#
-#   Authorization: Bearer <token>
-#   Authorization: Basic base64("<token>:")
-#   Authorization: Basic base64("<token>:x-oauth-token")
-#
-# Usage:
-#
-#   # The block receives the raw token string and should return an identity
-#   # object (user, team, account — whatever makes sense) or a falsy value
-#   # to reject the request. The identity is stored in env["paquette.identity"].
-#
-#   use Paquette::TokenAuthorization, "Paquette" do |token|
-#     AccessToken.find_by(secret: token)&.owner
-#   end
-#
+# Rack authentication handler that extracts an opaque access token from
+# either a Bearer header or a Basic auth header with the token as username
+# (the GitHub registry convention) — so machine clients like Bundler and npm,
+# which only speak Basic auth, can authenticate with just a token in their
+# config. The resolved identity is stored in env["paquette.identity"].
 class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
   prepend Paquette::RegexpTimeout
 
+  # Some HTTP clients refuse to send an empty Basic auth password; GitHub's
+  # convention is this literal in its place.
   BEARER_SENTINEL = "x-oauth-token"
 
-  # @param app  [#call]   the downstream Rack app
+  # @param app [#call] the downstream Rack app
   # @param realm [String] the authentication realm (used in WWW-Authenticate)
-  # @yield [token] block that receives the token string and returns an
-  #   identity object (truthy) or nil/false to reject
+  # @yield [token] receives the raw token string on every request
+  # @yieldreturn [Object, nil] an identity object (user, team, account), or
+  #   a falsy value to reject the request
   def initialize(app, realm = "Paquette", &authenticator)
     super(app, realm)
     @authenticator = authenticator || ->(_token) { true }
   end
 
+  # @param env [Hash] the Rack env
+  # @return [Array] a Rack response triplet
   def call(env)
     auth = Request.new(env)
 
@@ -78,11 +49,13 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
 
   private
 
+  # @return [String]
   def challenge
     %(Bearer realm="#{realm}")
   end
 
   class Request < Rack::Auth::AbstractRequest
+    # @return [String, nil] the token, whichever scheme carried it
     def token
       return @token if defined?(@token)
 
@@ -97,6 +70,7 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
       end
     end
 
+    # @return [Array(String, String), Array(String)] username and password
     def credentials
       @credentials ||= params.unpack1("m").split(":", 2)
     end

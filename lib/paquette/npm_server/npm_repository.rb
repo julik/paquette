@@ -7,38 +7,58 @@ class Paquette::NpmServer::NpmRepository
     raise NotImplementedError, "NpmRepository is an abstract class"
   end
 
+  # @return [Array<String>]
   def package_names
     raise NotImplementedError, "Subclasses must implement package_names"
   end
 
+  # @return [Array<Array(String, String)>] [name, version] pairs
   def package_versions
     raise NotImplementedError, "Subclasses must implement package_versions"
   end
 
+  # @param package_name [String]
+  # @return [Array<String>]
   def versions_for_package(package_name)
     raise NotImplementedError, "Subclasses must implement versions_for_package"
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String, nil] the path of the .tgz file
   def package_file_path(package_name, version)
     raise NotImplementedError, "Subclasses must implement package_file_path"
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Boolean]
   def package_exists?(package_name, version)
     raise NotImplementedError, "Subclasses must implement package_exists?"
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash, nil] the version's package.json document
   def package_info(package_name, version)
     raise NotImplementedError, "Subclasses must implement package_info"
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash{String => String}]
   def package_dependencies(package_name, version)
     raise NotImplementedError, "Subclasses must implement package_dependencies"
   end
 
+  # @param package_name [String]
+  # @return [Hash, nil] the packument
   def package_metadata(package_name)
     raise NotImplementedError, "Subclasses must implement package_metadata"
   end
 
+  # @param package_name [String]
+  # @return [Hash{String => String}]
   def dist_tags(package_name)
     raise NotImplementedError, "Subclasses must implement dist_tags"
   end
@@ -51,52 +71,66 @@ class Paquette::NpmServer::NpmRepository
   # ---------------------------------------------------------------------
 
   # A short string that changes whenever anything this repository would
-  # serve changes, including anything a wrapper would change about it, or
-  # nil for "do not cache this".
+  # serve changes, or nil for "do not cache this". A packument replayed to
+  # the wrong licensee carries integrity hashes that cannot match the
+  # tarball they download — npm treats that as tampering.
   #
-  # The npm side needs this more badly than the gem side does. A gem
-  # Personalizer changes the bytes of a .gem and the checksum an index
-  # publishes for it; an npm Personalizer changes the *packument itself*,
-  # because dist.integrity is computed per licensee and the document
-  # carries one per version. A packument cached under a
-  # licensee-independent key and replayed to a second licensee hands them
-  # integrity hashes that cannot match the tarball they then download, and
-  # npm treats that as tampering and hard-fails the install.
+  # @return [String, nil]
   def cache_validator
     nil
   end
 
-  # Whether two callers can get different answers out of this repository,
-  # deciding whether an anonymous response may be `public`. True is the
-  # safe default; see GemRepository#varies_by_caller?.
+  # Whether two callers can get different answers out of this repository —
+  # true is the safe default; see GemRepository#varies_by_caller?.
+  #
+  # @return [Boolean]
   def varies_by_caller?
     true
   end
 
+  # @param binary_data [String] the tarball bytes
+  # @param dist_tags [Hash{String => String}]
+  # @return [Hash] the stored version's info
   def add_package(binary_data, dist_tags: {})
     raise NotImplementedError, "Subclasses must implement add_package"
   end
 
+  # @param package_name [String]
+  # @param version [String]
+  # @return [void]
   def yank_package(package_name, version)
     raise NotImplementedError, "Subclasses must implement yank_package"
   end
 
   # The registry-convention shape; lockfiles record it verbatim.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String]
   def self.tarball_path(package_name, version)
     "/#{package_name}/-/#{File.basename(package_name)}-#{version}.tgz"
   end
 
   # Drops the scope: a scoped package lives in a directory named for it.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [String]
   def self.tarball_filename(package_name, version)
     "#{File.basename(package_name)}-#{version}.tgz"
   end
 
+  # @param package_name [String]
+  # @return [Boolean]
   def self.scoped?(package_name)
     package_name.to_s.start_with?("@")
   end
 
   # Tighter than npm's rules: nothing that could escape the packages directory.
   SEGMENT = /\A[a-z0-9][a-z0-9._-]*\z/
+
+  # @param package_name [String]
+  # @return [Boolean]
   def self.valid_package_name?(package_name)
     name = package_name.to_s
     return false if name.empty? || name.length > 214
@@ -109,49 +143,57 @@ class Paquette::NpmServer::NpmRepository
     end
   end
 
-  # The version is half of every tarball filename, so it is a path
-  # component just as much as the name is — and it comes from the same
-  # place, a package.json the uploader wrote. Without this, a version of
-  # "0.0.0/../../../../etc/thing" writes the upload wherever it points.
-  #
-  # Tighter than semver, and deliberately so: semver's grammar exists to
-  # decide what sorts before what, not to decide what is safe to put in a
-  # path. Everything a real version needs is here — digits, dots, a "-"
-  # prerelease tail, "+build" metadata — and "/", "\", "%", NUL and a
-  # leading dot are not. \A..\z rather than ^..$ so a trailing newline
-  # cannot ride along, and bounded because no version is 64 characters.
+  # The version is half of every tarball filename — a path component out
+  # of a package.json the uploader wrote. Tighter than semver, which
+  # decides what sorts before what, not what is safe in a path.
   VERSION = /\A[0-9][0-9A-Za-z.+-]{0,63}\z/
+
+  # @param version [String]
+  # @return [Boolean]
   def self.valid_version?(version)
     string = version.to_s
     # A percent-decoded path segment can be bytes that are not valid
-    # UTF-8, and a regexp run over those raises ArgumentError rather than
-    # failing to match. Refusing them here is what keeps a caller from
-    # having to rescue around a predicate.
+    # UTF-8, and a regexp run over those raises rather than failing to
+    # match.
     return false unless string.valid_encoding?
 
     VERSION.match?(string)
   end
 
   # Not Gem::Version: it mangles prereleases and rejects "+build" metadata.
+  #
+  # @param versions [Array<String>]
+  # @return [Array<String>]
   def self.sort_versions(versions)
     versions.sort { |a, b| compare_versions(a, b) }
   end
 
+  # @param versions [Array<String>]
+  # @return [String, nil]
   def self.max_version(versions)
     sort_versions(versions).last
   end
 
+  # @param version [String]
+  # @return [Boolean]
   def self.prerelease?(version)
     !split_version(version)[1].empty?
   end
 
   # Newest stable release, or plain installs would get prereleases.
+  #
+  # @param versions [Array<String>]
+  # @return [String, nil]
   def self.max_release_version(versions)
     stable = versions.reject { |version| prerelease?(version) }
     max_version(stable.empty? ? versions : stable)
   end
 
   # Semver: a prerelease sorts *below* the same version without one.
+  #
+  # @param a [String]
+  # @param b [String]
+  # @return [Integer]
   def self.compare_versions(a, b)
     release_a, pre_a = split_version(a)
     release_b, pre_b = split_version(b)
@@ -166,6 +208,9 @@ class Paquette::NpmServer::NpmRepository
     compare_prerelease(pre_a, pre_b)
   end
 
+  # @param version [String]
+  # @return [Array(Array<Integer>, Array<String>)] release segments and
+  #   prerelease identifiers
   def self.split_version(version)
     core, _, prerelease = version.to_s.split("+").first.to_s.partition("-")
     release = core.split(".").map { |part| part.to_i }
@@ -174,6 +219,9 @@ class Paquette::NpmServer::NpmRepository
     [release, prerelease.empty? ? [] : prerelease.split(".")]
   end
 
+  # @param a [Array<String>]
+  # @param b [Array<String>]
+  # @return [Integer]
   def self.compare_prerelease(a, b)
     a.zip(b).each do |left, right|
       # A longer chain wins on an equal prefix: 1.0.0-alpha < 1.0.0-alpha.1
@@ -197,6 +245,12 @@ class Paquette::NpmServer::NpmRepository
   end
 
   # Passed through whole: a curated subset breaks whichever field it forgot.
+  #
+  # @param package_json [Hash]
+  # @param package_name [String]
+  # @param version [String]
+  # @param dist [Hash]
+  # @return [Hash]
   def self.version_doc(package_json, package_name, version, dist)
     package_json.merge(
       "name" => package_name,

@@ -31,6 +31,32 @@ end
 # Standard tasks
 require "standard/rake"
 
+# YARD and sord are in the :docs Gemfile group; the doc tasks only exist
+# when that group is installed.
+begin
+  require "yard"
+
+  YARD::Rake::YardocTask.new(:yard) do |t|
+    t.files = ["lib/**/*.rb"]
+  end
+
+  desc "Generate RBI signatures from YARD tags into rbi/paquette.rbi"
+  task :rbi do
+    mkdir_p "rbi"
+    sh "bundle exec sord --no-sord-comments rbi/paquette.rbi"
+  end
+
+  desc "Generate RBS signatures from YARD tags into sig/paquette.rbs"
+  task :rbs do
+    mkdir_p "sig"
+    sh "bundle exec sord --no-sord-comments sig/paquette.rbs"
+  end
+
+  desc "Generate docs and type signatures"
+  task docs: [:yard, :rbi, :rbs]
+rescue LoadError
+end
+
 # Clean task
 task :clean do
   # Remove any temporary files if needed

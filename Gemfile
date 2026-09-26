@@ -4,6 +4,12 @@ gemspec
 
 gem "puma"
 
+group :docs do
+  gem "yard"
+  # Generates RBI and RBS signature files from the YARD type tags.
+  gem "sord"
+end
+
 group :test do
   # The RubyGems compact-index conformance suite, an external RSpec CLI that
   # drives a live server over HTTP. Only `rake test:conformance` shells out to

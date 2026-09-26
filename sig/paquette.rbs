@@ -1,0 +1,3208 @@
+module Paquette
+  DEFAULT_REGEXP_TIMEOUT: untyped
+  MAX_PUSH_SIZE_BYTES: untyped
+  VERSION: untyped
+
+  # The regexp timeout every Rack app in this gem installs for the duration
+  # of a request, in seconds. `nil` is "no ceiling".
+  def self.regexp_timeout: () -> Float?
+
+  # The regexp timeout every Rack app in this gem installs for the duration
+  # of a request, in seconds. `nil` is "no ceiling".
+  def self.regexp_timeout=: (Float? value) -> Float?
+
+  # A small method-and-pattern route table with a per-request matching budget.
+  # Both servers dispatch through one of these.
+  class Routes
+    DEFAULT_MATCH_BUDGET: untyped
+
+    # _@param_ `match_budget` — seconds allowed for matching the whole table
+    def self.draw: (?match_budget: Float) -> Routes
+
+    # _@param_ `routes`
+    # 
+    # _@param_ `match_budget`
+    def initialize: (::Array[Route] routes, ?match_budget: Float) -> void
+
+    # _@param_ `request`
+    def match: (Rack::Request request) -> Route?
+
+    # _@param_ `route`
+    # 
+    # _@param_ `instance`
+    # 
+    # _@param_ `request`
+    # 
+    # _@return_ — a Rack response triplet
+    def perform_action: (Route route, Object _instance, Rack::Request request) -> ::Array[untyped]
+
+    # Recognize without performing: only the path is read, never the query
+    # parser. A matched path whose segments fail the UTF-8 check still gets
+    # its name, with empty params.
+    # 
+    # _@param_ `request`
+    # 
+    # _@return_ — nil for a request no route wants
+    def recognize: (Rack::Request request) -> Recognition?
+
+    def now: () -> Float
+
+    # For the linear_time? test; the request path does not need it.
+    attr_reader routes: ::Array[Route]
+
+    # Raised when the fault is in the request's own bytes rather than in
+    # anything it asked for; whichever server is dispatching turns it into a
+    # 400.
+    class BadRequest < StandardError
+    end
+
+    # Rack could not parse the request. See Route#query_params.
+    class MalformedRequest < Paquette::Routes::BadRequest
+    end
+
+    # Route matching ran past its budget. See Routes#match.
+    class MatchBudgetExceeded < Paquette::Routes::BadRequest
+    end
+
+    # One route: an HTTP method, a Mustermann pattern and a handler block.
+    class Route
+      # _@param_ `method` — the HTTP method, uppercase
+      # 
+      # _@param_ `pattern` — a Mustermann pattern string
+      # 
+      # _@param_ `block` — the handler
+      def initialize: (String method, String pattern, Proc block) -> void
+
+      # _@param_ `request`
+      def match?: (Rack::Request request) -> bool
+
+      # Rack::Builder#map hands the mount point itself over with an empty
+      # PATH_INFO — which is not a path, it is the root of the mount, where
+      # the index page lives.
+      # 
+      # _@param_ `request`
+      def path_of: (Rack::Request request) -> String
+
+      # Mustermann unescapes %xx, so a segment can arrive as invalid UTF-8 —
+      # on which every regexp a handler runs raises instead of failing to
+      # match. Refused at the door.
+      # 
+      # _@param_ `request`
+      # 
+      # _@return_ — the pattern's captures
+      def params: (Rack::Request request) -> ::Hash[String, Object]
+
+      # _@param_ `instance` — the server instance the block runs against
+      # 
+      # _@param_ `request`
+      # 
+      # _@return_ — a Rack response triplet
+      def perform_action: (Object _instance, Rack::Request request) -> ::Array[untyped]
+
+      # _@param_ `instance`
+      # 
+      # _@param_ `request`
+      # 
+      # _@return_ — a Rack response triplet
+      def call_block: (Object _instance, Rack::Request request) -> ::Array[untyped]
+
+      # Rack parses the query string *and* the body to answer #params, and a
+      # body that does not match its Content-Type makes it raise — the
+      # client's fault, not a 500. The bare EOFError is the multipart
+      # parser's, untagged, for a body shorter than its Content-Length.
+      # 
+      # _@param_ `request`
+      def query_params: (Rack::Request request) -> ::Hash[String, Object]
+
+      # The block only gets the keywords it declares: a client's stray query
+      # parameter (npm sends ?write=true) must not crash it with ArgumentError.
+      # 
+      # _@param_ `params`
+      def acceptable: (::Hash[Symbol, Object] params) -> ::Hash[Symbol, Object]
+
+      attr_reader method: String
+
+      attr_reader pattern: Mustermann::Pattern
+
+      attr_reader block: Proc
+
+      # The pattern as written, not as matched — interpolating the matched
+      # path would open a new metric per gem name in the corpus.
+      attr_reader metric_name: String
+    end
+
+    # The DSL object yielded by {Routes.draw}.
+    class RouteBuilder
+      # _@param_ `routes`
+      def initialize: (::Array[Route] routes) -> void
+
+      # _@param_ `pattern`
+      def get: (String pattern) -> void
+
+      # _@param_ `pattern`
+      def post: (String pattern) -> void
+
+      # _@param_ `pattern`
+      def put: (String pattern) -> void
+
+      # _@param_ `pattern`
+      def delete: (String pattern) -> void
+
+      # _@param_ `pattern`
+      def patch: (String pattern) -> void
+    end
+
+    # What a request would dispatch to, named. `name` is the route's
+    # metric_name; `params` is what the pattern extracted, symbol-keyed.
+    # 
+    # @!attribute name
+    #   @return [String]
+    # @!attribute params
+    #   @return [Hash{Symbol => Object}]
+    class Recognition < Data
+      attr_accessor name: String
+
+      attr_accessor params: ::Hash[Symbol, Object]
+    end
+  end
+
+  # Reading and writing of npm tarballs, hand-rolled rather than built on
+  # Gem::Package's TarWriter/TarReader: a repack must come out byte-identical
+  # (npm checks dist.integrity), and TarWriter can neither take the entry
+  # mtime as an argument nor emit a PAX header for an over-long path.
+  module Tarball
+    BLOCK_SIZE: untyped
+    GZIP_MAGIC: untyped
+    GZIP_DEFLATE: untyped
+    GZIP_OS_UNKNOWN: untyped
+
+    # Yields every file entry in the tarball.
+    # 
+    # _@param_ `tarball_path`
+    # 
+    # _@return_ — an Enumerator when no block is given
+    def self.each_entry: (String tarball_path) ?{ (Entry entry) -> void } -> ::Enumerator[Entry]?
+
+    # _@param_ `tarball_path`
+    def self.entries: (String tarball_path) -> ::Array[Entry]
+
+    # Finds the manifest by basename under the root: a `git archive` tarball
+    # may not use "package".
+    # 
+    # _@param_ `tarball_path`
+    # 
+    # _@return_ — the parsed package.json
+    def self.package_json: (String tarball_path) -> ::Hash[untyped, untyped]?
+
+    # _@param_ `records` — the body of a PAX "x" entry
+    # 
+    # _@return_ — the "path" record's value
+    def self.pax_path: (String records) -> String?
+
+    # ASCII-8BIT bytes make JSON.generate raise; scrub rather than 500 the metadata.
+    # 
+    # _@param_ `content`
+    def self.as_text: (String content) -> String
+
+    # _@param_ `tarball_path`
+    # 
+    # _@return_ — the first path segment of the first entry
+    def self.root_dir: (String tarball_path) -> String?
+
+    # Writes a gzipped tarball. Entries are sorted by name so caller
+    # ordering cannot change the bytes.
+    # 
+    # _@param_ `dest_path`
+    # 
+    # _@param_ `entries`
+    # 
+    # _@return_ — dest_path
+    def self.write: (String dest_path, ::Array[Entry] entries) -> String
+
+    # Gzip with MTIME zero and OS "unknown". Reproducibility holds per zlib
+    # build only, so several Paquettes behind one load balancer must share a
+    # zlib.
+    # 
+    # _@param_ `data`
+    def self.gzip: (String data) -> String
+
+    # _@param_ `tarball_path`
+    # 
+    # _@return_ — :shasum (SHA1 hex) and :integrity
+    # (SRI sha512)
+    def self.integrity: (String tarball_path) -> ::Hash[Symbol, String]
+
+    # uid/gid/uname/gname are zeroed: they describe the packer, not the package.
+    # 
+    # _@return_ — one 512-byte ustar header block
+    def self.header_for: (
+                           untyped name,
+                           untyped mode,
+                           untyped mtime,
+                           untyped size,
+                           ?typeflag: untyped
+                         ) -> String
+
+    def self.write_field: (
+                            untyped header,
+                            untyped offset,
+                            untyped length,
+                            untyped value
+                          ) -> void
+
+    # ustar's prefix/name split; nil when no split works (PAX header instead).
+    # 
+    # _@param_ `name`
+    def self.split_name: (String name) -> [String, String]?
+
+    # _@param_ `name`
+    def self.ustar_representable?: (String name) -> bool
+
+    # Also written, or a package that stored fine would fail once personalized.
+    # 
+    # _@param_ `entry`
+    def self.pax_header_for: (Entry entry) -> String
+
+    # "LENGTH key=value\n"; LENGTH counts its own digits, so grow until stable.
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `value`
+    def self.pax_record: (String key, String value) -> String
+
+    # _@param_ `name`
+    def self.pax_header_name: (String name) -> String
+
+    # Only the executable bit survives; anything else is the packer's umask.
+    # 
+    # _@param_ `mode`
+    def self.normalized_mode: (Integer mode) -> Integer
+
+    # Raised for anything that cannot be read as a gzipped tarball.
+    class MalformedTarball < StandardError
+    end
+
+    # Raised when a value does not fit its ustar header field.
+    class NameTooLong < StandardError
+    end
+
+    # @!attribute name
+    #   @return [String]
+    # @!attribute mode
+    #   @return [Integer]
+    # @!attribute mtime
+    #   @return [Integer]
+    # @!attribute content
+    #   @return [String]
+    class Entry < Struct
+      attr_accessor name: String
+
+      attr_accessor mode: Integer
+
+      attr_accessor mtime: Integer
+
+      attr_accessor content: String
+    end
+  end
+
+  # Verifies the one-time password on a publishing request. Protocol specifics
+  # (which header carries the code, what a refusal looks like on the wire) live
+  # in the `dialect:` collaborator each server class supplies — see
+  # GemServer.otp_gate and NpmServer.otp_gate.
+  class OtpGate
+    # _@param_ `secret` — the TOTP secret
+    # 
+    # _@param_ `issuer` — the TOTP issuer name
+    # 
+    # _@param_ `dialect` — answers `code_in(env)` with the code the protocol's header carried (or nil), and `otp_missing` / `otp_rejected`, each a Rack response triplet
+    # 
+    # _@param_ `drift` — allowed clock drift in seconds, both directions
+    def initialize: (
+                      secret: String,
+                      issuer: String,
+                      dialect: Object,
+                      ?drift: Integer
+                    ) -> void
+
+    # _@param_ `env` — the Rack env
+    def verify: (::Hash[untyped, untyped] env) -> Outcome
+
+    # What the gate decided. `reason` is a short machine-readable word for a
+    # log line or a metric tag; `response` is the ready Rack refusal, and its
+    # absence is the authorization.
+    # 
+    # @!attribute reason
+    #   @return [String]
+    # @!attribute response
+    #   @return [Array, nil] a Rack response triplet, or nil when authorized
+    class Outcome < Data
+      def authorized?: () -> bool
+
+      attr_accessor reason: String
+
+      # _@return_ — a Rack response triplet, or nil when authorized
+      attr_accessor response: ::Array[untyped]?
+    end
+  end
+
+  # Narrows a URL that came out of an uploaded package to the shapes safe to
+  # hand to a caller who will render it as a link: an absolute http(s) URL with
+  # a host, and nothing else. Package metadata is attacker-controlled, and the
+  # embedding application's portal will render these values.
+  module SafeUrl
+    # Returns the value unchanged when it is an absolute http(s) URL with a
+    # non-empty host, `nil` otherwise. Never raises: the field can carry bytes
+    # that are not valid UTF-8, on which URI's parser raises rather than
+    # declining to match.
+    # 
+    # _@param_ `value` — the published field value
+    # 
+    # _@return_ — the original string byte for byte — this is a
+    # filter, not a rewriter
+    def http_url: (Object value) -> String?
+
+    # Returns the value unchanged when it is an absolute http(s) URL with a
+    # non-empty host, `nil` otherwise. Never raises: the field can carry bytes
+    # that are not valid UTF-8, on which URI's parser raises rather than
+    # declining to match.
+    # 
+    # _@param_ `value` — the published field value
+    # 
+    # _@return_ — the original string byte for byte — this is a
+    # filter, not a rewriter
+    def self.http_url: (Object value) -> String?
+  end
+
+  # Rack app serving a RubyGems registry — compact index, legacy Marshal
+  # indexes, downloads, push and yank — over any GemRepository stack.
+  class GemServer
+    include Paquette::RegexpTimeout
+    include Paquette::ConditionalGet
+    NAME_CHAR: untyped
+    VERSION_COLUMN: untyped
+    GEM_SPEC_NAME: untyped
+    MAX_GEM_SPEC_NAME_BYTES: untyped
+    GEM_FILE_EXTENSION: untyped
+    COMPACT_INDEX_CONTENT_TYPE: untyped
+    DEFAULT_BLURB: untyped
+    EMPTY_CORPUS_CREATED_AT: untyped
+
+    # What a request would dispatch to, without dispatching it — for callers
+    # that must name a request (a monitoring action, a log field) without
+    # re-implementing the routing table. Only the path is read.
+    # 
+    # _@param_ `env` — the Rack env
+    def self.route_for: (::Hash[untyped, untyped] env) -> Paquette::Routes::Recognition?
+
+    # An OtpGate that reads and refuses the way this server's publishing
+    # client does — an application only brings the secret.
+    # 
+    # _@param_ `secret`
+    # 
+    # _@param_ `issuer`
+    # 
+    # _@param_ `drift`
+    def self.otp_gate: (secret: String, issuer: String, ?drift: Integer) -> Paquette::OtpGate
+
+    # "zip_kit-6.2.1.gem" into ["zip_kit", "6.2.1"] — the one dash rule;
+    # nothing outside this class should guess at it with a regex of its own.
+    # 
+    # _@param_ `gem_filename`
+    # 
+    # _@return_ — nil for a filename that is not one
+    def self.split_gem_filename: (String gem_filename) -> [String, String]?
+
+    # "zip_kit-6.2.1" into ["zip_kit", "6.2.1"] — the same split without the
+    # extension, so there is one dash rule and not two.
+    # 
+    # _@param_ `gem_spec_name`
+    def self.split_gem_spec_name: (String gem_spec_name) -> [String, String]?
+
+    # "1.0.0-java" into ["1.0.0", "java"], a bare column into ["1.0.0",
+    # "ruby"]. A published version string can never contain a dash
+    # (Gem::Version rewrites "-" into ".pre." on construction), so the first
+    # dash is always the one the platform was joined on.
+    # 
+    # _@param_ `version_column`
+    # 
+    # _@return_ — version and platform
+    def self.split_version_column: (String version_column) -> [String, String]
+
+    # The other direction, exactly as Gem::Specification#full_name has it:
+    # the plain build is the one whose platform is not written down.
+    # 
+    # _@param_ `version`
+    # 
+    # _@param_ `platform`
+    def self.version_column: (String version, String? platform) -> String
+
+    # Reads, writes and yanks all flow through the repository stack the
+    # caller assembled, typically constructed per request.
+    # 
+    # _@param_ `repository` — the repository stack to serve
+    # 
+    # _@param_ `placeholder_app` — the Rack app answering the root path
+    # 
+    # _@param_ `max_push_bytes` — the largest push this server accepts; nil removes the cap, which is a decision to make knowingly
+    # 
+    # _@param_ `shared_caching` — false keeps every response `private`, as if every request carried a credential — set it when you authorize by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
+    def initialize: (
+                      Paquette::GemServer::GemRepository repository,
+                      ?placeholder_app: untyped,
+                      ?max_push_bytes: Integer?,
+                      ?shared_caching: bool
+                    ) -> void
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # _@param_ `env`
+    # 
+    # _@return_ — a Rack response triplet
+    def dispatch: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # One entry per name+version+platform, in the shape rubygems.org serves.
+    # The platform comes out of the version column, not the spec — a spec
+    # read here would cost a tar walk per version on a hot Bundler path.
+    # 
+    # _@param_ `gems`
+    # 
+    # _@param_ `as` — :json or :marshal
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_dependencies: ((String | ::Array[untyped])? gems, as: Symbol) -> ::Array[untyped]
+
+    # One spec read per version in the corpus — the cost grows with the
+    # corpus, not with the request.
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_versions: () -> ::Array[untyped]
+
+    # Every `*_uri` key filtered through SafeUrl; the rest passes through,
+    # since gemspec_extras can carry anything an allowlist would eat.
+    # 
+    # _@param_ `metadata`
+    def safe_metadata: (Object metadata) -> ::Hash[untyped, untyped]
+
+    # _@return_ — a Rack response triplet
+    def handle_names: () -> ::Array[untyped]
+
+    # The body goes to the repository as an IO, never a String copy. Two
+    # guards: CONTENT_LENGTH refuses an announced oversize for free, and
+    # CappedBody is the guarantee for the chunked or dishonest body.
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_push: () -> ::Array[untyped]
+
+    # nil when the client did not announce one — not an error on its own, it
+    # only means the copy cap has to do the work.
+    def declared_content_length: () -> Integer?
+
+    # An absent or blank platform means "ruby", never "all of them". The
+    # params are validated before they become a path — they are as
+    # client-chosen as a pushed gemspec's fields.
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_yank: () -> ::Array[untyped]
+
+    # The spec is read only for gems whose name matches.
+    # 
+    # _@param_ `query`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_search: (String? query) -> ::Array[untyped]
+
+    # _@param_ `version` — "4.8" or "4.8.gz"
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_specs: (String version) -> ::Array[untyped]
+
+    # _@param_ `version` — "4.8" or "4.8.gz"
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_prerelease_specs: (String version) -> ::Array[untyped]
+
+    # The conformance suite asks for "---\na\nb\n" byte for byte, and for
+    # "---\n\n" when the corpus is empty — hence join-then-one-newline.
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_compact_names: () -> ::Array[untyped]
+
+    # The conditional check goes first: answering "nothing changed" must
+    # cost a corpus fingerprint, not the whole-corpus render below.
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_compact_versions: () -> ::Array[untyped]
+
+    # Every validator folds in the corpus fingerprint (a yank moves it) and
+    # the gem name, so a 304 cannot outlive the gem or answer for another's.
+    # 
+    # _@param_ `gem_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_compact_info: (String gem_name) -> ::Array[untyped]
+
+    # Rendered per request, and it renders every /info/ file in the corpus to
+    # checksum it — the most expensive read this server serves.
+    # 
+    # _@return_ — a Rack response triplet
+    def render_compact_versions: () -> ::Array[untyped]
+
+    # The `created_at:` of /versions: the oldest publication time in the
+    # corpus, emphatically not Time.now — a clock stamp made every render
+    # byte-different, which kept the validator weak and broke ranged fetches.
+    # 
+    # _@param_ `gem_versions`
+    # 
+    # _@return_ — an ISO 8601 time
+    def compact_index_created_at: (::Hash[String, ::Array[String]] gem_versions) -> String
+
+    # The body of an /info/ file, or nil when the gem is unknown here. One
+    # renderer for both endpoints: the byte-exact body is what /versions
+    # checksums.
+    # 
+    # _@param_ `gem_name`
+    def compact_info_body: (String gem_name) -> String?
+
+    # One [name, Gem::Version, platform] triple per gem, as rubygems.org's
+    # own specs.4.8 has it. The Gem::Version is not decoration:
+    # Gem::SpecFetcher sorts these, and a String sorts "1.10.0" below "1.9.0".
+    def generate_specs_array: () -> ::Array[[String, Gem::Version, String]]
+
+    # Every prerelease in the corpus. The question is asked of the parsed
+    # Gem::Version and never of the column: Gem::Version reads "1.16.0-java"
+    # — a java *release* — as the prerelease 1.16.0.pre.java.
+    def generate_prerelease_specs_array: () -> ::Array[[String, Gem::Version, String]]
+
+    # One row of a legacy index, or nil for a version column Gem::Version
+    # will not accept: a file dropped into the gems directory by hand must
+    # not take the whole index down with an ArgumentError.
+    # 
+    # _@param_ `name`
+    # 
+    # _@param_ `version_column`
+    def spec_tuple: (String name, String version_column) -> [String, Gem::Version, String]?
+
+    # _@param_ `version` — "4.8" or "4.8.gz"
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_latest_specs: (String version) -> ::Array[untyped]
+
+    # The latest version of each gem *per platform*, not per name — one row
+    # per name would hide the other builds. Parsed versions are compared,
+    # never columns: "1.16.0-java" as a version is a prerelease.
+    def generate_latest_specs_array: () -> ::Array[[String, Gem::Version, String]]
+
+    # Marshal's own format is 4.8 and has been since 1.8, so this is
+    # Marshal.dump with a guard on the shape rather than a format choice.
+    # 
+    # _@param_ `obj`
+    def marshal_dump_4_8: (Object obj) -> String
+
+    # _@param_ `data`
+    def gzip_compress: (String data) -> String
+
+    # _@param_ `gem_name`
+    # 
+    # _@param_ `version`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_gem_download: (String gem_name, String version) -> ::Array[untyped]
+
+    # The .gem bytes at a given path never change (a yank renames the file
+    # away, a Personalizer's path is per-licensee), so a download is served
+    # immutable with a year-long max-age.
+    # 
+    # _@return_ — a Rack response triplet
+    def serve_gem_file: (
+                          untyped gem_path,
+                          untyped stat,
+                          untyped gem_name,
+                          untyped version
+                        ) -> ::Array[untyped]
+
+    # The SHA256 the repository already computed — the very number the index
+    # publishes as `checksum:`, so the two can never disagree. Size and
+    # mtime are the weaker fallback for a repository without gem_checksum.
+    def gem_file_etag: (
+                         untyped gem_path,
+                         untyped stat,
+                         untyped gem_name,
+                         untyped version
+                       ) -> String
+
+    # _@param_ `data`
+    # 
+    # _@return_ — a Rack response triplet
+    def json_ok: (Object data) -> ::Array[untyped]
+
+    # _@param_ `data`
+    # 
+    # _@return_ — a Rack response triplet
+    def text_ok: (String data) -> ::Array[untyped]
+
+    # text_ok for a compact index body — the one text/plain this server
+    # sends that has to name its charset.
+    # 
+    # _@param_ `data`
+    # 
+    # _@return_ — a Rack response triplet
+    def compact_ok: (String data) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def not_found: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def bad_request: (?String message) -> ::Array[untyped]
+
+    # Always with a body: `gem push` prints the response text and an empty
+    # 413 reads to the user as a crash rather than as a refusal.
+    # 
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def payload_too_large: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def server_error: (?String message) -> ::Array[untyped]
+
+    # The validator for one response. nil (no ETag at all) when the stack
+    # refuses to name itself: a wrong ETag on a gated index is worse than
+    # serving every request in full.
+    # 
+    # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
+    # 
+    # _@param_ `weak`
+    def etag_for: (*::Array[String] resource_parts, ?weak: bool) -> String?
+
+    # `public` only when the embedder allowed shared caching, the request
+    # carried no credential and nothing in the stack varies by caller —
+    # getting this wrong serves one caller's view to the next. `no-cache`
+    # rather than `no-store` so the 304 stays reachable.
+    # 
+    # _@param_ `max_age`
+    def cache_directives: (?max_age: Integer?) -> ::Hash[String, String]
+
+    def shareable_response?: () -> bool
+
+    # Not sufficient on its own — several CDNs ignore Vary on anything but
+    # Accept-Encoding; `private` is what actually stands between two callers.
+    def vary_header: () -> String
+
+    # What every response leaving either server goes through. Anything a
+    # handler did not label is `private, no-store`: it carries no validator,
+    # so nothing could revalidate it.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def with_caching_defaults: (::Array[untyped] response) -> ::Array[untyped]
+
+    # _@param_ `vary` — the Vary already on the response
+    # 
+    # _@return_ — that Vary with Authorization merged in
+    def vary_with_authorization: (String? vary) -> String
+
+    # A 200 with the validator and the caching directives attached. An absent
+    # etag (fail-closed) still gets the directives: the response is then
+    # simply uncacheable-without-asking rather than mislabelled.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # `cacheable` plus ranges — what makes Bundler >= 2.5 fetch the compact
+    # index incrementally. `Repr-Digest` carries the digest of the *whole*
+    # representation even on a 206 (RFC 9530), or Bundler will not append;
+    # `Digest:` is the obsolete RFC 3230 spelling some intermediaries read.
+    # 
+    # _@param_ `response` — a Rack response triplet, body already in hand
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable_with_ranges: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # The single byte range this request asks for, or nil for "serve the
+    # whole thing" — never a 416, which would turn a Bundler that merely
+    # guessed the tail wrong into a failed install. Called after the
+    # conditional check: a matching If-None-Match is a 304, not a 206.
+    # 
+    # _@param_ `size` — the body size in bytes
+    # 
+    # _@param_ `etag`
+    def requested_byte_range: (Integer size, String? etag) -> ::Range[untyped]?
+
+    # Absent, If-Range allows the range. Present, only a strong tag equal to
+    # ours does: a weak validator says nothing about byte offsets, and a date
+    # says nothing about a body that is not a file.
+    # 
+    # _@param_ `etag`
+    def if_range_allows_range?: (String? etag) -> bool
+
+    # Parses `bytes=first-last`, with either side optionally empty, and
+    # nothing else. String operations rather than a pattern over the whole
+    # header, per AGENTS.md.
+    # 
+    # _@param_ `header`
+    # 
+    # _@param_ `size`
+    def parse_byte_range: (String header, Integer size) -> ::Range[untyped]?
+
+    # `bytes=-N` asks for the final N bytes. A bare `bytes=-` names no number
+    # and `bytes=-0` asks for nothing; neither is satisfiable, so both get the
+    # whole body.
+    # 
+    # _@param_ `last`
+    # 
+    # _@param_ `size`
+    def suffix_byte_range: (String last, Integer size) -> ::Range[untyped]?
+
+    # A 304 repeats the validator and the directives — a shared cache
+    # updates its stored headers from it.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `extra` — extra headers
+    # 
+    # _@return_ — a Rack response triplet
+    def not_modified: (String? etag, ?extra: ::Hash[String, String]) -> ::Array[untyped]
+
+    # A response that must never be stored by anything, for content that is
+    # the caller's identity itself.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def uncacheable: (::Array[untyped] response) -> ::Array[untyped]
+
+    # If-None-Match wins over If-Modified-Since when both are present, which
+    # is what RFC 9110 requires.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `mtime`
+    def conditional_hit?: (String? etag, Time mtime) -> bool?
+
+    # _@param_ `etag`
+    def if_none_match_satisfied?: (String? etag) -> bool
+
+    # Weak comparison, which is what If-None-Match on a GET calls for: a
+    # W/"x" a client holds matches the "x" we would send. String operations
+    # rather than a regexp because the value is client-chosen and arbitrarily
+    # long (see AGENTS.md).
+    # 
+    # _@param_ `value`
+    def opaque_tag: (String value) -> String
+
+    # An unparseable date is not a match; second resolution is all an HTTP
+    # date has.
+    # 
+    # _@param_ `mtime`
+    def if_modified_since_satisfied?: (Time mtime) -> bool
+
+    # Rack::Files, so the range machinery is Rack's rather than ours. A nil
+    # root: #serving takes an absolute path and never reads @root, and the
+    # path is the repository's to decide.
+    def package_file_server: () -> Rack::Files
+
+    # Serves one immutable artifact off disk — a .gem or .tgz at a given
+    # path never changes; yank and unpublish rename away.
+    # 
+    # _@param_ `path` — absolute path of the file
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def serve_immutable_file: (String path, File::Stat stat, String? etag) -> ::Array[untyped]
+
+    # The request as Rack::Files should see it: If-Modified-Since comes out
+    # because we already answered it (Rack::Files would 304 bare, dropping
+    # ETag and Cache-Control), and If-Range is answered here by dropping the
+    # Range header, because Rack::Files does not implement it at all.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def rack_files_request: (String? etag, File::Stat stat) -> Rack::Request
+
+    # An If-Range carries either an entity tag or an HTTP date. A tag is
+    # compared strongly — a weak validator says nothing about byte offsets,
+    # which is the only thing this comparison is for.
+    # 
+    # _@param_ `if_range`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def if_range_matches?: (String if_range, String? etag, File::Stat stat) -> bool
+
+    # How `gem push` speaks OTP: the code arrives in the `OTP` header, and a
+    # refusal is a plain 401 carrying one of the two sentences the client
+    # expects, word for word.
+    module OtpDialect
+      # _@param_ `env` — the Rack env
+      def code_in: (::Hash[untyped, untyped] env) -> String?
+
+      # _@param_ `env` — the Rack env
+      def self.code_in: (::Hash[untyped, untyped] env) -> String?
+
+      # _@return_ — a Rack response triplet
+      def otp_missing: () -> ::Array[untyped]
+
+      # _@return_ — a Rack response triplet
+      def self.otp_missing: () -> ::Array[untyped]
+
+      # _@return_ — a Rack response triplet
+      def otp_rejected: () -> ::Array[untyped]
+
+      # _@return_ — a Rack response triplet
+      def self.otp_rejected: () -> ::Array[untyped]
+    end
+
+    # The request body handed to the repository on a push: it refuses to
+    # yield more than `max_bytes`, since the repository owns the copy loop.
+    class CappedBody
+      # _@param_ `io`
+      # 
+      # _@param_ `max_bytes`
+      def initialize: (IO io, Integer max_bytes) -> void
+
+      # The one method IO.copy_stream requires of a non-IO source; raises the
+      # moment the count passes the cap.
+      def read: (*untyped args) -> String?
+
+      # The count starts over with every rewind so that "read twice" is not
+      # mistaken for "twice as large".
+      def rewind: () -> void
+
+      class TooLarge < StandardError
+      end
+    end
+
+    # Rewrites the contents of a .gem into a new, byte-reproducible .gem —
+    # replacing magic comment lines, merging gemspec metadata and injecting files.
+    class GemRepacker
+      # One-shot convenience for {#initialize} + {#repack}.
+      # 
+      # _@param_ `gem_path`
+      # 
+      # _@param_ `gemspec_extras`
+      # 
+      # _@param_ `magic_comment_replacements`
+      # 
+      # _@param_ `files`
+      # 
+      # _@param_ `into`
+      # 
+      # _@return_ — the path of the repacked gem
+      def self.repack: (
+                         String gem_path,
+                         ?gemspec_extras: ::Hash[String, String],
+                         ?magic_comment_replacements: ::Hash[String, String],
+                         ?files: ::Hash[String, String],
+                         ?into: String?
+                       ) -> String
+
+      # _@param_ `gem_path` — path of the source .gem
+      # 
+      # _@param_ `gemspec_extras` — keys merged into the gemspec metadata
+      # 
+      # _@param_ `magic_comment_replacements` — whole comment lines to replace, marker => replacement
+      # 
+      # _@param_ `files` — files to inject, path relative to the gem root => content
+      # 
+      # _@param_ `into` — destination path; without it the gem lands in a fresh tmpdir whose cleanup becomes the caller's problem.
+      def initialize: (
+                        String gem_path,
+                        ?gemspec_extras: ::Hash[String, String],
+                        ?magic_comment_replacements: ::Hash[String, String],
+                        ?files: ::Hash[String, String],
+                        ?into: String?
+                      ) -> void
+
+      # Four subprocess-and-disk stages, each timed separately: a repack that
+      # got slow is almost always one of them.
+      # 
+      # _@return_ — the path of the repacked gem
+      def repack: () -> String
+
+      # `gem unpack` in-process: shelling out cost ~0.5s of RubyGems boot per
+      # gem. The span keeps its old name; the graphs watching it are older.
+      def unpack_gem: () -> void
+
+      def process_ruby_files: () -> void
+
+      def inject_files: () -> void
+
+      # _@param_ `file_path`
+      def process_ruby_file: (String file_path) -> void
+
+      # _@param_ `input_file`
+      # 
+      # _@param_ `output_file`
+      def apply_magic_comment_replacements: (IO input_file, IO output_file) -> void
+
+      # _@return_ — the path of the finished gem
+      def repackage_gem: () -> String
+
+      # The original spec with this repack's additions, built in memory rather
+      # than via a .gemspec on disk: Gem::Specification.load memoizes per file
+      # path forever, which leaked one spec per gem served.
+      # 
+      # _@param_ `spec`
+      def repacked_spec: (Gem::Specification spec) -> Gem::Specification
+
+      def cleanup: () -> void
+
+      # Pins the timestamp RubyGems stamps into a repacked gem, so that repeated
+      # repacks of the same gem are byte-identical. RubyGems only offers
+      # ENV["SOURCE_DATE_EPOCH"] for this, which is process-wide and thus unsafe
+      # with concurrent repacks; this overrides the reader instead.
+      module BuildTime
+        KEY: untyped
+
+        # Runs the block with the given build timestamp pinned. Fiber-local rather
+        # than thread-local, deliberately: a build runs to completion inside the
+        # fiber that started it, so this stays per-request under both a thread pool
+        # and a fiber scheduler.
+        # 
+        # _@param_ `time` — the timestamp to stamp into archive entries
+        # 
+        # _@return_ — the return value of the block
+        def self.with: ((Time | Integer) time) -> Object
+
+        # _@return_ — the pinned epoch, or whatever RubyGems would have used
+        def source_date_epoch_string: () -> String
+      end
+
+      # Gem::Package that reads the files it packs from a directory of the
+      # caller's choosing instead of from the working directory, silently.
+      # `gem build` only works because the CLI chdir's into the unpacked gem
+      # first — and chdir is process-global, so a server cannot do that. Only the
+      # two methods that reach outside are overridden; the .gem format itself
+      # stays RubyGems'.
+      class RootedPackage < Gem::Package
+        # Validation is deliberately skipped, and not to save time: it resolves
+        # spec.files against the working directory and *prunes* to what it finds —
+        # run from the wrong directory it quietly builds a gem with no files in
+        # it. The caller prunes against +root+ instead.
+        # 
+        # _@param_ `spec`
+        # 
+        # _@param_ `root` — the directory spec.files are relative to
+        # 
+        # _@param_ `file_name` — where the finished gem is written
+        # 
+        # _@param_ `build_time` — the timestamp stamped into the archive — see BuildTime for why this is a block around the build, not an argument
+        # 
+        # _@return_ — file_name
+        def self.build: (
+                          Gem::Specification spec,
+                          String root,
+                          String file_name,
+                          build_time: Time
+                        ) -> String
+
+        # The RubyGems original with @root joined onto every path it looks at. The
+        # names written into the tar stay relative, which is what a .gem holds.
+        # 
+        # _@param_ `tar`
+        def add_files: (Gem::Package::TarWriter tar) -> void
+
+        # Gem::Package#build reports on stdout, which is what a person running
+        # `gem build` asked for and not what a request asked for.
+        def say: () -> void
+
+        attr_accessor root: String
+      end
+    end
+
+    # Wraps a gem repository and serves each gem repacked for one licensee —
+    # magic comment lines replaced, files injected, the license key stamped
+    # into the gemspec metadata — with the repacked gems and their checksums
+    # cached on disk.
+    class Personalizer < SimpleDelegator
+      CHECKSUM_SIDECAR_FORMAT_VERSION: untyped
+
+      # Two rules make the caching sound, and they are the caller's to keep:
+      # what `files_for:` returns may depend on the gem file and
+      # `personalization_key:` and nothing else, and nil must be a fact about
+      # the file alone — it is remembered per file, never per licensee.
+      # 
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `license_key` — stamped into every served gem's metadata
+      # 
+      # _@param_ `magic_comment_replacements` — whole comment lines to replace in **/*.rb, marker => replacement
+      # 
+      # _@param_ `files` — path => content, written into every gem and added to spec.files — this is what a per-licensee LICENSE file arrives through, rendered by the caller
+      # 
+      # _@param_ `files_for` — the per-gem edition of `files:`, called with (gem_name, version, original_path); returns a path => content hash injected on top of `files:`, or nil meaning this gem is served byte for byte as it sits on disk
+      # 
+      # _@param_ `personalization_key` — everything the personalized bytes depend on beyond the gem itself — a licensee id, a ref
+      # 
+      # _@param_ `cache_dir` — where personalized gems and opt-out markers are kept; defaults to the system temp directory, which an application with a cache directory of its own should override
+      def initialize: (
+                        Paquette::GemServer::GemRepository repository,
+                        license_key: String,
+                        ?magic_comment_replacements: ::Hash[String, String],
+                        ?files: ::Hash[String, String],
+                        ?files_for: Proc?,
+                        ?personalization_key: String?,
+                        ?cache_dir: String?
+                      ) -> void
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — the path of the personalized (or pass-through) gem
+      def gem_file_path: (String gem_name, String version) -> String?
+
+      # The wrapped validator with this personalizer's identity mixed in, so
+      # one licensee's cached index can never satisfy another's request. The
+      # key is the same digest that names the cached gems on disk, so this is
+      # exactly as strong as that cache; `files_for:` itself is not digested —
+      # a Proc cannot be, and the initializer's contract means it need not be.
+      def cache_validator: () -> String?
+
+      # Every byte this serves is baked for one licensee.
+      def varies_by_caller?: () -> bool
+
+      # The checksum of what this personalizer would hand over — an ETag that
+      # disagreed with the index would read as a tampered gem.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_checksum: (String gem_name, String version) -> String?
+
+      # The wrapped repository's lines with the checksum swapped where the
+      # served file differs from the one on disk, and only there — a repack
+      # touches no other field.
+      # 
+      # _@param_ `gem_name`
+      def compact_info: (String gem_name) -> ::Array[String]
+
+      # The cache is keyed by everything that goes INTO the gem, never the gem
+      # alone — a per-licensee path is what keeps two racing licensees from
+      # receiving each other's copy. Consulted before the gem is ever opened:
+      # compact_info asks per version per request.
+      # 
+      # _@param_ `original_gem_path`
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def personalize_gem: (String original_gem_path, String gem_name, String version) -> String
+
+      # The block form of mktmpdir removes exactly what it created, so nothing
+      # in this method ever deletes a path somebody else chose.
+      # 
+      # _@param_ `original_gem_path`
+      # 
+      # _@param_ `personalized_path`
+      # 
+      # _@param_ `dynamic_files`
+      def repack: (String original_gem_path, String personalized_path, ::Hash[String, String] dynamic_files) -> String
+
+      # The SHA256 of a personalized gem, remembered next to it — the bytes at
+      # that path are fixed for as long as the path exists. Size and mtime are
+      # checked anyway: a stale checksum reads as a tampered gem.
+      # 
+      # _@param_ `served`
+      def served_checksum: (String served) -> String
+
+      # Alongside the gem rather than inside a directory of its own, so the two
+      # are removed together by anything that sweeps this cache by age.
+      # 
+      # _@param_ `served`
+      def checksum_sidecar_path: (String served) -> String
+
+      # _@param_ `served`
+      # 
+      # _@param_ `stat`
+      def read_checksum_sidecar: (String served, File::Stat stat) -> String?
+
+      # Tempfile-and-rename, so a reader never sees half a digest. Failure is
+      # ignored on purpose: an unwritable cache costs a hash per request, not
+      # a failed request.
+      # 
+      # _@param_ `served`
+      # 
+      # _@param_ `stat`
+      # 
+      # _@param_ `checksum`
+      def write_checksum_sidecar: (String served, File::Stat stat, String checksum) -> void
+
+      # Whole nanoseconds. Float mtimes lose precision on large timestamps, and
+      # this is compared for equality.
+      # 
+      # _@param_ `stat`
+      def mtime_ns: (File::Stat stat) -> Integer
+
+      # Stat identity in the name, so a replaced source file misses the cache
+      # without anything having to be invalidated.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `stat`
+      def cache_path: (String gem_name, String version, File::Stat stat) -> String
+
+      # Where "this gem carries nothing to personalize" is written down — an
+      # empty file whose presence is the fact. Keyed by the source identity
+      # alone, never by the licensee: whether a gem participates is a fact
+      # about the gem.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `stat`
+      def plain_marker_path: (String gem_name, String version, File::Stat stat) -> String
+
+      # Everything this personalizer would write into a gem, as one short hash.
+      # Stable across processes, so a restart does not orphan the cache.
+      def personalization_digest: () -> String
+    end
+
+    # Abstract base class for gem repositories
+    class GemRepository
+      def initialize: () -> void
+
+      # _@return_ — the gem names available in the repository
+      def gem_names: () -> ::Array[String]
+
+      # _@return_ — [name, version] pairs for all gems
+      def gem_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `gem_name`
+      # 
+      # _@return_ — the versions of the gem
+      def versions_for_gem: (String gem_name) -> ::Array[String]
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — the path of the .gem file
+      def gem_file_path: (String gem_name, String version) -> String
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_exists?: (String gem_name, String version) -> bool
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_spec: (String gem_name, String version) -> Gem::Specification?
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — the gem's dependencies
+      def gem_dependencies: (String gem_name, String version) -> ::Array[untyped]
+
+      # When the given version was published; CooldownRepository asks this.
+      # Subclasses override only to put a cache in front of it.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — nil when it cannot be established
+      def published_at: (String gem_name, String version) -> Time?
+
+      # _@param_ `gem_name`
+      # 
+      # _@return_ — the /info/ document for the gem, all versions
+      def compact_info: (String gem_name) -> String?
+
+      # A short string that changes whenever anything this repository would
+      # serve changes — wrappers included. A wrapper that cannot describe
+      # itself must return nil, "do not cache this", which propagates outward.
+      def cache_validator: () -> String?
+
+      # Whether two callers can get different answers out of this repository —
+      # false permits `public` responses. True is the only safe default for a
+      # repository nobody here has seen.
+      def varies_by_caller?: () -> bool
+
+      # The SHA256 of the .gem file this repository would actually serve —
+      # under a Personalizer, not the bytes on disk.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — nil when unknown or when the gem is not there
+      def gem_checksum: (String gem_name, String version) -> String?
+
+      # The caching questions, asked of an object that may have never heard of
+      # the protocol. The rules live in Paquette::CacheValidation, shared with
+      # the npm side.
+      # 
+      # _@param_ `repository`
+      def self.cache_validator_of: (Object repository) -> String?
+
+      # _@param_ `repository`
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def self.gem_checksum_of: (Object repository, String gem_name, String version) -> String?
+
+      # _@param_ `inner_validator`
+      # 
+      # _@param_ `layer`
+      # 
+      # _@param_ `key`
+      def self.derive_validator: (String? inner_validator, String layer, String? key) -> String?
+
+      # One line of an /info/ file, in the compact index format:
+      # 
+      #   VERSION DEP:REQ,DEP:REQ|checksum:SHA256,ruby:REQ,rubygems:REQ
+      # 
+      # A class method on purpose: some repositories are SimpleDelegators, and
+      # an instance method would be forwarded to the wrapped repository.
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `spec`
+      # 
+      # _@param_ `checksum`
+      def self.compact_info_line: (String version, Gem::Specification spec, String checksum) -> String
+
+      # The spec boiled down to plain strings and arrays — this hash is what a
+      # repository may cache on disk, and strings deserialize into no surprises.
+      # 
+      # _@param_ `spec`
+      # 
+      # _@param_ `checksum`
+      def self.compact_info_fields: (Gem::Specification spec, String checksum) -> ::Hash[String, Object]
+
+      # Renders a line from a fields hash — freshly extracted or read back from
+      # a cache, the bytes must come out the same either way. Keys beyond the
+      # ones this reads are ignored.
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `fields`
+      def self.compact_info_line_from_fields: (String version, ::Hash[String, Object] fields) -> String
+
+      # An already-rendered line with only its checksum replaced, for
+      # repositories that serve rewritten gem files. Lives here because this
+      # class owns the line format; the pattern cannot stray into a
+      # neighbouring field.
+      # 
+      # _@param_ `line`
+      # 
+      # _@param_ `checksum`
+      def self.replace_checksum: (String line, String checksum) -> String
+
+      # A comma separates *dependencies* in this format, so within one
+      # dependency the clauses are joined with "&": ">= 1.0, < 3" becomes
+      # ">= 1.0&< 3".
+      # 
+      # _@param_ `requirement`
+      def self.requirement_string: (Gem::Requirement requirement) -> String
+    end
+
+    # Everything a pushed gemspec claims about itself, checked before any of it
+    # is believed: `spec.name`/`spec.version` become a filesystem path, and the
+    # compact index is line-oriented text, so an unconstrained field is either a
+    # traversal or a forged index row. Runs before the upload is moved into
+    # place; gems already on disk are not re-checked.
+    class SpecValidator
+      NAME: untyped
+      PLATFORM: untyped
+      PLATFORM_DOT_DOT: untyped
+      VERSION: untyped
+      FORBIDDEN_IN_FIELD: untyped
+      MAX_FIELD_BYTES: untyped
+
+      # One error class deliberately: a client cannot act differently on
+      # unreadable versus dishonest.
+      # 
+      # _@param_ `message`
+      def self.invalid!: (String message) -> untyped
+
+      # Checks `spec` and returns the validated triple as plain Strings, so a
+      # caller cannot go on using the unvalidated `spec.name`. The platform
+      # comes back canonicalized, RubyGems' own spelling.
+      # 
+      # _@param_ `spec`
+      # 
+      # _@return_ — name, version, platform
+      def self.validate!: (Gem::Specification spec) -> [String, String, String]
+
+      # The same checks applied to the params of a yank, which name a path
+      # exactly as a pushed gemspec's fields do. `platform` may be nil or ""
+      # (`gem yank` omits it for a plain-ruby gem); `version` may arrive with
+      # the platform already glued on, the column as the index publishes it.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `platform`
+      # 
+      # _@return_ — name and version column (platform
+      # already glued on), the pair the repository is keyed by
+      def self.validate_reference!: (String gem_name, String version, String? platform) -> [String, String]
+
+      # `spec.platform` is the String "ruby" for a plain build, a Gem::Platform
+      # otherwise; "ruby" is let through as itself because it is the one value
+      # that produces no filename suffix at all.
+      # 
+      # _@param_ `spec`
+      def self.platform_of: (Gem::Specification spec) -> String
+
+      # Every uploader-controlled field that reaches a line of the compact
+      # index — the list reads as "what gets interpolated", not "what is safe".
+      # 
+      # _@param_ `spec`
+      def self.text_fields: (Gem::Specification spec) -> ::Array[[String, String]]
+
+      # Bounds, reads as text and re-tags a field as UTF-8 — reinterpreted,
+      # not merely asked: a string tagged ASCII-8BIT is *always* "valid", and
+      # would blow up later instead of here.
+      # 
+      # _@param_ `label`
+      # 
+      # _@param_ `value`
+      def self.scannable: (String label, Object value) -> String
+
+      # The fields that become a path have to be Strings before anything else
+      # looks at them; `spec.version` is the exception, parsed into a
+      # Gem::Version by RubyGems on the way in.
+      # 
+      # _@param_ `value`
+      # 
+      # _@param_ `label`
+      def self.string_field: (Object value, String label) -> String
+
+      # The charset and the one shape it cannot express, in one place, so the
+      # push path and the yank path cannot come to different conclusions about
+      # the same string.
+      # 
+      # _@param_ `platform`
+      def self.valid_platform?: (String platform) -> bool
+    end
+
+    # Wraps a gem repository and hides every version that was published less
+    # than `interval` seconds ago, giving a publisher a window to yank a
+    # compromised or broken release before anybody can pick it up. Read-only:
+    # a push into a delayed view would land and then immediately vanish from
+    # the view that accepted it.
+    class CooldownRepository < Paquette::GemServer::ReadonlyRepository
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `interval` — the cooldown, in seconds
+      # 
+      # _@param_ `published_at` — called with `name:` and `version:`, returns a Time — or nil for "I do not know". Defaults to the repository's own published_at (the gemspec date).
+      # 
+      # _@param_ `published_at_validator` — only with `published_at:`: a zero-argument callable returning a string that changes whenever any answer `published_at:` would give changes, or nil for "I cannot say". Without one, a view over a custom source emits no validator.
+      # 
+      # _@param_ `clock` — returns the current Time; here so tests do not have to sleep
+      def initialize: (
+                        Paquette::GemServer::GemRepository repository,
+                        interval: (Integer | _ToI),
+                        ?published_at: Proc?,
+                        ?published_at_validator: Proc?,
+                        ?clock: Proc
+                      ) -> void
+
+      # The inner validator alone would 304 a client out of exactly the
+      # release the channel exists to deliver — but the servable set only
+      # moves when a version crosses the boundary, and versions cross in
+      # publication order, so the set is named by how many known publish times
+      # are at least `interval` old. That count is digested with the inner
+      # validator and the interval; the sorted publish times are memoized
+      # under the inner validator, fail-closed as everywhere else.
+      def cache_validator: () -> String?
+
+      # A gem with no servable version disappears from /names altogether —
+      # Bundler treats a listed name as resolvable.
+      def gem_names: () -> ::Array[String]
+
+      def gem_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `gem_name`
+      def versions_for_gem: (String gem_name) -> ::Array[String]
+
+      # _@param_ `gem_name`
+      def compact_info: (String gem_name) -> (::Array[String] | Object)
+
+      # The download path has to agree with the index: a cooling version 404s.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_file_path: (String gem_name, String version) -> String?
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_exists?: (String gem_name, String version) -> bool
+
+      # True when the version has been published for at least `interval`
+      # seconds. An unknown publication time fails **open**: a cooldown is a
+      # delay policy, not an authorization boundary — that is
+      # ReadGatedRepository's job — and failing closed would break `bundle
+      # install` over a missing timestamp.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def servable?: (String gem_name, String version) -> bool
+
+      # The one comparison both servable? and cache_validator make, so the two
+      # cannot disagree about which side of the boundary a version is on.
+      # 
+      # _@param_ `published`
+      # 
+      # _@param_ `now`
+      def cooled?: (Time published, Time now) -> bool
+
+      # The known publish times of every version the inner repository lists,
+      # sorted; rebuilt only when `key` changes, under the lock.
+      # 
+      # _@param_ `key`
+      def publish_times_for: (::Array[untyped] key) -> ::Array[Time]
+
+      # The default source is `spec.date`: intrinsic to the immutable gem
+      # bytes, where an mtime or a cache-minted "first seen" would put the
+      # whole corpus into cooldown on any rsync or restore. Its weakness — it
+      # records the publisher's build time — is what `published_at:` is for.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def published_time: (String gem_name, String version) -> Time?
+    end
+
+    # Forbids package pushes
+    class ReadonlyRepository < SimpleDelegator
+      def add_gem: () -> untyped
+
+      def yank_gem: () -> untyped
+
+      # Raised by every write on a readonly repository.
+      class WriteNotAllowed < StandardError
+      end
+    end
+
+    # Wraps a gem repository and filters every read through an entitler block:
+    # non-entitled gems disappear from listings, return nil paths, and report
+    # as non-existent. Writes always raise — gating reads blocks writes, full
+    # stop; a more nuanced policy belongs in its own wrapper.
+    class ReadGatedRepository < Paquette::GemServer::ReadonlyRepository
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `gate_key` — what this gate is called, for HTTP caching: the identity the entitler consults plus everything the answers depend on. Left out, the whole stack emits no ETag and serves every request in full — the intended fail-closed default, because a wrong ETag hands one customer another's entitlements.
+      def initialize: (Paquette::GemServer::GemRepository repository, ?gate_key: String?) -> void
+
+      # nil without a gate_key — derive_validator does the refusing.
+      def cache_validator: () -> String?
+
+      # A gate may decide by something Paquette never sees — an IP, a header —
+      # so even two anonymous callers can get different views. Never `public`.
+      def varies_by_caller?: () -> bool
+
+      # Asked through the class method rather than with `super` so that an
+      # inner repository predating this protocol answers nil instead of
+      # raising NoMethodError out of Delegator#method_missing.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_checksum: (String gem_name, String version) -> String?
+
+      def gem_names: () -> ::Array[String]
+
+      def gem_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `gem_name`
+      def versions_for_gem: (String gem_name) -> ::Array[String]
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_file_path: (String gem_name, String version) -> String?
+
+      # _@param_ `gem_name`
+      def compact_info: (String gem_name) -> (::Array[String] | Object)
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_exists?: (String gem_name, String version) -> bool
+
+      # The entitler is the caller's, and a listing calls it once per gem in
+      # the corpus — an entitler that reaches for a database on every call is
+      # the usual reason a gated index is slower than an ungated one.
+      # 
+      # _@param_ `criteria`
+      # 
+      # _@return_ — truthy when entitled
+      def entitled?: (**::Hash[untyped, untyped] criteria) -> Object
+    end
+
+    # Repository implementation that reads gems from a directory
+    class DirectoryGemRepository < Paquette::GemServer::GemRepository
+      YAML_ALIAS_MUTEX: untyped
+      CACHE_DIR_BASENAME: untyped
+      SIDECAR_FORMAT_VERSION: untyped
+
+      # _@param_ `gems_dir` — the corpus root, created if absent
+      def initialize: (String gems_dir) -> void
+
+      # A digest of what the corpus holds. Paths alone are enough: a push adds
+      # one, a yank renames one away to a tomb, and a .gem file at a given path
+      # never changes its bytes.
+      def fingerprint: () -> String
+
+      def cache_validator: () -> String
+
+      # A directory of gems is the same directory for everybody; the wrappers
+      # above are what make a response caller-specific.
+      def varies_by_caller?: () -> bool
+
+      # The SHA256 the sidecar already holds, so an ETag on a download costs
+      # two stat calls rather than a re-hash. Goes through the same
+      # read-or-derive path compact_info uses, which makes the ETag and the
+      # published checksum the same number by construction.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_checksum: (String gem_name, String version) -> String?
+
+      # Persists a .gem file from an uploaded payload. No size cap on purpose:
+      # that is the server's rule, enforced by the body it hands over.
+      # 
+      # _@param_ `gem_payload` — an IO to stream from (the form the server uses — a 50MB push should not become a 50MB Ruby String) or raw bytes
+      # 
+      # _@return_ — the parsed spec
+      def add_gem: ((IO | String) gem_payload) -> Gem::Specification
+
+      # Reads the spec out of an uploaded .gem with YAML alias expansion off:
+      # aliases are the billion-laughs DoS, and no real gemspec carries one.
+      # Gem::SafeYAML is process-global state RubyGems and Bundler also read,
+      # so it is flipped around our own parse and put back, under a mutex,
+      # never permanently at require time.
+      # 
+      # _@param_ `gem_path`
+      def read_uploaded_spec: (String gem_path) -> Gem::Specification
+
+      # Whether a path the repository is about to write to is really inside the
+      # corpus. The trailing separator stops a sibling directory whose name
+      # merely starts the same way — "/srv/gems-evil" against "/srv/gems".
+      # 
+      # _@param_ `path`
+      def within_gems_dir?: (String path) -> bool
+
+      # Yanks a gem by renaming its .gem file to a per-artifact .gem.tomb:
+      # yanking "a-0.2.0-java" leaves "a-0.2.0" downloadable.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version` — a version column
+      def yank_gem: (String gem_name, String version) -> void
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def tomb_file_path: (String gem_name, String version) -> String
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def tomb_exists?: (String gem_name, String version) -> bool
+
+      # A directory is not a gem; a .gem file in it is. Yanking the last .gem
+      # leaves the directory behind, and listing it would make /names announce
+      # a gem whose /info/ answers 404.
+      def gem_names: () -> ::Array[String]
+
+      # A directory listing per gem in the corpus; every whole-index endpoint
+      # starts here.
+      def gem_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `gem_name`
+      # 
+      # _@return_ — version columns
+      def versions_for_gem: (String gem_name) -> ::Array[String]
+
+      # `version` is a version column, so this is byte for byte the filename
+      # Gem::Specification#file_name would have produced.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_file_path: (String gem_name, String version) -> String
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_exists?: (String gem_name, String version) -> bool
+
+      # Opening a .gem to read its spec means a tar walk, a gunzip and a YAML
+      # parse — the single most expensive thing this repository does per gem,
+      # and what the sidecar cache exists to avoid.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def gem_spec: (String gem_name, String version) -> Gem::Specification?
+
+      # The publication date out of the sidecar when one is there, and out of
+      # the gem itself when it is not — same answer either way.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def published_at: (String gem_name, String version) -> Time?
+
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — runtime dependencies only
+      def gem_dependencies: (String gem_name, String version) -> ::Array[::Hash[Symbol, String]]
+
+      # _@param_ `gem_name`
+      # 
+      # _@return_ — one compact index line per version
+      def compact_info: (String gem_name) -> ::Array[String]
+
+      # A .gem file at a given path never changes, so what compact_info
+      # derives from one is derived once and kept in a JSON file next to it —
+      # without this, /versions paid a tar walk and YAML parse per version.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      def sidecar_path: (String gem_name, String version) -> String
+
+      # The cached fields, or nil for anything short of a usable entry — nil
+      # just means the gem gets parsed again.
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `stat`
+      def read_sidecar: (String gem_name, String version, File::Stat stat) -> ::Hash[String, Object]?
+
+      def derive_sidecar: (
+                            untyped gem_name,
+                            untyped version,
+                            untyped gem_file,
+                            untyped stat
+                          ) -> ::Hash[String, Object]?
+
+      def derive_sidecar_fields: (
+                                   untyped gem_name,
+                                   untyped version,
+                                   untyped gem_file,
+                                   untyped stat
+                                 ) -> ::Hash[String, Object]?
+
+      # Tempfile-and-rename, so a reader never sees a torn write; no locking,
+      # since two racing writers derived the same bytes. The cache is an
+      # optimization — on a read-only directory the rescue eats every write.
+      def write_sidecar: (untyped gem_name, untyped version, untyped fields) -> void
+
+      # An integer rather than a Float on purpose: the guard is an
+      # exact-equality check, and integers survive a trip through JSON.
+      # 
+      # _@param_ `stat`
+      def mtime_ns: (File::Stat stat) -> Integer
+
+      # Raised on a push of a name+version+platform already on disk.
+      class GemAlreadyExists < StandardError
+      end
+
+      # Raised when a payload cannot be read as a gem, or its spec claims
+      # something a server should not act on.
+      class InvalidGem < StandardError
+      end
+
+      # Raised on a yank of a gem that is not there.
+      class GemNotFound < StandardError
+      end
+
+      # Raised on a push of a tombed name+version+platform.
+      class GemYanked < StandardError
+      end
+    end
+  end
+
+  # The Rack app a browser gets at the root of a registry — the default for
+  # the `placeholder_app:` keyword both servers take. Swap in any Rack app to
+  # get your own root. The blurb is HTML-escaped on the way in: a caller
+  # wanting markup is a caller wanting their own index app.
+  class IndexPage
+    TEMPLATE_PATH: untyped
+    MASTHEAD_PATH: untyped
+    XML_DECLARATION: untyped
+
+    # Read once per process rather than once per request: the root is what
+    # every uptime check hits.
+    def self.template: () -> String
+
+    # _@return_ — the masthead SVG, prepared for inlining into HTML
+    def self.masthead: () -> String
+
+    # _@param_ `blurb` — one sentence describing the registry
+    # 
+    # _@param_ `title`
+    def initialize: (String blurb, ?title: String) -> void
+
+    # _@param_ `_env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] _env) -> ::Array[untyped]
+
+    # The rendered page, built once at construction. Public because it is the
+    # useful half for anyone wrapping this in their own Rack response.
+    def render: () -> String
+
+    attr_reader blurb: String
+
+    attr_reader title: String
+  end
+
+  # Rack app serving an npm registry — packuments, tarballs, dist-tags,
+  # publish and unpublish — over any NpmRepository stack.
+  class NpmServer
+    include Paquette::RegexpTimeout
+    include Paquette::ConditionalGet
+    SCOPED_PATH: untyped
+    DEFAULT_BLURB: untyped
+    GatedNpmRepository: untyped
+
+    # What a request would dispatch to, without dispatching it — the npm twin
+    # of GemServer.route_for. The scoped-name normalization is applied first,
+    # so a package_name param comes back in one spelling ("@scope/name")
+    # whichever way npm sent it. Only the path is read.
+    # 
+    # _@param_ `env` — the Rack env
+    def self.route_for: (::Hash[untyped, untyped] env) -> Paquette::Routes::Recognition?
+
+    # npm sends the scope separator percent-encoded for metadata but plain in
+    # tarball URLs; normalizing makes a package name one path segment.
+    # 
+    # _@param_ `path`
+    def self.normalize_scoped_path: (String path) -> String
+
+    # An OtpGate that reads and refuses the way npm does — see the gem-side
+    # twin.
+    # 
+    # _@param_ `secret`
+    # 
+    # _@param_ `issuer`
+    # 
+    # _@param_ `drift`
+    def self.otp_gate: (secret: String, issuer: String, ?drift: Integer) -> Paquette::OtpGate
+
+    # "helpers-1.0.0.tgz" under "@stanquette/helpers" is version "1.0.0".
+    # Strips a prefix and a suffix rather than matching: a name interpolated
+    # into a regexp raised out of the compile on invalid UTF-8.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@param_ `tarball_name`
+    def self.version_from_tarball_name: (String package_name, String tarball_name) -> String?
+
+    # _@param_ `repository` — the repository stack to serve, or a directory path to wrap in a DirectoryNpmRepository
+    # 
+    # _@param_ `placeholder_app` — the Rack app answering the root path
+    # 
+    # _@param_ `max_push_bytes` — the largest request body this server will read — a publish carries the whole tarball base64-encoded in JSON, so this is the push cap; nil removes it, which is a decision to make knowingly
+    # 
+    # _@param_ `shared_caching` — false keeps every response `private` — see the same option on GemServer
+    def initialize: (
+                      (Paquette::NpmServer::NpmRepository | String) repository,
+                      ?placeholder_app: untyped,
+                      ?max_push_bytes: Integer?,
+                      ?shared_caching: bool
+                    ) -> void
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # _@param_ `env`
+    # 
+    # _@return_ — a Rack response triplet
+    def dispatch: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # _@param_ `path`
+    def normalize_scoped_path: (String path) -> String
+
+    # The hot read path for `npm install`. The validator folds in the
+    # request's base URL because absolutize_tarballs rewrites every
+    # dist.tarball from it — scheme, unlike host, is not part of an HTTP
+    # cache key.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_metadata: (String package_name) -> ::Array[untyped]
+
+    # dist-tags move without any path moving — the file is rewritten in
+    # place — which the repository fingerprint accounts for by folding in
+    # that file's mtime.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_dist_tags: (String package_name) -> ::Array[untyped]
+
+    # _@param_ `package_name`
+    # 
+    # _@param_ `tarball_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_tarball: (String package_name, String tarball_name) -> ::Array[untyped]
+
+    # The very value the packument publishes as dist.integrity, so a
+    # download ETag can never disagree with the document that sent npm here —
+    # npm hard-fails an install when those two disagree.
+    def tarball_etag: (
+                        untyped package_name,
+                        untyped version,
+                        untyped path,
+                        untyped stat
+                      ) -> String
+
+    # _@param_ `package_name`
+    # 
+    # _@param_ `version`
+    def dist_integrity: (String package_name, String version) -> String?
+
+    # The base absolutize_tarballs will build its URLs from — the same
+    # expression, kept in one place so the validator and the document cannot
+    # disagree about what went into the body.
+    def metadata_base_url: () -> String
+
+    # Only the `_attachments` tarball is used; the rest is derived from it.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_publish: (String package_name) -> ::Array[untyped]
+
+    # _@param_ `package_name`
+    # 
+    # _@param_ `document`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_document_put: (String package_name, ?::Hash[untyped, untyped]? document) -> ::Array[untyped]
+
+    # _@param_ `package_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_unpublish_all: (String package_name) -> ::Array[untyped]
+
+    # The preceding document PUT usually removed the version, so missing is success.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@param_ `tarball_name`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_unpublish_version: (String package_name, String tarball_name) -> ::Array[untyped]
+
+    # _@param_ `package_name`
+    # 
+    # _@param_ `tag`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_dist_tag_put: (String package_name, String tag) -> ::Array[untyped]
+
+    # _@param_ `package_name`
+    # 
+    # _@param_ `tarball_name`
+    def version_from_tarball_name: (String package_name, String tarball_name) -> String?
+
+    # _@param_ `metadata`
+    def with_absolute_tarballs: (::Hash[untyped, untyped] metadata) -> ::Hash[untyped, untyped]
+
+    # The forwarded headers keep the URLs correct behind a TLS proxy.
+    # SCRIPT_NAME keeps them correct under a mount: a registry served at
+    # /@acme must hand out tarball URLs that still say /@acme.
+    # 
+    # _@param_ `metadata`
+    def absolutize_tarballs: (::Hash[untyped, untyped] metadata) -> ::Hash[untyped, untyped]
+
+    # npm's unpublish flow needs a `_rev`; derived, since nothing is locked.
+    # 
+    # _@param_ `package_name`
+    def revision_for: (String package_name) -> String
+
+    # A publish body carries the whole tarball base64-encoded, so the cap is
+    # enforced on the read itself. Two guards, as on the gem side: the
+    # declared length refuses an announced oversize for free, and the read
+    # stops one byte past the cap for the body that declared nothing.
+    def parse_json_body: () -> ::Hash[untyped, untyped]?
+
+    # nil when the client did not announce one — not an error on its own, it
+    # only means the capped read has to do the work.
+    def declared_content_length: () -> Integer?
+
+    def username: () -> String
+
+    # A package document with many versions is the largest thing this server
+    # serializes, and it is serialized on every metadata request.
+    # 
+    # _@param_ `data`
+    # 
+    # _@param_ `status`
+    # 
+    # _@return_ — a Rack response triplet
+    def json_ok: (Object data, ?status: Integer) -> ::Array[untyped]
+
+    # _@param_ `data`
+    # 
+    # _@return_ — a Rack response triplet
+    def text_ok: (String data) -> ::Array[untyped]
+
+    # npm surfaces the `error` key of a JSON body to the user.
+    # 
+    # _@param_ `status`
+    # 
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def json_error: (Integer status, String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def not_found: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def bad_request: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def forbidden: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def conflict: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def payload_too_large: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def server_error: (?String message) -> ::Array[untyped]
+
+    # The validator for one response. nil (no ETag at all) when the stack
+    # refuses to name itself: a wrong ETag on a gated index is worse than
+    # serving every request in full.
+    # 
+    # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
+    # 
+    # _@param_ `weak`
+    def etag_for: (*::Array[String] resource_parts, ?weak: bool) -> String?
+
+    # `public` only when the embedder allowed shared caching, the request
+    # carried no credential and nothing in the stack varies by caller —
+    # getting this wrong serves one caller's view to the next. `no-cache`
+    # rather than `no-store` so the 304 stays reachable.
+    # 
+    # _@param_ `max_age`
+    def cache_directives: (?max_age: Integer?) -> ::Hash[String, String]
+
+    def shareable_response?: () -> bool
+
+    # Not sufficient on its own — several CDNs ignore Vary on anything but
+    # Accept-Encoding; `private` is what actually stands between two callers.
+    def vary_header: () -> String
+
+    # What every response leaving either server goes through. Anything a
+    # handler did not label is `private, no-store`: it carries no validator,
+    # so nothing could revalidate it.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def with_caching_defaults: (::Array[untyped] response) -> ::Array[untyped]
+
+    # _@param_ `vary` — the Vary already on the response
+    # 
+    # _@return_ — that Vary with Authorization merged in
+    def vary_with_authorization: (String? vary) -> String
+
+    # A 200 with the validator and the caching directives attached. An absent
+    # etag (fail-closed) still gets the directives: the response is then
+    # simply uncacheable-without-asking rather than mislabelled.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # `cacheable` plus ranges — what makes Bundler >= 2.5 fetch the compact
+    # index incrementally. `Repr-Digest` carries the digest of the *whole*
+    # representation even on a 206 (RFC 9530), or Bundler will not append;
+    # `Digest:` is the obsolete RFC 3230 spelling some intermediaries read.
+    # 
+    # _@param_ `response` — a Rack response triplet, body already in hand
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable_with_ranges: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # The single byte range this request asks for, or nil for "serve the
+    # whole thing" — never a 416, which would turn a Bundler that merely
+    # guessed the tail wrong into a failed install. Called after the
+    # conditional check: a matching If-None-Match is a 304, not a 206.
+    # 
+    # _@param_ `size` — the body size in bytes
+    # 
+    # _@param_ `etag`
+    def requested_byte_range: (Integer size, String? etag) -> ::Range[untyped]?
+
+    # Absent, If-Range allows the range. Present, only a strong tag equal to
+    # ours does: a weak validator says nothing about byte offsets, and a date
+    # says nothing about a body that is not a file.
+    # 
+    # _@param_ `etag`
+    def if_range_allows_range?: (String? etag) -> bool
+
+    # Parses `bytes=first-last`, with either side optionally empty, and
+    # nothing else. String operations rather than a pattern over the whole
+    # header, per AGENTS.md.
+    # 
+    # _@param_ `header`
+    # 
+    # _@param_ `size`
+    def parse_byte_range: (String header, Integer size) -> ::Range[untyped]?
+
+    # `bytes=-N` asks for the final N bytes. A bare `bytes=-` names no number
+    # and `bytes=-0` asks for nothing; neither is satisfiable, so both get the
+    # whole body.
+    # 
+    # _@param_ `last`
+    # 
+    # _@param_ `size`
+    def suffix_byte_range: (String last, Integer size) -> ::Range[untyped]?
+
+    # A 304 repeats the validator and the directives — a shared cache
+    # updates its stored headers from it.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `extra` — extra headers
+    # 
+    # _@return_ — a Rack response triplet
+    def not_modified: (String? etag, ?extra: ::Hash[String, String]) -> ::Array[untyped]
+
+    # A response that must never be stored by anything, for content that is
+    # the caller's identity itself.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def uncacheable: (::Array[untyped] response) -> ::Array[untyped]
+
+    # If-None-Match wins over If-Modified-Since when both are present, which
+    # is what RFC 9110 requires.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `mtime`
+    def conditional_hit?: (String? etag, Time mtime) -> bool?
+
+    # _@param_ `etag`
+    def if_none_match_satisfied?: (String? etag) -> bool
+
+    # Weak comparison, which is what If-None-Match on a GET calls for: a
+    # W/"x" a client holds matches the "x" we would send. String operations
+    # rather than a regexp because the value is client-chosen and arbitrarily
+    # long (see AGENTS.md).
+    # 
+    # _@param_ `value`
+    def opaque_tag: (String value) -> String
+
+    # An unparseable date is not a match; second resolution is all an HTTP
+    # date has.
+    # 
+    # _@param_ `mtime`
+    def if_modified_since_satisfied?: (Time mtime) -> bool
+
+    # Rack::Files, so the range machinery is Rack's rather than ours. A nil
+    # root: #serving takes an absolute path and never reads @root, and the
+    # path is the repository's to decide.
+    def package_file_server: () -> Rack::Files
+
+    # Serves one immutable artifact off disk — a .gem or .tgz at a given
+    # path never changes; yank and unpublish rename away.
+    # 
+    # _@param_ `path` — absolute path of the file
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def serve_immutable_file: (String path, File::Stat stat, String? etag) -> ::Array[untyped]
+
+    # The request as Rack::Files should see it: If-Modified-Since comes out
+    # because we already answered it (Rack::Files would 304 bare, dropping
+    # ETag and Cache-Control), and If-Range is answered here by dropping the
+    # Range header, because Rack::Files does not implement it at all.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def rack_files_request: (String? etag, File::Stat stat) -> Rack::Request
+
+    # An If-Range carries either an entity tag or an HTTP date. A tag is
+    # compared strongly — a weak validator says nothing about byte offsets,
+    # which is the only thing this comparison is for.
+    # 
+    # _@param_ `if_range`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def if_range_matches?: (String if_range, String? etag, File::Stat stat) -> bool
+
+    # A request body past `max_push_bytes:`, answered 413 before the JSON
+    # parse — and before most of the read.
+    class PayloadTooLarge < StandardError
+    end
+
+    # How npm speaks OTP: the code arrives in the `npm-otp` header (plain
+    # `OTP` accepted as a curl fallback), and a refusal is a 401 challenge —
+    # `www-authenticate: OTP` plus "one-time pass" in the body — so npm
+    # prompts for a fresh code instead of reporting a failed login.
+    module OtpDialect
+      # _@param_ `env` — the Rack env
+      def code_in: (::Hash[untyped, untyped] env) -> String?
+
+      # _@param_ `env` — the Rack env
+      def self.code_in: (::Hash[untyped, untyped] env) -> String?
+
+      # _@return_ — a Rack response triplet
+      def otp_missing: () -> ::Array[untyped]
+
+      # _@return_ — a Rack response triplet
+      def self.otp_missing: () -> ::Array[untyped]
+
+      # _@return_ — a Rack response triplet
+      def otp_rejected: () -> ::Array[untyped]
+
+      # _@return_ — a Rack response triplet
+      def self.otp_rejected: () -> ::Array[untyped]
+
+      # _@param_ `message`
+      # 
+      # _@return_ — a Rack response triplet
+      def challenge: (String message) -> ::Array[untyped]
+
+      # _@param_ `message`
+      # 
+      # _@return_ — a Rack response triplet
+      def self.challenge: (String message) -> ::Array[untyped]
+    end
+
+    # Rewrites each served tarball on the fly to embed the licensee's key;
+    # counterpart of GemServer::Personalizer.
+    class Personalizer < SimpleDelegator
+      # The caller keeps the two contracts spelled out on
+      # GemServer::Personalizer: what `files_for:` returns depends only on the
+      # tarball and `personalization_key:`, and nil is a fact about the
+      # package, never about the licensee.
+      # 
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `license_key`
+      # 
+      # _@param_ `magic_comment_replacements` — checked here as well as in the repacker, so a bad pair is refused where the stack is built rather than on the first customer download
+      # 
+      # _@param_ `files` — files injected into every tarball
+      # 
+      # _@param_ `package_json_extras` — merged into package.json; defaults to a "paquette" key carrying the license key
+      # 
+      # _@param_ `files_for` — per-package files, called with (package_name, version, original_path); nil return means the package is served byte for byte
+      # 
+      # _@param_ `personalization_key` — everything the personalized bytes depend on beyond the tarball itself
+      # 
+      # _@param_ `cache_dir` — where personalized tarballs and opt-out markers are kept; the system temp directory is only a default
+      def initialize: (
+                        Paquette::NpmServer::NpmRepository repository,
+                        license_key: String,
+                        ?magic_comment_replacements: ::Hash[String, String],
+                        ?files: ::Hash[String, String],
+                        ?package_json_extras: ::Hash[untyped, untyped]?,
+                        ?files_for: Proc?,
+                        ?personalization_key: String?,
+                        ?cache_dir: String?
+                      ) -> void
+
+      # The wrapped validator with this personalizer's identity mixed in — the
+      # packument carries per-licensee integrity hashes in the document
+      # itself. The key is the same digest that names the cached tarballs on
+      # disk, so the validator is exactly as strong as that cache.
+      def cache_validator: () -> String?
+
+      # Every byte — and every dist.integrity — is baked for one licensee.
+      def varies_by_caller?: () -> bool
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — the personalized (or pass-through) tarball path
+      def package_file_path: (String package_name, String version) -> String?
+
+      # The hashes must be the personalized tarball's; the URL stays the repository's.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def dist_for: (String package_name, String version) -> ::Hash[String, String]
+
+      # The underlying `dist` hashes would fail every install. Every version
+      # has to be repacked and re-hashed before this document can be handed
+      # out, so a personalized metadata read costs a whole package where the
+      # plain one costs a cache lookup.
+      # 
+      # _@param_ `package_name`
+      def package_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # Keyed by everything that goes INTO the package: two licensees never
+      # share a file. See GemServer::Personalizer, whose scheme this is.
+      # 
+      # _@param_ `original_path`
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def personalize: (String original_path, String package_name, String version) -> String
+
+      # The FULL package name — basename keying once served one scope's code as
+      # another's. Stat identity, so a replaced tarball invalidates the cache
+      # without re-hashing the corpus.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `stat`
+      def cache_digest: (String package_name, String version, File::Stat stat) -> String
+
+      # Where "this package carries nothing to personalize" is written down.
+      # Keyed by the package and its source identity alone, never by the
+      # licensee — whether a package participates is a fact about the package.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `stat`
+      def plain_marker_path: (String package_name, String version, File::Stat stat) -> String
+
+      # Stable across processes, so a restart does not orphan the cache.
+      def personalization_digest: () -> String
+    end
+
+    # Abstract base class for NPM package repositories; mirrors GemRepository.
+    class NpmRepository
+      SEGMENT: untyped
+      VERSION: untyped
+
+      def initialize: () -> void
+
+      def package_names: () -> ::Array[String]
+
+      # _@return_ — [name, version] pairs
+      def package_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `package_name`
+      def versions_for_package: (String package_name) -> ::Array[String]
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — the path of the .tgz file
+      def package_file_path: (String package_name, String version) -> String?
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_exists?: (String package_name, String version) -> bool
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@return_ — the version's package.json document
+      def package_info: (String package_name, String version) -> ::Hash[untyped, untyped]?
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_dependencies: (String package_name, String version) -> ::Hash[String, String]
+
+      # _@param_ `package_name`
+      # 
+      # _@return_ — the packument
+      def package_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # _@param_ `package_name`
+      def dist_tags: (String package_name) -> ::Hash[String, String]
+
+      # A short string that changes whenever anything this repository would
+      # serve changes, or nil for "do not cache this". A packument replayed to
+      # the wrong licensee carries integrity hashes that cannot match the
+      # tarball they download — npm treats that as tampering.
+      def cache_validator: () -> String?
+
+      # Whether two callers can get different answers out of this repository —
+      # true is the safe default; see GemRepository#varies_by_caller?.
+      def varies_by_caller?: () -> bool
+
+      # _@param_ `binary_data` — the tarball bytes
+      # 
+      # _@param_ `dist_tags`
+      # 
+      # _@return_ — the stored version's info
+      def add_package: (String binary_data, ?dist_tags: ::Hash[String, String]) -> ::Hash[untyped, untyped]
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def yank_package: (String package_name, String version) -> void
+
+      # The registry-convention shape; lockfiles record it verbatim.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def self.tarball_path: (String package_name, String version) -> String
+
+      # Drops the scope: a scoped package lives in a directory named for it.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def self.tarball_filename: (String package_name, String version) -> String
+
+      # _@param_ `package_name`
+      def self.scoped?: (String package_name) -> bool
+
+      # _@param_ `package_name`
+      def self.valid_package_name?: (String package_name) -> bool
+
+      # _@param_ `version`
+      def self.valid_version?: (String version) -> bool
+
+      # Not Gem::Version: it mangles prereleases and rejects "+build" metadata.
+      # 
+      # _@param_ `versions`
+      def self.sort_versions: (::Array[String] versions) -> ::Array[String]
+
+      # _@param_ `versions`
+      def self.max_version: (::Array[String] versions) -> String?
+
+      # _@param_ `version`
+      def self.prerelease?: (String version) -> bool
+
+      # Newest stable release, or plain installs would get prereleases.
+      # 
+      # _@param_ `versions`
+      def self.max_release_version: (::Array[String] versions) -> String?
+
+      # Semver: a prerelease sorts *below* the same version without one.
+      # 
+      # _@param_ `a`
+      # 
+      # _@param_ `b`
+      def self.compare_versions: (String a, String b) -> Integer
+
+      # _@param_ `version`
+      # 
+      # _@return_ — release segments and
+      # prerelease identifiers
+      def self.split_version: (String version) -> [::Array[Integer], ::Array[String]]
+
+      # _@param_ `a`
+      # 
+      # _@param_ `b`
+      def self.compare_prerelease: (::Array[String] a, ::Array[String] b) -> Integer
+
+      # Passed through whole: a curated subset breaks whichever field it forgot.
+      # 
+      # _@param_ `package_json`
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `dist`
+      def self.version_doc: (
+                              ::Hash[untyped, untyped] package_json,
+                              String package_name,
+                              String version,
+                              ::Hash[untyped, untyped] dist
+                            ) -> ::Hash[untyped, untyped]
+    end
+
+    # Filters every read through an entitler block; non-entitled packages do
+    # not exist. Writes always raise: a gated caller may not mutate the corpus.
+    class ReadGatedRepository < SimpleDelegator
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `gate_key` — names this gate for HTTP caching — see the gem-side ReadGatedRepository for the full contract: name the identity the entitler consults and everything the answers depend on, or leave it out and the whole stack emits no ETag (the intended fail-closed default — a wrong ETag on a gated packument is one customer holding another's entitlements).
+      def initialize: (Paquette::NpmServer::NpmRepository repository, ?gate_key: String?) -> void
+
+      def cache_validator: () -> String?
+
+      # A gate may decide by something Paquette never sees — an IP, a header —
+      # so even two anonymous callers can get different views. Never `public`.
+      def varies_by_caller?: () -> bool
+
+      def package_names: () -> ::Array[String]
+
+      def package_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `package_name`
+      def versions_for_package: (String package_name) -> ::Array[String]
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_file_path: (String package_name, String version) -> String?
+
+      # false rather than nil: callers treat this as a boolean.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_exists?: (String package_name, String version) -> bool
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_info: (String package_name, String version) -> ::Hash[untyped, untyped]?
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_dependencies: (String package_name, String version) -> ::Hash[String, String]
+
+      # _@param_ `package_name`
+      def dist_tags: (String package_name) -> ::Hash[String, String]
+
+      # _@param_ `package_name`
+      def package_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # Recomputed so created/modified do not leak withheld publication dates.
+      # 
+      # _@param_ `times`
+      # 
+      # _@param_ `entitled`
+      def entitled_times: (::Hash[untyped, untyped]? times, ::Array[String] entitled) -> ::Hash[String, String]
+
+      # The entitler is the caller's, and a listing calls it once per package
+      # in the corpus — an entitler that reaches for a database on every call
+      # is the usual reason a gated index is slower than an ungated one.
+      # 
+      # _@param_ `criteria`
+      # 
+      # _@return_ — truthy when entitled
+      def entitled?: (**::Hash[untyped, untyped] criteria) -> Object
+
+      def add_package: () -> untyped
+
+      def yank_package: () -> untyped
+
+      def write_dist_tag: () -> untyped
+
+      # Raised by every write on a gated repository.
+      class WriteNotAllowed < StandardError
+      end
+    end
+
+    # Reads NPM packages from a directory; a scope is an ordinary directory:
+    #   packages/npm/@acme/widgets/widgets-1.0.0.tgz
+    class DirectoryNpmRepository < Paquette::NpmServer::NpmRepository
+      DIST_TAGS_FILE: untyped
+      SEGMENT: untyped
+      VERSION: untyped
+
+      # _@param_ `packages_dir` — the corpus root, created if absent
+      def initialize: (String packages_dir) -> void
+
+      # A digest of what the corpus holds — see the gem-side twin. Tarball
+      # paths carry publishes and unpublishes, but a dist-tag write edits
+      # dist-tags.json in place: no path moves, so the write shows only in the
+      # file's own mtime.
+      def fingerprint: () -> String
+
+      # Whole nanoseconds rather than a Float, which loses precision at the top
+      # of the range: two dist-tag writes landing inside one float tick would
+      # digest identically — a client keeping a 304 for a tag that has moved.
+      # 
+      # _@param_ `path`
+      def mtime_ns: (String path) -> Integer
+
+      def cache_validator: () -> String
+
+      # A directory of packages is the same directory for everybody; the
+      # wrappers are what make a response caller-specific.
+      def varies_by_caller?: () -> bool
+
+      def package_names: () -> ::Array[String]
+
+      # A directory listing per package in the corpus.
+      def package_versions: () -> ::Array[[String, String]]
+
+      # _@param_ `package_name`
+      def versions_for_package: (String package_name) -> ::Array[String]
+
+      # nil rather than a path for anything that is not a name and a version —
+      # the version is a path component too, and checking it only on the
+      # publish path would leave the read path free to compose "1/../../secret".
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_file_path: (String package_name, String version) -> String?
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_exists?: (String package_name, String version) -> bool
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_info: (String package_name, String version) -> ::Hash[untyped, untyped]?
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_dependencies: (String package_name, String version) -> ::Hash[String, String]
+
+      # "latest" is recomputed from disk: a stored tag can outlive its version.
+      # 
+      # _@param_ `package_name`
+      def dist_tags: (String package_name) -> ::Hash[String, String]
+
+      # Assembling this means reading the package.json out of every version's
+      # tarball and hashing every one of them; the cache below is what keeps a
+      # second request from paying for it again.
+      # 
+      # _@param_ `package_name`
+      def package_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # _@param_ `package_name`
+      def build_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # Hashes are computed from the file, never taken from the publisher.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def dist_for: (String package_name, String version) -> ::Hash[String, String]
+
+      # A republished version must never silently carry different bytes.
+      # 
+      # _@param_ `binary_data` — the tarball bytes
+      # 
+      # _@param_ `dist_tags`
+      # 
+      # _@return_ — the stored version's package.json
+      def add_package: (String binary_data, ?dist_tags: ::Hash[String, String]) -> ::Hash[untyped, untyped]
+
+      # The tomb stops the version being republished with different contents.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def yank_package: (String package_name, String version) -> void
+
+      # "latest" follows the newest release on disk; pointing it elsewhere is refused.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `tag`
+      # 
+      # _@param_ `version`
+      def write_dist_tag: (String package_name, String tag, String version) -> ::Hash[String, String]
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def tomb_file_path: (String package_name, String version) -> String?
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def tomb_exists?: (String package_name, String version) -> bool
+
+      # nil for a non-name, so "../../etc" resolves to no package, not a path.
+      # 
+      # _@param_ `package_name`
+      def package_dir: (String package_name) -> String?
+
+      # _@param_ `dir`
+      def each_child_dir: (String dir) ?{ (String path, String basename) -> void } -> void
+
+      # mtimes, unlike Time.now, keep the document stable between requests.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `versions`
+      def times_for: (String package_name, ::Array[String] versions) -> ::Hash[String, String]
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def readme_for: (String package_name, String version) -> String?
+
+      # _@param_ `package_name`
+      def dist_tags_path: (String package_name) -> String?
+
+      # _@param_ `package_name`
+      def read_dist_tags: (String package_name) -> ::Hash[String, String]
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `tags`
+      def write_dist_tags: (String package_name, ::Hash[String, String] tags) -> void
+
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def drop_dist_tags_for: (String package_name, String version) -> void
+
+      # Keyed on mtime + size so a replaced tarball is not served stale.
+      # 
+      # _@param_ `path`
+      # 
+      # _@param_ `aspect`
+      # 
+      # _@return_ — the cached block result
+      def cached: (String path, ?Symbol aspect) -> Object
+
+      # Raised on a publish of a name@version already on disk.
+      class PackageAlreadyExists < StandardError
+      end
+
+      # Raised when a payload cannot be read as a package, or its
+      # package.json claims something a server should not act on.
+      class InvalidPackage < StandardError
+      end
+
+      # Raised on an unpublish of a package that is not there.
+      class PackageNotFound < StandardError
+      end
+
+      # Raised on a publish of a tombed name@version.
+      class PackageYanked < StandardError
+      end
+    end
+  end
+
+  # Rewrites the contents of an npm tarball into a new one; counterpart of
+  # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
+  # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
+  class NpmRepacker
+    SOURCE_EXTENSIONS: untyped
+
+    # One line in, one line out — the rule the whole personalization scheme
+    # rests on (a changed line count shifts every sourcemap mapping below it),
+    # so a pair that cannot honour it is refused rather than bent to fit.
+    # 
+    # _@param_ `replacements`
+    def self.check_replacements!: (::Hash[String, String] replacements) -> void
+
+    # One-shot convenience for {#initialize} + {#repack}.
+    # 
+    # _@param_ `npm_path`
+    # 
+    # _@param_ `package_json_extras`
+    # 
+    # _@param_ `magic_comment_replacements`
+    # 
+    # _@param_ `files`
+    # 
+    # _@param_ `into`
+    # 
+    # _@return_ — the path of the repacked tarball
+    def self.repack: (
+                       String npm_path,
+                       ?package_json_extras: ::Hash[String, Object],
+                       ?magic_comment_replacements: ::Hash[String, String],
+                       ?files: ::Hash[String, String],
+                       ?into: String?
+                     ) -> String
+
+    # _@param_ `npm_path` — path of the source tarball
+    # 
+    # _@param_ `package_json_extras` — keys merged into package.json
+    # 
+    # _@param_ `magic_comment_replacements` — whole comment lines to replace, marker => replacement
+    # 
+    # _@param_ `files` — files to inject, path relative to the package root => content
+    # 
+    # _@param_ `into` — destination path; a tmpdir when nil
+    def initialize: (
+                      String npm_path,
+                      ?package_json_extras: ::Hash[String, Object],
+                      ?magic_comment_replacements: ::Hash[String, String],
+                      ?files: ::Hash[String, String],
+                      ?into: String?
+                    ) -> void
+
+    # _@return_ — the path of the repacked tarball
+    def repack: () ?{ (StringIO input, StringIO output, String relative_path) -> void } -> String
+
+    def destination: () -> String
+
+    # _@param_ `entry`
+    # 
+    # _@param_ `root`
+    def rewrite: (Paquette::Tarball::Entry entry, String root) -> Paquette::Tarball::Entry
+
+    # _@param_ `relative_path`
+    def replaceable?: (String relative_path) -> bool
+
+    # A whole comment line is replaced by a whole comment line: sourcemaps
+    # restart their column counter at every line, so rewriting one line cannot
+    # disturb the mappings on any other.
+    # 
+    # _@param_ `content`
+    # 
+    # _@param_ `relative_path`
+    def apply_magic_comment_replacements: (String content, String relative_path) -> String
+
+    # A marker still present after the pass was one the line-wise match could
+    # not reach — `esbuild --minify` pulls a legal comment onto the end of a
+    # code line — and the package would then be served with no license key in
+    # it and nothing to say so. Replacing it mid-line instead would shift
+    # sourcemap columns, which is exactly what the line-wise rule avoids.
+    # 
+    # _@param_ `text`
+    # 
+    # _@param_ `relative_path`
+    def verify_markers_applied: (String text, String relative_path) -> void
+
+    # _@param_ `entries`
+    # 
+    # _@param_ `root`
+    def apply_package_json_extras: (::Array[Paquette::Tarball::Entry] entries, String root) -> ::Array[Paquette::Tarball::Entry]
+
+    # Injected files inherit the package's oldest mtime, keeping the tarball
+    # independent of when they were added.
+    # 
+    # _@param_ `entries`
+    # 
+    # _@param_ `root`
+    def inject_files: (::Array[Paquette::Tarball::Entry] entries, String root) -> ::Array[Paquette::Tarball::Entry]
+
+    # _@param_ `entry`
+    # 
+    # _@param_ `content`
+    def with_content: (Paquette::Tarball::Entry entry, String content) -> Paquette::Tarball::Entry
+
+    # Raised when a marker survives the pass — see #verify_markers_applied.
+    class MarkerNotApplied < StandardError
+    end
+
+    # Raised for a marker or replacement spanning several lines.
+    class MultilineReplacement < StandardError
+    end
+  end
+
+  # Ceiling on any single regexp match, held for the duration of a request —
+  # every path here meets a regexp with a client-chosen string on the other
+  # side. Prepended into every Rack app in this gem; an application wanting a
+  # different ceiling sets `Paquette.regexp_timeout` once, at boot.
+  module RegexpTimeout
+    SUPPORTED: untyped
+    TimedOut: untyped
+
+    # Arms the process-wide regexp ceiling for one request.
+    def self.acquire: () -> void
+
+    # Releases one request's hold; the last one out restores the ambient
+    # timeout.
+    def self.release: () -> void
+
+    # A 400, not a 500: it ran out of time on bytes the client sent.
+    # 
+    # _@param_ `error`
+    # 
+    # _@return_ — a Rack response triplet
+    def self.timed_out: (Exception error) -> ::Array[untyped]
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+  end
+
+  # Conditional GET and cache directives, shared by both servers so the
+  # security-critical answers cannot drift between them. The including class
+  # supplies `@request` (the Rack::Request being served), `@repository` (the
+  # wrapper stack) and `@shared_caching`.
+  module ConditionalGet
+    IMMUTABLE_MAX_AGE: untyped
+    CREDENTIAL_HEADERS: untyped
+    MAX_RANGE_HEADER_BYTES: untyped
+    BYTE_OFFSET: untyped
+
+    # The validator for one response. nil (no ETag at all) when the stack
+    # refuses to name itself: a wrong ETag on a gated index is worse than
+    # serving every request in full.
+    # 
+    # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
+    # 
+    # _@param_ `weak`
+    def etag_for: (*::Array[String] resource_parts, ?weak: bool) -> String?
+
+    # `public` only when the embedder allowed shared caching, the request
+    # carried no credential and nothing in the stack varies by caller —
+    # getting this wrong serves one caller's view to the next. `no-cache`
+    # rather than `no-store` so the 304 stays reachable.
+    # 
+    # _@param_ `max_age`
+    def cache_directives: (?max_age: Integer?) -> ::Hash[String, String]
+
+    def shareable_response?: () -> bool
+
+    # Not sufficient on its own — several CDNs ignore Vary on anything but
+    # Accept-Encoding; `private` is what actually stands between two callers.
+    def vary_header: () -> String
+
+    # What every response leaving either server goes through. Anything a
+    # handler did not label is `private, no-store`: it carries no validator,
+    # so nothing could revalidate it.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def with_caching_defaults: (::Array[untyped] response) -> ::Array[untyped]
+
+    # _@param_ `vary` — the Vary already on the response
+    # 
+    # _@return_ — that Vary with Authorization merged in
+    def vary_with_authorization: (String? vary) -> String
+
+    # A 200 with the validator and the caching directives attached. An absent
+    # etag (fail-closed) still gets the directives: the response is then
+    # simply uncacheable-without-asking rather than mislabelled.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # `cacheable` plus ranges — what makes Bundler >= 2.5 fetch the compact
+    # index incrementally. `Repr-Digest` carries the digest of the *whole*
+    # representation even on a 206 (RFC 9530), or Bundler will not append;
+    # `Digest:` is the obsolete RFC 3230 spelling some intermediaries read.
+    # 
+    # _@param_ `response` — a Rack response triplet, body already in hand
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable_with_ranges: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # The single byte range this request asks for, or nil for "serve the
+    # whole thing" — never a 416, which would turn a Bundler that merely
+    # guessed the tail wrong into a failed install. Called after the
+    # conditional check: a matching If-None-Match is a 304, not a 206.
+    # 
+    # _@param_ `size` — the body size in bytes
+    # 
+    # _@param_ `etag`
+    def requested_byte_range: (Integer size, String? etag) -> ::Range[untyped]?
+
+    # Absent, If-Range allows the range. Present, only a strong tag equal to
+    # ours does: a weak validator says nothing about byte offsets, and a date
+    # says nothing about a body that is not a file.
+    # 
+    # _@param_ `etag`
+    def if_range_allows_range?: (String? etag) -> bool
+
+    # Parses `bytes=first-last`, with either side optionally empty, and
+    # nothing else. String operations rather than a pattern over the whole
+    # header, per AGENTS.md.
+    # 
+    # _@param_ `header`
+    # 
+    # _@param_ `size`
+    def parse_byte_range: (String header, Integer size) -> ::Range[untyped]?
+
+    # `bytes=-N` asks for the final N bytes. A bare `bytes=-` names no number
+    # and `bytes=-0` asks for nothing; neither is satisfiable, so both get the
+    # whole body.
+    # 
+    # _@param_ `last`
+    # 
+    # _@param_ `size`
+    def suffix_byte_range: (String last, Integer size) -> ::Range[untyped]?
+
+    # A 304 repeats the validator and the directives — a shared cache
+    # updates its stored headers from it.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `extra` — extra headers
+    # 
+    # _@return_ — a Rack response triplet
+    def not_modified: (String? etag, ?extra: ::Hash[String, String]) -> ::Array[untyped]
+
+    # A response that must never be stored by anything, for content that is
+    # the caller's identity itself.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def uncacheable: (::Array[untyped] response) -> ::Array[untyped]
+
+    # If-None-Match wins over If-Modified-Since when both are present, which
+    # is what RFC 9110 requires.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `mtime`
+    def conditional_hit?: (String? etag, Time mtime) -> bool?
+
+    # _@param_ `etag`
+    def if_none_match_satisfied?: (String? etag) -> bool
+
+    # Weak comparison, which is what If-None-Match on a GET calls for: a
+    # W/"x" a client holds matches the "x" we would send. String operations
+    # rather than a regexp because the value is client-chosen and arbitrarily
+    # long (see AGENTS.md).
+    # 
+    # _@param_ `value`
+    def opaque_tag: (String value) -> String
+
+    # An unparseable date is not a match; second resolution is all an HTTP
+    # date has.
+    # 
+    # _@param_ `mtime`
+    def if_modified_since_satisfied?: (Time mtime) -> bool
+
+    # Rack::Files, so the range machinery is Rack's rather than ours. A nil
+    # root: #serving takes an absolute path and never reads @root, and the
+    # path is the repository's to decide.
+    def package_file_server: () -> Rack::Files
+
+    # Serves one immutable artifact off disk — a .gem or .tgz at a given
+    # path never changes; yank and unpublish rename away.
+    # 
+    # _@param_ `path` — absolute path of the file
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def serve_immutable_file: (String path, File::Stat stat, String? etag) -> ::Array[untyped]
+
+    # The request as Rack::Files should see it: If-Modified-Since comes out
+    # because we already answered it (Rack::Files would 304 bare, dropping
+    # ETag and Cache-Control), and If-Range is answered here by dropping the
+    # Range header, because Rack::Files does not implement it at all.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def rack_files_request: (String? etag, File::Stat stat) -> Rack::Request
+
+    # An If-Range carries either an entity tag or an HTTP date. A tag is
+    # compared strongly — a weak validator says nothing about byte offsets,
+    # which is the only thing this comparison is for.
+    # 
+    # _@param_ `if_range`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def if_range_matches?: (String if_range, String? etag, File::Stat stat) -> bool
+  end
+
+  # How a repository stack names itself to an HTTP cache. Both servers wrap a
+  # base repository in per-caller gates and personalizers, so a validator
+  # derived from the corpus alone would let one licensee's cached response
+  # satisfy another's — the digest rules live here, once, for both servers.
+  module CacheValidation
+    # The stack's validator. Fails closed (nil) for an object that has never
+    # heard of the protocol.
+    # 
+    # _@param_ `repository`
+    def validator_of: (Object repository) -> String?
+
+    # The stack's validator. Fails closed (nil) for an object that has never
+    # heard of the protocol.
+    # 
+    # _@param_ `repository`
+    def self.validator_of: (Object repository) -> String?
+
+    # Whether two callers asking the stack the same question can get different
+    # answers — which decides whether an anonymous response may be `public`.
+    # True for anything that cannot say: being wrong the other way only costs
+    # a cache hit.
+    # 
+    # _@param_ `repository`
+    def varies_by_caller?: (Object repository) -> bool
+
+    # Whether two callers asking the stack the same question can get different
+    # answers — which decides whether an anonymous response may be `public`.
+    # True for anything that cannot say: being wrong the other way only costs
+    # a cache hit.
+    # 
+    # _@param_ `repository`
+    def self.varies_by_caller?: (Object repository) -> bool
+
+    # How a wrapper mixes itself into the validator of what it wraps. nil in
+    # either position gives nil out — the fail-closed rule the whole protocol
+    # rests on. The layer name is in the digest so that gating with key "k"
+    # and personalizing with key "k" cannot land on the same string.
+    # 
+    # _@param_ `inner_validator` — the wrapped stack's validator
+    # 
+    # _@param_ `layer` — a constant naming the wrapping layer
+    # 
+    # _@param_ `key` — what distinguishes this instance of the layer
+    def derive_validator: (String? inner_validator, String layer, String? key) -> String?
+
+    # How a wrapper mixes itself into the validator of what it wraps. nil in
+    # either position gives nil out — the fail-closed rule the whole protocol
+    # rests on. The layer name is in the digest so that gating with key "k"
+    # and personalizing with key "k" cannot land on the same string.
+    # 
+    # _@param_ `inner_validator` — the wrapped stack's validator
+    # 
+    # _@param_ `layer` — a constant naming the wrapping layer
+    # 
+    # _@param_ `key` — what distinguishes this instance of the layer
+    def self.derive_validator: (String? inner_validator, String layer, String? key) -> String?
+
+    # The validator for one response. Returns nil, meaning "emit no ETag",
+    # whenever the stack refused to name itself.
+    # 
+    # _@param_ `repository`
+    # 
+    # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
+    # 
+    # _@param_ `weak`
+    def etag_for: (Object repository, *::Array[String] resource_parts, ?weak: bool) -> String?
+
+    # The validator for one response. Returns nil, meaning "emit no ETag",
+    # whenever the stack refused to name itself.
+    # 
+    # _@param_ `repository`
+    # 
+    # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
+    # 
+    # _@param_ `weak`
+    def self.etag_for: (Object repository, *::Array[String] resource_parts, ?weak: bool) -> String?
+  end
+
+  # Routes requests to Rack apps by the first label of the Host header, with an
+  # optional fallback app for unmapped hosts.
+  class SubdomainRouter
+    include Paquette::RegexpTimeout
+
+    def initialize: () -> void
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # _@param_ `subdomain`
+    # 
+    # _@param_ `to` — a Rack app, or a class that instantiates to one
+    def map: (String subdomain, to: Object) -> void
+
+    # _@param_ `to` — a Rack app called when no subdomain matches
+    def fallback: (to: Object) -> void
+
+    # _@param_ `host`
+    # 
+    # _@return_ — the first host label, only when it is mapped
+    def extract_subdomain: (String host) -> String?
+  end
+
+  # Rack authentication handler that extracts an opaque access token from
+  # either a Bearer header or a Basic auth header with the token as username
+  # (the GitHub registry convention) — so machine clients like Bundler and npm,
+  # which only speak Basic auth, can authenticate with just a token in their
+  # config. The resolved identity is stored in env["paquette.identity"].
+  class TokenAuthorization < Rack::Auth::AbstractHandler
+    include Paquette::RegexpTimeout
+    BEARER_SENTINEL: untyped
+
+    # _@param_ `app` — the downstream Rack app
+    # 
+    # _@param_ `realm` — the authentication realm (used in WWW-Authenticate)
+    def initialize: (untyped app, ?String realm) ?{ () -> Object? } -> void
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    def challenge: () -> String
+
+    class Request < Rack::Auth::AbstractRequest
+      # _@return_ — the token, whichever scheme carried it
+      def token: () -> String?
+
+      # _@return_ — username and password
+      def credentials: () -> ([String, String] | [String])
+    end
+  end
+end

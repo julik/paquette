@@ -16,6 +16,9 @@ module Paquette::Tarball
   # Raised when a value does not fit its ustar header field.
   class NameTooLong < StandardError; end
 
+  # One member of a tarball: its path inside the archive plus the bytes and
+  # metadata to write for it.
+  #
   # @!attribute name
   #   @return [String]
   # @!attribute mode
@@ -26,10 +29,14 @@ module Paquette::Tarball
   #   @return [String]
   Entry = Struct.new(:name, :mode, :mtime, :content, keyword_init: true)
 
+  # @return [Integer]
   BLOCK_SIZE = 512
 
-  GZIP_MAGIC = "\x1f\x8b".b
+  # @return [String]
+  GZIP_MAGIC = [0x1f, 0x8b].pack("C*")
+  # @return [Integer]
   GZIP_DEFLATE = 8
+  # @return [Integer]
   GZIP_OS_UNKNOWN = 255
 
   class << self
@@ -202,6 +209,11 @@ module Paquette::Tarball
 
     # uid/gid/uname/gname are zeroed: they describe the packer, not the package.
     #
+    # @param name [String]
+    # @param mode [Integer]
+    # @param mtime [Time]
+    # @param size [Integer]
+    # @param typeflag [String] the ustar type flag ("0" for a file, "x" for a PAX record)
     # @return [String] one 512-byte ustar header block
     def header_for(name, mode, mtime, size, typeflag: "0")
       # An over-long name is already in a PAX record; this tail is the fallback.
@@ -224,6 +236,10 @@ module Paquette::Tarball
       header
     end
 
+    # @param header [String] the 512-byte block being filled in, mutated in place
+    # @param offset [Integer]
+    # @param length [Integer] the size of the field, which the value has to fit in
+    # @param value [String]
     # @raise [NameTooLong]
     # @return [void]
     def write_field(header, offset, length, value)

@@ -9,6 +9,8 @@ require "digest"
 module Paquette::ConditionalGet
   # A year, the longest max-age RFC 9111 suggests anyone bother emitting,
   # paired with `immutable` so a revalidating client does not even ask.
+  #
+  # @return [Integer]
   IMMUTABLE_MAX_AGE = 31_536_000
 
   private
@@ -28,6 +30,8 @@ module Paquette::ConditionalGet
   # Request headers that carry a credential. A request with either one is
   # never answered `public` — these are the two Rack::Cache itself treats
   # as private by default.
+  #
+  # @return [Array<String>]
   CREDENTIAL_HEADERS = %w[HTTP_AUTHORIZATION HTTP_COOKIE].freeze
 
   # `public` only when the embedder allowed shared caching, the request
@@ -157,10 +161,14 @@ module Paquette::ConditionalGet
 
   # The longest Range header worth looking at: a single byte range is two
   # numbers and a dash, anything longer is multi-range or junk.
+  #
+  # @return [Integer]
   MAX_RANGE_HEADER_BYTES = 128
 
   # One offset, bounded, because this string is client-chosen: `\d+` would
   # let a caller hand us a megabyte of digits to convert to an Integer.
+  #
+  # @return [Regexp]
   BYTE_OFFSET = /\A[0-9]{1,19}\z/
 
   # Parses `bytes=first-last`, with either side optionally empty, and
@@ -288,7 +296,7 @@ module Paquette::ConditionalGet
   # root: #serving takes an absolute path and never reads @root, and the
   # path is the repository's to decide.
   #
-  # @return [Rack::Files]
+  # @return [::Rack::Files]
   def package_file_server
     @package_file_server ||= Rack::Files.new(nil, {}, "application/octet-stream")
   end
@@ -297,7 +305,7 @@ module Paquette::ConditionalGet
   # path never changes; yank and unpublish rename away.
   #
   # @param path [String] absolute path of the file
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @param etag [String, nil]
   # @return [Array] a Rack response triplet
   def serve_immutable_file(path, stat, etag)
@@ -329,8 +337,8 @@ module Paquette::ConditionalGet
   # Range header, because Rack::Files does not implement it at all.
   #
   # @param etag [String, nil]
-  # @param stat [File::Stat]
-  # @return [Rack::Request]
+  # @param stat [::File::Stat]
+  # @return [::Rack::Request]
   def rack_files_request(etag, stat)
     env = @request.env.except("HTTP_IF_MODIFIED_SINCE")
 
@@ -348,7 +356,7 @@ module Paquette::ConditionalGet
   #
   # @param if_range [String]
   # @param etag [String, nil]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [Boolean]
   def if_range_matches?(if_range, etag, stat)
     return false if if_range.start_with?("W/")

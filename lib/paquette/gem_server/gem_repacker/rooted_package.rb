@@ -12,7 +12,7 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
   # run from the wrong directory it quietly builds a gem with no files in
   # it. The caller prunes against +root+ instead.
   #
-  # @param spec [Gem::Specification]
+  # @param spec [::Gem::Specification]
   # @param root [String] the directory spec.files are relative to
   # @param file_name [String] where the finished gem is written
   # @param build_time [Time] the timestamp stamped into the archive — see
@@ -35,7 +35,7 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
   # The RubyGems original with @root joined onto every path it looks at. The
   # names written into the tar stay relative, which is what a .gem holds.
   #
-  # @param tar [Gem::Package::TarWriter]
+  # @param tar [::Gem::Package::TarWriter]
   # @return [void]
   def add_files(tar)
     @spec.files.each do |file|

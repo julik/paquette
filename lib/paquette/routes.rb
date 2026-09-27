@@ -20,7 +20,7 @@ class Paquette::Routes
     # @return [String]
     attr_reader :method
 
-    # @return [Mustermann::Pattern]
+    # @return [::Mustermann::Pattern]
     attr_reader :pattern
 
     # @return [Proc]
@@ -42,7 +42,7 @@ class Paquette::Routes
       @metric_name = "#{method} #{pattern}"
     end
 
-    # @param request [Rack::Request]
+    # @param request [::Rack::Request]
     # @return [Boolean]
     def match?(request)
       @method == request.request_method && @pattern.match(path_of(request))
@@ -52,7 +52,7 @@ class Paquette::Routes
     # PATH_INFO — which is not a path, it is the root of the mount, where
     # the index page lives.
     #
-    # @param request [Rack::Request]
+    # @param request [::Rack::Request]
     # @return [String]
     def path_of(request)
       path = request.path_info
@@ -63,7 +63,7 @@ class Paquette::Routes
     # on which every regexp a handler runs raises instead of failing to
     # match. Refused at the door.
     #
-    # @param request [Rack::Request]
+    # @param request [::Rack::Request]
     # @return [Hash{String => Object}] the pattern's captures
     # @raise [MalformedRequest]
     def params(request)
@@ -74,21 +74,21 @@ class Paquette::Routes
       end
     end
 
-    # @param instance [Object] the server instance the block runs against
-    # @param request [Rack::Request]
+    # @param server [Object] the server instance the block runs against
+    # @param request [::Rack::Request]
     # @return [Array] a Rack response triplet
-    def perform_action(instance, request)
-      Measurometer.instrument("paquette.route.#{@metric_name}") { call_block(instance, request) }
+    def perform_action(server, request)
+      Measurometer.instrument("paquette.route.#{@metric_name}") { call_block(server, request) }
     end
 
-    # @param instance [Object]
-    # @param request [Rack::Request]
+    # @param server [Object]
+    # @param request [::Rack::Request]
     # @return [Array] a Rack response triplet
-    def call_block(instance, request)
+    def call_block(server, request)
       route_params = params(request)
       query_params = query_params(request)
       symbol_params = route_params.merge(query_params).transform_keys(&:to_sym)
-      instance.instance_exec(**acceptable(symbol_params), &@block)
+      server.instance_exec(**acceptable(symbol_params), &@block)
     end
 
     # Rack parses the query string *and* the body to answer #params, and a
@@ -96,7 +96,7 @@ class Paquette::Routes
     # client's fault, not a 500. The bare EOFError is the multipart
     # parser's, untagged, for a body shorter than its Content-Length.
     #
-    # @param request [Rack::Request]
+    # @param request [::Rack::Request]
     # @return [Hash{String => Object}]
     # @raise [MalformedRequest]
     def query_params(request)
@@ -159,6 +159,8 @@ class Paquette::Routes
 
   # Regexp.timeout bounds one match; nothing bounds a table of them, so
   # the clock is checked between candidates.
+  #
+  # @return [Float]
   DEFAULT_MATCH_BUDGET = 0.1
 
   # @param match_budget [Float] seconds allowed for matching the whole table
@@ -183,7 +185,7 @@ class Paquette::Routes
     @match_budget = match_budget
   end
 
-  # @param request [Rack::Request]
+  # @param request [::Rack::Request]
   # @return [Route, nil]
   # @raise [MatchBudgetExceeded]
   def match(request)
@@ -198,11 +200,11 @@ class Paquette::Routes
   end
 
   # @param route [Route]
-  # @param instance [Object]
-  # @param request [Rack::Request]
+  # @param server [Object]
+  # @param request [::Rack::Request]
   # @return [Array] a Rack response triplet
-  def perform_action(route, instance, request)
-    route.perform_action(instance, request)
+  def perform_action(route, server, request)
+    route.perform_action(server, request)
   end
 
   # What a request would dispatch to, named. `name` is the route's
@@ -218,7 +220,7 @@ class Paquette::Routes
   # parser. A matched path whose segments fail the UTF-8 check still gets
   # its name, with empty params.
   #
-  # @param request [Rack::Request]
+  # @param request [::Rack::Request]
   # @return [Recognition, nil] nil for a request no route wants
   def recognize(request)
     route = match(request)

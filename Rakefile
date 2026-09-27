@@ -41,16 +41,23 @@ begin
     t.files = ["lib/**/*.rb"]
   end
 
+  # The duck-type notices are suppressed on purpose: a handful of parameters
+  # genuinely are duck types (a Rack app, an entitler, an authenticator), and
+  # untyped is the right signature for them. Everything else sord can say —
+  # warn, omit, error — stays on, so a missing or unresolvable type still
+  # shows up in the run.
+  SORD_FLAGS = "--no-sord-comments --exclude-messages duck"
+
   desc "Generate RBI signatures from YARD tags into rbi/paquette.rbi"
   task :rbi do
     mkdir_p "rbi"
-    sh "bundle exec sord --no-sord-comments rbi/paquette.rbi"
+    sh "bundle exec sord #{SORD_FLAGS} rbi/paquette.rbi"
   end
 
   desc "Generate RBS signatures from YARD tags into sig/paquette.rbs"
   task :rbs do
     mkdir_p "sig"
-    sh "bundle exec sord --no-sord-comments sig/paquette.rbs"
+    sh "bundle exec sord #{SORD_FLAGS} sig/paquette.rbs"
   end
 
   desc "Generate docs and type signatures"

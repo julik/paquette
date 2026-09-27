@@ -20,6 +20,7 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
   # Raised on a publish of a tombed name@version.
   class PackageYanked < StandardError; end
 
+  # @return [String]
   DIST_TAGS_FILE = "dist-tags.json"
 
   # @param packages_dir [String] the corpus root, created if absent

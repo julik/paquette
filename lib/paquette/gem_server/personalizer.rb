@@ -11,6 +11,8 @@ require "measurometer"
 class Paquette::GemServer::Personalizer < SimpleDelegator
   # Here for the day the checksum sidecar's shape has to change. Checked by
   # nothing today — the reader keys off the fields it needs.
+  #
+  # @return [Integer]
   CHECKSUM_SIDECAR_FORMAT_VERSION = 1
 
   # Two rules make the caching sound, and they are the caller's to keep:
@@ -210,7 +212,7 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   end
 
   # @param served [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [String, nil]
   def read_checksum_sidecar(served, stat)
     fields = JSON.parse(File.read(checksum_sidecar_path(served)))
@@ -228,7 +230,7 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   # a failed request.
   #
   # @param served [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @param checksum [String]
   # @return [void]
   def write_checksum_sidecar(served, stat, checksum)
@@ -251,7 +253,7 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   # Whole nanoseconds. Float mtimes lose precision on large timestamps, and
   # this is compared for equality.
   #
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [Integer]
   def mtime_ns(stat)
     stat.mtime.to_i * 1_000_000_000 + stat.mtime.nsec
@@ -262,7 +264,7 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   #
   # @param gem_name [String]
   # @param version [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [String]
   def cache_path(gem_name, version, stat)
     digest = Digest::SHA256.hexdigest([
@@ -278,7 +280,7 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
   #
   # @param gem_name [String]
   # @param version [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [String]
   def plain_marker_path(gem_name, version, stat)
     digest = Digest::SHA256.hexdigest([stat.mtime.to_f, stat.size].join("\0"))[0, 24]

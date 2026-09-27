@@ -16,6 +16,8 @@ class Paquette::NpmRepacker
   class MultilineReplacement < StandardError; end
 
   # Binary assets and sourcemaps are copied through untouched.
+  #
+  # @return [Array<String>]
   SOURCE_EXTENSIONS = %w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze
 
   # One line in, one line out — the rule the whole personalization scheme

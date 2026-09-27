@@ -1,5 +1,8 @@
 ## Unreleased
 
+## 0.3.0
+
+- Ship signature files that name every external type. A type sord could not resolve — `Rack::Request`, `Gem::Specification`, `File::Stat` and the like — used to land in `rbi/paquette.rbi` and `sig/paquette.rbs` as a `SORD_ERROR_` constant, which no type checker can read; those types are now root-anchored in the YARD tags and come through by name, and every constant carries a type of its own
 - Document every method and attribute with YARD type tags, and cut the code comments down to what a thing does and why the non-obvious parts are the way they are. `rake yard` builds the docs; `rake rbi` and `rake rbs` generate `rbi/paquette.rbi` and `sig/paquette.rbs` from the tags via sord, and the signature files ship with the gem
 - Store, index, download and yank a platform build as its own artifact. `DirectoryGemRepository` keyed a gem by name and version alone, so a push of `nokogiri-1.16.0-java` wanted the plain build's path and was refused 409 "already exists"; a gem is now filed under the filename `Gem::Specification#file_name` gives it, which leaves a plain-ruby gem's path exactly where it was
 - Make `GemAlreadyExists` and `GemYanked` mean "this name, version *and* platform", so a yanked java build neither hides its ruby sibling nor blocks it from being pushed

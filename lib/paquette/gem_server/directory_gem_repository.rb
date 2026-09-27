@@ -80,7 +80,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # @param gem_payload [IO, String] an IO to stream from (the form the
   #   server uses — a 50MB push should not become a 50MB Ruby String) or
   #   raw bytes
-  # @return [Gem::Specification] the parsed spec
+  # @return [::Gem::Specification] the parsed spec
   # @raise [InvalidGem] when the payload cannot be opened as a gem or its
   #   spec claims something a server should not act on
   # @raise [GemYanked] for a tombed name+version+platform
@@ -139,6 +139,8 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
 
   # Serializes the alias flip below. Two concurrent pushes must not have
   # one of them restore the flag while the other is still inside Psych.
+  #
+  # @return [Mutex]
   YAML_ALIAS_MUTEX = Mutex.new
 
   # Reads the spec out of an uploaded .gem with YAML alias expansion off:
@@ -148,7 +150,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # never permanently at require time.
   #
   # @param gem_path [String]
-  # @return [Gem::Specification]
+  # @return [::Gem::Specification]
   def read_uploaded_spec(gem_path)
     # Gem::SafeYAML is only defined once RubyGems has pulled Psych in,
     # which Gem::Package does lazily.
@@ -285,7 +287,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   #
   # @param gem_name [String]
   # @param version [String]
-  # @return [Gem::Specification, nil]
+  # @return [::Gem::Specification, nil]
   def gem_spec(gem_name, version)
     gem_file = gem_file_path(gem_name, version)
     return nil unless File.exist?(gem_file)
@@ -334,6 +336,8 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
 
   # Where the derived-metadata sidecars live. The leading dot keeps it out
   # of every glob in this class: Dir.glob skips dotfiles unless asked.
+  #
+  # @return [String]
   CACHE_DIR_BASENAME = ".paquette-cache"
 
   # @param gem_name [String]
@@ -387,7 +391,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   #
   # @param gem_name [String]
   # @param version [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [Hash{String => Object}, nil]
   def read_sidecar(gem_name, version, stat)
     fields = JSON.parse(File.read(sidecar_path(gem_name, version)))
@@ -407,8 +411,14 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # Bump this whenever compact_info_fields gains, drops or changes the
   # meaning of a key: a warm cache would otherwise quietly serve
   # yesterday's line forever.
+  #
+  # @return [Integer]
   SIDECAR_FORMAT_VERSION = 3
 
+  # @param gem_name [String]
+  # @param version [String]
+  # @param gem_file [String]
+  # @param stat [::File::Stat]
   # @return [Hash{String => Object}, nil]
   def derive_sidecar(gem_name, version, gem_file, stat)
     Measurometer.instrument("paquette.gem_repository.derive_sidecar") do
@@ -416,6 +426,10 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
   end
 
+  # @param gem_name [String]
+  # @param version [String]
+  # @param gem_file [String]
+  # @param stat [::File::Stat]
   # @return [Hash{String => Object}, nil]
   def derive_sidecar_fields(gem_name, version, gem_file, stat)
     spec = gem_spec(gem_name, version)
@@ -439,6 +453,9 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # since two racing writers derived the same bytes. The cache is an
   # optimization — on a read-only directory the rescue eats every write.
   #
+  # @param gem_name [String]
+  # @param version [String]
+  # @param fields [Hash{String => Object}]
   # @return [nil]
   def write_sidecar(gem_name, version, fields)
     # Declared out here so the rescue below can still see it.
@@ -462,7 +479,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # An integer rather than a Float on purpose: the guard is an
   # exact-equality check, and integers survive a trip through JSON.
   #
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [Integer]
   def mtime_ns(stat)
     mtime = stat.mtime

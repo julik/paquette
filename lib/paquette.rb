@@ -2,10 +2,15 @@ require "measurometer"
 
 require_relative "paquette/version"
 
+# Rack building blocks for serving RubyGems and npm packages out of a
+# directory, with the index formats, conditional GETs and push endpoints the
+# two clients expect.
 module Paquette
   # The default ceiling on any single regexp match, in seconds. Lives here
   # rather than next to RegexpTimeout so that setting it at boot does not
   # load the rest of the gem.
+  #
+  # @return [Float]
   DEFAULT_REGEXP_TIMEOUT = 0.05
 
   class << self
@@ -20,6 +25,8 @@ module Paquette
 
   # The largest package push either server accepts, in bytes — the default
   # for the `max_push_bytes:` keyword both take. `nil` removes the cap.
+  #
+  # @return [Integer]
   MAX_PUSH_SIZE_BYTES = 50 * 1024 * 1024
 
   # Autoloaded rather than required: an application embedding the gem server

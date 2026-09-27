@@ -21,6 +21,8 @@ class Paquette::NpmServer
 
   # npm sends the scope separator percent-encoded for metadata but plain in
   # tarball URLs; normalizing makes a package name one path segment.
+  #
+  # @return [Regexp]
   SCOPED_PATH = %r{\A(/(?:-/package/)?)(@[^/%]+)/([^/]+)(/.*)?\z}
 
   @@routes = Paquette::Routes.draw do |r|
@@ -163,6 +165,7 @@ class Paquette::NpmServer
     version unless version.empty?
   end
 
+  # @return [String]
   DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
 
   # @param repository [Paquette::NpmServer::NpmRepository, String] the
@@ -290,6 +293,10 @@ class Paquette::NpmServer
   # download ETag can never disagree with the document that sent npm here —
   # npm hard-fails an install when those two disagree.
   #
+  # @param package_name [String]
+  # @param version [String]
+  # @param path [String]
+  # @param stat [::File::Stat]
   # @return [String]
   def tarball_etag(package_name, version, path, stat)
     integrity = dist_integrity(package_name, version)

@@ -5,11 +5,15 @@ require "cgi"
 # get your own root. The blurb is HTML-escaped on the way in: a caller
 # wanting markup is a caller wanting their own index app.
 class Paquette::IndexPage
+  # @return [String]
   TEMPLATE_PATH = File.join(__dir__, "index_page", "page.html")
+  # @return [String]
   MASTHEAD_PATH = File.join(__dir__, "index_page", "masthead.svg")
 
   # An XML declaration is legal in a standalone .svg file and illegal
   # halfway down an HTML document, so it comes off when the art is inlined.
+  #
+  # @return [Regexp]
   XML_DECLARATION = /\A<\?xml[^>]{0,255}\?>\s*/
 
   # Read once per process rather than once per request: the root is what

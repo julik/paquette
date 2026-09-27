@@ -127,6 +127,8 @@ class Paquette::NpmServer::NpmRepository
   end
 
   # Tighter than npm's rules: nothing that could escape the packages directory.
+  #
+  # @return [Regexp]
   SEGMENT = /\A[a-z0-9][a-z0-9._-]*\z/
 
   # @param package_name [String]
@@ -146,6 +148,8 @@ class Paquette::NpmServer::NpmRepository
   # The version is half of every tarball filename — a path component out
   # of a package.json the uploader wrote. Tighter than semver, which
   # decides what sorts before what, not what is safe in a path.
+  #
+  # @return [Regexp]
   VERSION = /\A[0-9][0-9A-Za-z.+-]{0,63}\z/
 
   # @param version [String]

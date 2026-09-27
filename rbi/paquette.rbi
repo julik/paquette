@@ -1,8 +1,11 @@
 # typed: strong
+# Rack building blocks for serving RubyGems and npm packages out of a
+# directory, with the index formats, conditional GETs and push endpoints the
+# two clients expect.
 module Paquette
   DEFAULT_REGEXP_TIMEOUT = T.let(0.05, T.untyped)
   MAX_PUSH_SIZE_BYTES = T.let(50 * 1024 * 1024, T.untyped)
-  VERSION = T.let("0.2.0", T.untyped)
+  VERSION = T.let("0.3.0", T.untyped)
 
   class << self
     # The regexp timeout every Rack app in this gem installs for the duration
@@ -27,18 +30,18 @@ module Paquette
     def initialize(routes, match_budget: DEFAULT_MATCH_BUDGET); end
 
     # _@param_ `request`
-    sig { params(request: Rack::Request).returns(T.nilable(Route)) }
+    sig { params(request: ::Rack::Request).returns(T.nilable(Route)) }
     def match(request); end
 
     # _@param_ `route`
     # 
-    # _@param_ `instance`
+    # _@param_ `server`
     # 
     # _@param_ `request`
     # 
     # _@return_ — a Rack response triplet
-    sig { params(route: Route, instance: Object, request: Rack::Request).returns(T::Array[T.untyped]) }
-    def perform_action(route, instance, request); end
+    sig { params(route: Route, server: Object, request: ::Rack::Request).returns(T::Array[T.untyped]) }
+    def perform_action(route, server, request); end
 
     # Recognize without performing: only the path is read, never the query
     # parser. A matched path whose segments fail the UTF-8 check still gets
@@ -47,7 +50,7 @@ module Paquette
     # _@param_ `request`
     # 
     # _@return_ — nil for a request no route wants
-    sig { params(request: Rack::Request).returns(T.nilable(Recognition)) }
+    sig { params(request: ::Rack::Request).returns(T.nilable(Recognition)) }
     def recognize(request); end
 
     sig { returns(Float) }
@@ -82,7 +85,7 @@ module Paquette
       def initialize(method, pattern, block); end
 
       # _@param_ `request`
-      sig { params(request: Rack::Request).returns(T::Boolean) }
+      sig { params(request: ::Rack::Request).returns(T::Boolean) }
       def match?(request); end
 
       # Rack::Builder#map hands the mount point itself over with an empty
@@ -90,7 +93,7 @@ module Paquette
       # the index page lives.
       # 
       # _@param_ `request`
-      sig { params(request: Rack::Request).returns(String) }
+      sig { params(request: ::Rack::Request).returns(String) }
       def path_of(request); end
 
       # Mustermann unescapes %xx, so a segment can arrive as invalid UTF-8 —
@@ -100,24 +103,24 @@ module Paquette
       # _@param_ `request`
       # 
       # _@return_ — the pattern's captures
-      sig { params(request: Rack::Request).returns(T::Hash[String, Object]) }
+      sig { params(request: ::Rack::Request).returns(T::Hash[String, Object]) }
       def params(request); end
 
-      # _@param_ `instance` — the server instance the block runs against
+      # _@param_ `server` — the server instance the block runs against
       # 
       # _@param_ `request`
       # 
       # _@return_ — a Rack response triplet
-      sig { params(instance: Object, request: Rack::Request).returns(T::Array[T.untyped]) }
-      def perform_action(instance, request); end
+      sig { params(server: Object, request: ::Rack::Request).returns(T::Array[T.untyped]) }
+      def perform_action(server, request); end
 
-      # _@param_ `instance`
+      # _@param_ `server`
       # 
       # _@param_ `request`
       # 
       # _@return_ — a Rack response triplet
-      sig { params(instance: Object, request: Rack::Request).returns(T::Array[T.untyped]) }
-      def call_block(instance, request); end
+      sig { params(server: Object, request: ::Rack::Request).returns(T::Array[T.untyped]) }
+      def call_block(server, request); end
 
       # Rack parses the query string *and* the body to answer #params, and a
       # body that does not match its Content-Type makes it raise — the
@@ -125,7 +128,7 @@ module Paquette
       # parser's, untagged, for a body shorter than its Content-Length.
       # 
       # _@param_ `request`
-      sig { params(request: Rack::Request).returns(T::Hash[String, Object]) }
+      sig { params(request: ::Rack::Request).returns(T::Hash[String, Object]) }
       def query_params(request); end
 
       # The block only gets the keywords it declares: a client's stray query
@@ -138,7 +141,7 @@ module Paquette
       sig { returns(String) }
       attr_reader :method
 
-      sig { returns(Mustermann::Pattern) }
+      sig { returns(::Mustermann::Pattern) }
       attr_reader :pattern
 
       sig { returns(Proc) }
@@ -199,7 +202,7 @@ module Paquette
   # mtime as an argument nor emit a PAX header for an over-long path.
   module Tarball
     BLOCK_SIZE = T.let(512, T.untyped)
-    GZIP_MAGIC = T.let("\x1f\x8b".b, T.untyped)
+    GZIP_MAGIC = T.let([0x1f, 0x8b].pack("C*"), T.untyped)
     GZIP_DEFLATE = T.let(8, T.untyped)
     GZIP_OS_UNKNOWN = T.let(255, T.untyped)
 
@@ -270,24 +273,41 @@ module Paquette
 
     # uid/gid/uname/gname are zeroed: they describe the packer, not the package.
     # 
+    # _@param_ `name`
+    # 
+    # _@param_ `mode`
+    # 
+    # _@param_ `mtime`
+    # 
+    # _@param_ `size`
+    # 
+    # _@param_ `typeflag` — the ustar type flag ("0" for a file, "x" for a PAX record)
+    # 
     # _@return_ — one 512-byte ustar header block
     sig do
       params(
-        name: T.untyped,
-        mode: T.untyped,
-        mtime: T.untyped,
-        size: T.untyped,
-        typeflag: T.untyped
+        name: String,
+        mode: Integer,
+        mtime: Time,
+        size: Integer,
+        typeflag: String
       ).returns(String)
     end
     def self.header_for(name, mode, mtime, size, typeflag: "0"); end
 
+    # _@param_ `header` — the 512-byte block being filled in, mutated in place
+    # 
+    # _@param_ `offset`
+    # 
+    # _@param_ `length` — the size of the field, which the value has to fit in
+    # 
+    # _@param_ `value`
     sig do
       params(
-        header: T.untyped,
-        offset: T.untyped,
-        length: T.untyped,
-        value: T.untyped
+        header: String,
+        offset: Integer,
+        length: Integer,
+        value: String
       ).void
     end
     def self.write_field(header, offset, length, value); end
@@ -334,6 +354,9 @@ module Paquette
     class NameTooLong < StandardError
     end
 
+    # One member of a tarball: its path inside the archive plus the bytes and
+    # metadata to write for it.
+    # 
     # @!attribute name
     #   @return [String]
     # @!attribute mode
@@ -711,13 +734,21 @@ module Paquette
     # away, a Personalizer's path is per-licensee), so a download is served
     # immutable with a year-long max-age.
     # 
+    # _@param_ `gem_path`
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `gem_name`
+    # 
+    # _@param_ `version`
+    # 
     # _@return_ — a Rack response triplet
     sig do
       params(
-        gem_path: T.untyped,
-        stat: T.untyped,
-        gem_name: T.untyped,
-        version: T.untyped
+        gem_path: String,
+        stat: ::File::Stat,
+        gem_name: String,
+        version: String
       ).returns(T::Array[T.untyped])
     end
     def serve_gem_file(gem_path, stat, gem_name, version); end
@@ -725,12 +756,20 @@ module Paquette
     # The SHA256 the repository already computed — the very number the index
     # publishes as `checksum:`, so the two can never disagree. Size and
     # mtime are the weaker fallback for a repository without gem_checksum.
+    # 
+    # _@param_ `gem_path`
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `gem_name`
+    # 
+    # _@param_ `version`
     sig do
       params(
-        gem_path: T.untyped,
-        stat: T.untyped,
-        gem_name: T.untyped,
-        version: T.untyped
+        gem_path: String,
+        stat: ::File::Stat,
+        gem_name: String,
+        version: String
       ).returns(String)
     end
     def gem_file_etag(gem_path, stat, gem_name, version); end
@@ -942,7 +981,7 @@ module Paquette
     # Rack::Files, so the range machinery is Rack's rather than ours. A nil
     # root: #serving takes an absolute path and never reads @root, and the
     # path is the repository's to decide.
-    sig { returns(Rack::Files) }
+    sig { returns(::Rack::Files) }
     def package_file_server; end
 
     # Serves one immutable artifact off disk — a .gem or .tgz at a given
@@ -955,7 +994,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@return_ — a Rack response triplet
-    sig { params(path: String, stat: File::Stat, etag: T.nilable(String)).returns(T::Array[T.untyped]) }
+    sig { params(path: String, stat: ::File::Stat, etag: T.nilable(String)).returns(T::Array[T.untyped]) }
     def serve_immutable_file(path, stat, etag); end
 
     # The request as Rack::Files should see it: If-Modified-Since comes out
@@ -966,7 +1005,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    sig { params(etag: T.nilable(String), stat: File::Stat).returns(Rack::Request) }
+    sig { params(etag: T.nilable(String), stat: ::File::Stat).returns(::Rack::Request) }
     def rack_files_request(etag, stat); end
 
     # An If-Range carries either an entity tag or an HTTP date. A tag is
@@ -978,7 +1017,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    sig { params(if_range: String, etag: T.nilable(String), stat: File::Stat).returns(T::Boolean) }
+    sig { params(if_range: String, etag: T.nilable(String), stat: ::File::Stat).returns(T::Boolean) }
     def if_range_matches?(if_range, etag, stat); end
 
     # How `gem push` speaks OTP: the code arrives in the `OTP` header, and a
@@ -1021,7 +1060,9 @@ module Paquette
 
       # The one method IO.copy_stream requires of a non-IO source; raises the
       # moment the count passes the cap.
-      sig { params(args: T.untyped).returns(T.nilable(String)) }
+      # 
+      # _@param_ `args` — the length and buffer arguments of IO#read
+      sig { params(args: T::Array[T.untyped]).returns(T.nilable(String)) }
       def read(*args); end
 
       # The count starts over with every rewind so that "read twice" is not
@@ -1029,6 +1070,7 @@ module Paquette
       sig { void }
       def rewind; end
 
+      # Raised the moment a body reads past its byte cap.
       class TooLarge < StandardError
       end
     end
@@ -1118,7 +1160,7 @@ module Paquette
       # path forever, which leaked one spec per gem served.
       # 
       # _@param_ `spec`
-      sig { params(spec: Gem::Specification).returns(Gem::Specification) }
+      sig { params(spec: ::Gem::Specification).returns(::Gem::Specification) }
       def repacked_spec(spec); end
 
       sig { void }
@@ -1170,7 +1212,7 @@ module Paquette
         # _@return_ — file_name
         sig do
           params(
-            spec: Gem::Specification,
+            spec: ::Gem::Specification,
             root: String,
             file_name: String,
             build_time: Time
@@ -1182,7 +1224,7 @@ module Paquette
         # names written into the tar stay relative, which is what a .gem holds.
         # 
         # _@param_ `tar`
-        sig { params(tar: Gem::Package::TarWriter).void }
+        sig { params(tar: ::Gem::Package::TarWriter).void }
         def add_files(tar); end
 
         # Gem::Package#build reports on stdout, which is what a person running
@@ -1312,7 +1354,7 @@ module Paquette
       # _@param_ `served`
       # 
       # _@param_ `stat`
-      sig { params(served: String, stat: File::Stat).returns(T.nilable(String)) }
+      sig { params(served: String, stat: ::File::Stat).returns(T.nilable(String)) }
       def read_checksum_sidecar(served, stat); end
 
       # Tempfile-and-rename, so a reader never sees half a digest. Failure is
@@ -1324,14 +1366,14 @@ module Paquette
       # _@param_ `stat`
       # 
       # _@param_ `checksum`
-      sig { params(served: String, stat: File::Stat, checksum: String).void }
+      sig { params(served: String, stat: ::File::Stat, checksum: String).void }
       def write_checksum_sidecar(served, stat, checksum); end
 
       # Whole nanoseconds. Float mtimes lose precision on large timestamps, and
       # this is compared for equality.
       # 
       # _@param_ `stat`
-      sig { params(stat: File::Stat).returns(Integer) }
+      sig { params(stat: ::File::Stat).returns(Integer) }
       def mtime_ns(stat); end
 
       # Stat identity in the name, so a replaced source file misses the cache
@@ -1342,7 +1384,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(gem_name: String, version: String, stat: File::Stat).returns(String) }
+      sig { params(gem_name: String, version: String, stat: ::File::Stat).returns(String) }
       def cache_path(gem_name, version, stat); end
 
       # Where "this gem carries nothing to personalize" is written down — an
@@ -1355,7 +1397,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(gem_name: String, version: String, stat: File::Stat).returns(String) }
+      sig { params(gem_name: String, version: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(gem_name, version, stat); end
 
       # Everything this personalizer would write into a gem, as one short hash.
@@ -1400,7 +1442,7 @@ module Paquette
       # _@param_ `gem_name`
       # 
       # _@param_ `version`
-      sig { params(gem_name: String, version: String).returns(T.nilable(Gem::Specification)) }
+      sig { params(gem_name: String, version: String).returns(T.nilable(::Gem::Specification)) }
       def gem_spec(gem_name, version); end
 
       # _@param_ `gem_name`
@@ -1487,7 +1529,7 @@ module Paquette
       # _@param_ `spec`
       # 
       # _@param_ `checksum`
-      sig { params(version: String, spec: Gem::Specification, checksum: String).returns(String) }
+      sig { params(version: String, spec: ::Gem::Specification, checksum: String).returns(String) }
       def self.compact_info_line(version, spec, checksum); end
 
       # The spec boiled down to plain strings and arrays — this hash is what a
@@ -1496,7 +1538,7 @@ module Paquette
       # _@param_ `spec`
       # 
       # _@param_ `checksum`
-      sig { params(spec: Gem::Specification, checksum: String).returns(T::Hash[String, Object]) }
+      sig { params(spec: ::Gem::Specification, checksum: String).returns(T::Hash[String, Object]) }
       def self.compact_info_fields(spec, checksum); end
 
       # Renders a line from a fields hash — freshly extracted or read back from
@@ -1546,7 +1588,7 @@ module Paquette
       # unreadable versus dishonest.
       # 
       # _@param_ `message`
-      sig { params(message: String).returns(T.untyped) }
+      sig { params(message: String).void }
       def self.invalid!(message); end
 
       # Checks `spec` and returns the validated triple as plain Strings, so a
@@ -1556,7 +1598,7 @@ module Paquette
       # _@param_ `spec`
       # 
       # _@return_ — name, version, platform
-      sig { params(spec: Gem::Specification).returns([String, String, String]) }
+      sig { params(spec: ::Gem::Specification).returns([String, String, String]) }
       def self.validate!(spec); end
 
       # The same checks applied to the params of a yank, which name a path
@@ -1580,14 +1622,14 @@ module Paquette
       # that produces no filename suffix at all.
       # 
       # _@param_ `spec`
-      sig { params(spec: Gem::Specification).returns(String) }
+      sig { params(spec: ::Gem::Specification).returns(String) }
       def self.platform_of(spec); end
 
       # Every uploader-controlled field that reaches a line of the compact
       # index — the list reads as "what gets interpolated", not "what is safe".
       # 
       # _@param_ `spec`
-      sig { params(spec: Gem::Specification).returns(T::Array[[String, String]]) }
+      sig { params(spec: ::Gem::Specification).returns(T::Array[[String, String]]) }
       def self.text_fields(spec); end
 
       # Bounds, reads as text and re-tags a field as UTF-8 — reinterpreted,
@@ -1727,10 +1769,10 @@ module Paquette
 
     # Forbids package pushes
     class ReadonlyRepository < SimpleDelegator
-      sig { returns(T.untyped) }
+      sig { void }
       def add_gem; end
 
-      sig { returns(T.untyped) }
+      sig { void }
       def yank_gem; end
 
       # Raised by every write on a readonly repository.
@@ -1846,7 +1888,7 @@ module Paquette
       # _@param_ `gem_payload` — an IO to stream from (the form the server uses — a 50MB push should not become a 50MB Ruby String) or raw bytes
       # 
       # _@return_ — the parsed spec
-      sig { params(gem_payload: T.any(IO, String)).returns(Gem::Specification) }
+      sig { params(gem_payload: T.any(IO, String)).returns(::Gem::Specification) }
       def add_gem(gem_payload); end
 
       # Reads the spec out of an uploaded .gem with YAML alias expansion off:
@@ -1856,7 +1898,7 @@ module Paquette
       # never permanently at require time.
       # 
       # _@param_ `gem_path`
-      sig { params(gem_path: String).returns(Gem::Specification) }
+      sig { params(gem_path: String).returns(::Gem::Specification) }
       def read_uploaded_spec(gem_path); end
 
       # Whether a path the repository is about to write to is really inside the
@@ -1927,7 +1969,7 @@ module Paquette
       # _@param_ `gem_name`
       # 
       # _@param_ `version`
-      sig { params(gem_name: String, version: String).returns(T.nilable(Gem::Specification)) }
+      sig { params(gem_name: String, version: String).returns(T.nilable(::Gem::Specification)) }
       def gem_spec(gem_name, version); end
 
       # The publication date out of the sidecar when one is there, and out of
@@ -1971,25 +2013,39 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(gem_name: String, version: String, stat: File::Stat).returns(T.nilable(T::Hash[String, Object])) }
+      sig { params(gem_name: String, version: String, stat: ::File::Stat).returns(T.nilable(T::Hash[String, Object])) }
       def read_sidecar(gem_name, version, stat); end
 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `gem_file`
+      # 
+      # _@param_ `stat`
       sig do
         params(
-          gem_name: T.untyped,
-          version: T.untyped,
-          gem_file: T.untyped,
-          stat: T.untyped
+          gem_name: String,
+          version: String,
+          gem_file: String,
+          stat: ::File::Stat
         ).returns(T.nilable(T::Hash[String, Object]))
       end
       def derive_sidecar(gem_name, version, gem_file, stat); end
 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `gem_file`
+      # 
+      # _@param_ `stat`
       sig do
         params(
-          gem_name: T.untyped,
-          version: T.untyped,
-          gem_file: T.untyped,
-          stat: T.untyped
+          gem_name: String,
+          version: String,
+          gem_file: String,
+          stat: ::File::Stat
         ).returns(T.nilable(T::Hash[String, Object]))
       end
       def derive_sidecar_fields(gem_name, version, gem_file, stat); end
@@ -1997,14 +2053,20 @@ module Paquette
       # Tempfile-and-rename, so a reader never sees a torn write; no locking,
       # since two racing writers derived the same bytes. The cache is an
       # optimization — on a read-only directory the rescue eats every write.
-      sig { params(gem_name: T.untyped, version: T.untyped, fields: T.untyped).void }
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `fields`
+      sig { params(gem_name: String, version: String, fields: T::Hash[String, Object]).void }
       def write_sidecar(gem_name, version, fields); end
 
       # An integer rather than a Float on purpose: the guard is an
       # exact-equality check, and integers survive a trip through JSON.
       # 
       # _@param_ `stat`
-      sig { params(stat: File::Stat).returns(Integer) }
+      sig { params(stat: ::File::Stat).returns(Integer) }
       def mtime_ns(stat); end
 
       # Raised on a push of a name+version+platform already on disk.
@@ -2179,12 +2241,20 @@ module Paquette
     # The very value the packument publishes as dist.integrity, so a
     # download ETag can never disagree with the document that sent npm here —
     # npm hard-fails an install when those two disagree.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@param_ `version`
+    # 
+    # _@param_ `path`
+    # 
+    # _@param_ `stat`
     sig do
       params(
-        package_name: T.untyped,
-        version: T.untyped,
-        path: T.untyped,
-        stat: T.untyped
+        package_name: String,
+        version: String,
+        path: String,
+        stat: ::File::Stat
       ).returns(String)
     end
     def tarball_etag(package_name, version, path, stat); end
@@ -2502,7 +2572,7 @@ module Paquette
     # Rack::Files, so the range machinery is Rack's rather than ours. A nil
     # root: #serving takes an absolute path and never reads @root, and the
     # path is the repository's to decide.
-    sig { returns(Rack::Files) }
+    sig { returns(::Rack::Files) }
     def package_file_server; end
 
     # Serves one immutable artifact off disk — a .gem or .tgz at a given
@@ -2515,7 +2585,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@return_ — a Rack response triplet
-    sig { params(path: String, stat: File::Stat, etag: T.nilable(String)).returns(T::Array[T.untyped]) }
+    sig { params(path: String, stat: ::File::Stat, etag: T.nilable(String)).returns(T::Array[T.untyped]) }
     def serve_immutable_file(path, stat, etag); end
 
     # The request as Rack::Files should see it: If-Modified-Since comes out
@@ -2526,7 +2596,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    sig { params(etag: T.nilable(String), stat: File::Stat).returns(Rack::Request) }
+    sig { params(etag: T.nilable(String), stat: ::File::Stat).returns(::Rack::Request) }
     def rack_files_request(etag, stat); end
 
     # An If-Range carries either an entity tag or an HTTP date. A tag is
@@ -2538,7 +2608,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    sig { params(if_range: String, etag: T.nilable(String), stat: File::Stat).returns(T::Boolean) }
+    sig { params(if_range: String, etag: T.nilable(String), stat: ::File::Stat).returns(T::Boolean) }
     def if_range_matches?(if_range, etag, stat); end
 
     # A request body past `max_push_bytes:`, answered 413 before the JSON
@@ -2681,7 +2751,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(package_name: String, version: String, stat: File::Stat).returns(String) }
+      sig { params(package_name: String, version: String, stat: ::File::Stat).returns(String) }
       def cache_digest(package_name, version, stat); end
 
       # Where "this package carries nothing to personalize" is written down.
@@ -2693,7 +2763,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(package_name: String, version: String, stat: File::Stat).returns(String) }
+      sig { params(package_name: String, version: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(package_name, version, stat); end
 
       # Stable across processes, so a restart does not orphan the cache.
@@ -2952,13 +3022,13 @@ module Paquette
       sig { params(criteria: T::Hash[T.untyped, T.untyped]).returns(Object) }
       def entitled?(**criteria); end
 
-      sig { returns(T.untyped) }
+      sig { void }
       def add_package; end
 
-      sig { returns(T.untyped) }
+      sig { void }
       def yank_package; end
 
-      sig { returns(T.untyped) }
+      sig { void }
       def write_dist_tag; end
 
       # Raised by every write on a gated repository.
@@ -3507,7 +3577,7 @@ module Paquette
     # Rack::Files, so the range machinery is Rack's rather than ours. A nil
     # root: #serving takes an absolute path and never reads @root, and the
     # path is the repository's to decide.
-    sig { returns(Rack::Files) }
+    sig { returns(::Rack::Files) }
     def package_file_server; end
 
     # Serves one immutable artifact off disk — a .gem or .tgz at a given
@@ -3520,7 +3590,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@return_ — a Rack response triplet
-    sig { params(path: String, stat: File::Stat, etag: T.nilable(String)).returns(T::Array[T.untyped]) }
+    sig { params(path: String, stat: ::File::Stat, etag: T.nilable(String)).returns(T::Array[T.untyped]) }
     def serve_immutable_file(path, stat, etag); end
 
     # The request as Rack::Files should see it: If-Modified-Since comes out
@@ -3531,7 +3601,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    sig { params(etag: T.nilable(String), stat: File::Stat).returns(Rack::Request) }
+    sig { params(etag: T.nilable(String), stat: ::File::Stat).returns(::Rack::Request) }
     def rack_files_request(etag, stat); end
 
     # An If-Range carries either an entity tag or an HTTP date. A tag is
@@ -3543,7 +3613,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    sig { params(if_range: String, etag: T.nilable(String), stat: File::Stat).returns(T::Boolean) }
+    sig { params(if_range: String, etag: T.nilable(String), stat: ::File::Stat).returns(T::Boolean) }
     def if_range_matches?(if_range, etag, stat); end
   end
 
@@ -3688,6 +3758,8 @@ module Paquette
     sig { returns(String) }
     def challenge; end
 
+    # Reads the token out of one request, whichever of the two schemes the
+    # client used to carry it.
     class Request < Rack::Auth::AbstractRequest
       # _@return_ — the token, whichever scheme carried it
       sig { returns(T.nilable(String)) }

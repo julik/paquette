@@ -7,7 +7,10 @@ require "rack/body_proxy"
 module Paquette::RegexpTimeout
   # 3.2 gained Regexp.timeout and its error; on 3.1 this stands aside. The
   # placeholder keeps the rescue from naming a constant that may not exist.
+  #
+  # @return [Boolean]
   SUPPORTED = Regexp.respond_to?(:timeout=)
+  # @return [Class]
   TimedOut = SUPPORTED ? Regexp::TimeoutError : Class.new(StandardError)
 
   # Regexp.timeout is process-global, so requests are counted instead of

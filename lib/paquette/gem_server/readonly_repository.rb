@@ -7,11 +7,13 @@ class Paquette::GemServer::ReadonlyRepository < SimpleDelegator
   class WriteNotAllowed < StandardError; end
 
   # @raise [WriteNotAllowed] always
+  # @return [void]
   def add_gem(*)
     raise WriteNotAllowed, "Writes are not allowed through a readonly repository"
   end
 
   # @raise [WriteNotAllowed] always
+  # @return [void]
   def yank_gem(*)
     raise WriteNotAllowed, "Writes are not allowed through a readonly repository"
   end

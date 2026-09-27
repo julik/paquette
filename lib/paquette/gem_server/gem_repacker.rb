@@ -171,8 +171,8 @@ class Paquette::GemServer::GemRepacker
   # than via a .gemspec on disk: Gem::Specification.load memoizes per file
   # path forever, which leaked one spec per gem served.
   #
-  # @param spec [Gem::Specification]
-  # @return [Gem::Specification]
+  # @param spec [::Gem::Specification]
+  # @return [::Gem::Specification]
   def repacked_spec(spec)
     new_spec = spec.dup
 

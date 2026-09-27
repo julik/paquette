@@ -12,6 +12,8 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
 
   # Some HTTP clients refuse to send an empty Basic auth password; GitHub's
   # convention is this literal in its place.
+  #
+  # @return [String]
   BEARER_SENTINEL = "x-oauth-token"
 
   # @param app [#call] the downstream Rack app
@@ -54,6 +56,8 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
     %(Bearer realm="#{realm}")
   end
 
+  # Reads the token out of one request, whichever of the two schemes the
+  # client used to carry it.
   class Request < Rack::Auth::AbstractRequest
     # @return [String, nil] the token, whichever scheme carried it
     def token

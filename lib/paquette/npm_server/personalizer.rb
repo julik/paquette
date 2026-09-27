@@ -165,7 +165,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   #
   # @param package_name [String]
   # @param version [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [String]
   def cache_digest(package_name, version, stat)
     Digest::SHA256.hexdigest([
@@ -183,7 +183,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   #
   # @param package_name [String]
   # @param version [String]
-  # @param stat [File::Stat]
+  # @param stat [::File::Stat]
   # @return [String]
   def plain_marker_path(package_name, version, stat)
     digest = Digest::SHA256.hexdigest([

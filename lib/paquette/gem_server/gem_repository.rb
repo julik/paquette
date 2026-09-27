@@ -40,7 +40,7 @@ class Paquette::GemServer::GemRepository
 
   # @param gem_name [String]
   # @param version [String]
-  # @return [Gem::Specification, nil]
+  # @return [::Gem::Specification, nil]
   def gem_spec(gem_name, version)
     raise NotImplementedError, "Subclasses must implement gem_spec"
   end
@@ -137,7 +137,7 @@ class Paquette::GemServer::GemRepository
   # an instance method would be forwarded to the wrapped repository.
   #
   # @param version [String]
-  # @param spec [Gem::Specification]
+  # @param spec [::Gem::Specification]
   # @param checksum [String]
   # @return [String]
   def self.compact_info_line(version, spec, checksum)
@@ -147,7 +147,7 @@ class Paquette::GemServer::GemRepository
   # The spec boiled down to plain strings and arrays — this hash is what a
   # repository may cache on disk, and strings deserialize into no surprises.
   #
-  # @param spec [Gem::Specification]
+  # @param spec [::Gem::Specification]
   # @param checksum [String]
   # @return [Hash{String => Object}]
   def self.compact_info_fields(spec, checksum)

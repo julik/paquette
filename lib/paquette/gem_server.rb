@@ -23,26 +23,37 @@ class Paquette::GemServer
   include Paquette::ConditionalGet
 
   # RubyGems' own charset for a name.
+  #
+  # @return [String]
   NAME_CHAR = "[A-Za-z0-9_.-]"
 
   # Gem::Version's own grammar plus the platform suffix a .gem *filename*
   # carries in this same column — "nokogiri-1.16.0-arm64-darwin".
+  #
+  # @return [String]
   VERSION_COLUMN = "#{Gem::Version::VERSION_PATTERN}#{NAME_CHAR}{0,255}"
 
   # Splits a "name-version" pair. The name is greedy on purpose: the dash
   # is ambiguous ("a-1-1.0.0" is the gem "a-1" at 1.0.0). \A..\z, not
   # ^..$: Mustermann unescapes %0A into a real newline.
+  #
+  # @return [Regexp]
   GEM_SPEC_NAME = /\A(#{NAME_CHAR}{1,255})-(#{VERSION_COLUMN})\z/
 
   # The bound the pattern cannot carry: Gem::Version's borrowed pattern has
   # unbounded quantifiers, and on Ruby 3.1 (no regexp memoization) the
   # split point sliding across a client-chosen segment is quadratic.
+  #
+  # @return [Integer]
   MAX_GEM_SPEC_NAME_BYTES = 255 + 1 + 255
 
+  # @return [String]
   GEM_FILE_EXTENSION = ".gem"
 
   # An unqualified text/plain is US-ASCII per RFC 2046, and these bodies
   # are UTF-8; the conformance suite checks this string byte for byte.
+  #
+  # @return [String]
   COMPACT_INDEX_CONTENT_TYPE = "text/plain; charset=utf-8"
 
   @@routes = Paquette::Routes.draw do |r|
@@ -247,11 +258,13 @@ class Paquette::GemServer
     "#{version}-#{platform}"
   end
 
+  # @return [String]
   DEFAULT_BLURB = "This server provides RubyGems packages. Point your gem source at it and bundle as usual."
 
   # The request body handed to the repository on a push: it refuses to
   # yield more than `max_bytes`, since the repository owns the copy loop.
   class CappedBody
+    # Raised the moment a body reads past its byte cap.
     class TooLarge < StandardError; end
 
     # @param io [IO]
@@ -265,6 +278,7 @@ class Paquette::GemServer
     # The one method IO.copy_stream requires of a non-IO source; raises the
     # moment the count passes the cap.
     #
+    # @param args [Array] the length and buffer arguments of IO#read
     # @return [String, nil]
     # @raise [TooLarge]
     def read(*args)
@@ -626,6 +640,8 @@ class Paquette::GemServer
 
   # A corpus with nothing in it, and one whose publication times nobody can
   # establish, both get the epoch.
+  #
+  # @return [String]
   EMPTY_CORPUS_CREATED_AT = Time.at(0).utc.iso8601
 
   # The `created_at:` of /versions: the oldest publication time in the
@@ -786,6 +802,10 @@ class Paquette::GemServer
   # away, a Personalizer's path is per-licensee), so a download is served
   # immutable with a year-long max-age.
   #
+  # @param gem_path [String]
+  # @param stat [::File::Stat]
+  # @param gem_name [String]
+  # @param version [String]
   # @return [Array] a Rack response triplet
   def serve_gem_file(gem_path, stat, gem_name, version)
     serve_immutable_file(gem_path, stat, gem_file_etag(gem_path, stat, gem_name, version))
@@ -795,6 +815,10 @@ class Paquette::GemServer
   # publishes as `checksum:`, so the two can never disagree. Size and
   # mtime are the weaker fallback for a repository without gem_checksum.
   #
+  # @param gem_path [String]
+  # @param stat [::File::Stat]
+  # @param gem_name [String]
+  # @param version [String]
   # @return [String]
   def gem_file_etag(gem_path, stat, gem_name, version)
     checksum = Paquette::GemServer::GemRepository.gem_checksum_of(@repository, gem_name, version)

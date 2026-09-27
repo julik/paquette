@@ -161,20 +161,25 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   end
 
   # @raise [WriteNotAllowed] always
+  # @return [void]
   def add_package(*, **)
     raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
   end
 
   # @raise [WriteNotAllowed] always
+  # @return [void]
   def yank_package(*, **)
     raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
   end
 
   # @raise [WriteNotAllowed] always
+  # @return [void]
   def write_dist_tag(*, **)
     raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
   end
 end
 
 # Former name, kept so existing stacks keep building.
+#
+# @return [Class]
 Paquette::NpmServer::GatedNpmRepository = Paquette::NpmServer::ReadGatedRepository

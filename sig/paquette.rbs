@@ -1,7 +1,10 @@
+# Rack building blocks for serving RubyGems and npm packages out of a
+# directory, with the index formats, conditional GETs and push endpoints the
+# two clients expect.
 module Paquette
-  DEFAULT_REGEXP_TIMEOUT: untyped
-  MAX_PUSH_SIZE_BYTES: untyped
-  VERSION: untyped
+  DEFAULT_REGEXP_TIMEOUT: Float
+  MAX_PUSH_SIZE_BYTES: Integer
+  VERSION: String
 
   # The regexp timeout every Rack app in this gem installs for the duration
   # of a request, in seconds. `nil` is "no ceiling".
@@ -14,7 +17,7 @@ module Paquette
   # A small method-and-pattern route table with a per-request matching budget.
   # Both servers dispatch through one of these.
   class Routes
-    DEFAULT_MATCH_BUDGET: untyped
+    DEFAULT_MATCH_BUDGET: Float
 
     # _@param_ `match_budget` — seconds allowed for matching the whole table
     def self.draw: (?match_budget: Float) -> Routes
@@ -25,16 +28,16 @@ module Paquette
     def initialize: (::Array[Route] routes, ?match_budget: Float) -> void
 
     # _@param_ `request`
-    def match: (Rack::Request request) -> Route?
+    def match: (::Rack::Request request) -> Route?
 
     # _@param_ `route`
     # 
-    # _@param_ `instance`
+    # _@param_ `server`
     # 
     # _@param_ `request`
     # 
     # _@return_ — a Rack response triplet
-    def perform_action: (Route route, Object _instance, Rack::Request request) -> ::Array[untyped]
+    def perform_action: (Route route, Object server, ::Rack::Request request) -> ::Array[untyped]
 
     # Recognize without performing: only the path is read, never the query
     # parser. A matched path whose segments fail the UTF-8 check still gets
@@ -43,7 +46,7 @@ module Paquette
     # _@param_ `request`
     # 
     # _@return_ — nil for a request no route wants
-    def recognize: (Rack::Request request) -> Recognition?
+    def recognize: (::Rack::Request request) -> Recognition?
 
     def now: () -> Float
 
@@ -74,14 +77,14 @@ module Paquette
       def initialize: (String method, String pattern, Proc block) -> void
 
       # _@param_ `request`
-      def match?: (Rack::Request request) -> bool
+      def match?: (::Rack::Request request) -> bool
 
       # Rack::Builder#map hands the mount point itself over with an empty
       # PATH_INFO — which is not a path, it is the root of the mount, where
       # the index page lives.
       # 
       # _@param_ `request`
-      def path_of: (Rack::Request request) -> String
+      def path_of: (::Rack::Request request) -> String
 
       # Mustermann unescapes %xx, so a segment can arrive as invalid UTF-8 —
       # on which every regexp a handler runs raises instead of failing to
@@ -90,21 +93,21 @@ module Paquette
       # _@param_ `request`
       # 
       # _@return_ — the pattern's captures
-      def params: (Rack::Request request) -> ::Hash[String, Object]
+      def params: (::Rack::Request request) -> ::Hash[String, Object]
 
-      # _@param_ `instance` — the server instance the block runs against
+      # _@param_ `server` — the server instance the block runs against
       # 
       # _@param_ `request`
       # 
       # _@return_ — a Rack response triplet
-      def perform_action: (Object _instance, Rack::Request request) -> ::Array[untyped]
+      def perform_action: (Object server, ::Rack::Request request) -> ::Array[untyped]
 
-      # _@param_ `instance`
+      # _@param_ `server`
       # 
       # _@param_ `request`
       # 
       # _@return_ — a Rack response triplet
-      def call_block: (Object _instance, Rack::Request request) -> ::Array[untyped]
+      def call_block: (Object server, ::Rack::Request request) -> ::Array[untyped]
 
       # Rack parses the query string *and* the body to answer #params, and a
       # body that does not match its Content-Type makes it raise — the
@@ -112,7 +115,7 @@ module Paquette
       # parser's, untagged, for a body shorter than its Content-Length.
       # 
       # _@param_ `request`
-      def query_params: (Rack::Request request) -> ::Hash[String, Object]
+      def query_params: (::Rack::Request request) -> ::Hash[String, Object]
 
       # The block only gets the keywords it declares: a client's stray query
       # parameter (npm sends ?write=true) must not crash it with ArgumentError.
@@ -122,7 +125,7 @@ module Paquette
 
       attr_reader method: String
 
-      attr_reader pattern: Mustermann::Pattern
+      attr_reader pattern: ::Mustermann::Pattern
 
       attr_reader block: Proc
 
@@ -171,10 +174,10 @@ module Paquette
   # (npm checks dist.integrity), and TarWriter can neither take the entry
   # mtime as an argument nor emit a PAX header for an over-long path.
   module Tarball
-    BLOCK_SIZE: untyped
-    GZIP_MAGIC: untyped
-    GZIP_DEFLATE: untyped
-    GZIP_OS_UNKNOWN: untyped
+    BLOCK_SIZE: Integer
+    GZIP_MAGIC: String
+    GZIP_DEFLATE: Integer
+    GZIP_OS_UNKNOWN: Integer
 
     # Yields every file entry in the tarball.
     # 
@@ -234,20 +237,37 @@ module Paquette
 
     # uid/gid/uname/gname are zeroed: they describe the packer, not the package.
     # 
+    # _@param_ `name`
+    # 
+    # _@param_ `mode`
+    # 
+    # _@param_ `mtime`
+    # 
+    # _@param_ `size`
+    # 
+    # _@param_ `typeflag` — the ustar type flag ("0" for a file, "x" for a PAX record)
+    # 
     # _@return_ — one 512-byte ustar header block
     def self.header_for: (
-                           untyped name,
-                           untyped mode,
-                           untyped mtime,
-                           untyped size,
-                           ?typeflag: untyped
+                           String name,
+                           Integer mode,
+                           Time mtime,
+                           Integer size,
+                           ?typeflag: String
                          ) -> String
 
+    # _@param_ `header` — the 512-byte block being filled in, mutated in place
+    # 
+    # _@param_ `offset`
+    # 
+    # _@param_ `length` — the size of the field, which the value has to fit in
+    # 
+    # _@param_ `value`
     def self.write_field: (
-                            untyped header,
-                            untyped offset,
-                            untyped length,
-                            untyped value
+                            String header,
+                            Integer offset,
+                            Integer length,
+                            String value
                           ) -> void
 
     # ustar's prefix/name split; nil when no split works (PAX header instead).
@@ -286,6 +306,9 @@ module Paquette
     class NameTooLong < StandardError
     end
 
+    # One member of a tarball: its path inside the archive plus the bytes and
+    # metadata to write for it.
+    # 
     # @!attribute name
     #   @return [String]
     # @!attribute mode
@@ -378,14 +401,14 @@ module Paquette
   class GemServer
     include Paquette::RegexpTimeout
     include Paquette::ConditionalGet
-    NAME_CHAR: untyped
-    VERSION_COLUMN: untyped
-    GEM_SPEC_NAME: untyped
-    MAX_GEM_SPEC_NAME_BYTES: untyped
-    GEM_FILE_EXTENSION: untyped
-    COMPACT_INDEX_CONTENT_TYPE: untyped
-    DEFAULT_BLURB: untyped
-    EMPTY_CORPUS_CREATED_AT: untyped
+    NAME_CHAR: String
+    VERSION_COLUMN: String
+    GEM_SPEC_NAME: Regexp
+    MAX_GEM_SPEC_NAME_BYTES: Integer
+    GEM_FILE_EXTENSION: String
+    COMPACT_INDEX_CONTENT_TYPE: String
+    DEFAULT_BLURB: String
+    EMPTY_CORPUS_CREATED_AT: String
 
     # What a request would dispatch to, without dispatching it — for callers
     # that must name a request (a monitoring action, a log field) without
@@ -615,22 +638,38 @@ module Paquette
     # away, a Personalizer's path is per-licensee), so a download is served
     # immutable with a year-long max-age.
     # 
+    # _@param_ `gem_path`
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `gem_name`
+    # 
+    # _@param_ `version`
+    # 
     # _@return_ — a Rack response triplet
     def serve_gem_file: (
-                          untyped gem_path,
-                          untyped stat,
-                          untyped gem_name,
-                          untyped version
+                          String gem_path,
+                          ::File::Stat stat,
+                          String gem_name,
+                          String version
                         ) -> ::Array[untyped]
 
     # The SHA256 the repository already computed — the very number the index
     # publishes as `checksum:`, so the two can never disagree. Size and
     # mtime are the weaker fallback for a repository without gem_checksum.
+    # 
+    # _@param_ `gem_path`
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `gem_name`
+    # 
+    # _@param_ `version`
     def gem_file_etag: (
-                         untyped gem_path,
-                         untyped stat,
-                         untyped gem_name,
-                         untyped version
+                         String gem_path,
+                         ::File::Stat stat,
+                         String gem_name,
+                         String version
                        ) -> String
 
     # _@param_ `data`
@@ -815,7 +854,7 @@ module Paquette
     # Rack::Files, so the range machinery is Rack's rather than ours. A nil
     # root: #serving takes an absolute path and never reads @root, and the
     # path is the repository's to decide.
-    def package_file_server: () -> Rack::Files
+    def package_file_server: () -> ::Rack::Files
 
     # Serves one immutable artifact off disk — a .gem or .tgz at a given
     # path never changes; yank and unpublish rename away.
@@ -827,7 +866,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@return_ — a Rack response triplet
-    def serve_immutable_file: (String path, File::Stat stat, String? etag) -> ::Array[untyped]
+    def serve_immutable_file: (String path, ::File::Stat stat, String? etag) -> ::Array[untyped]
 
     # The request as Rack::Files should see it: If-Modified-Since comes out
     # because we already answered it (Rack::Files would 304 bare, dropping
@@ -837,7 +876,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    def rack_files_request: (String? etag, File::Stat stat) -> Rack::Request
+    def rack_files_request: (String? etag, ::File::Stat stat) -> ::Rack::Request
 
     # An If-Range carries either an entity tag or an HTTP date. A tag is
     # compared strongly — a weak validator says nothing about byte offsets,
@@ -848,7 +887,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    def if_range_matches?: (String if_range, String? etag, File::Stat stat) -> bool
+    def if_range_matches?: (String if_range, String? etag, ::File::Stat stat) -> bool
 
     # How `gem push` speaks OTP: the code arrives in the `OTP` header, and a
     # refusal is a plain 401 carrying one of the two sentences the client
@@ -883,12 +922,15 @@ module Paquette
 
       # The one method IO.copy_stream requires of a non-IO source; raises the
       # moment the count passes the cap.
-      def read: (*untyped args) -> String?
+      # 
+      # _@param_ `args` — the length and buffer arguments of IO#read
+      def read: (*::Array[untyped] args) -> String?
 
       # The count starts over with every rewind so that "read twice" is not
       # mistaken for "twice as large".
       def rewind: () -> void
 
+      # Raised the moment a body reads past its byte cap.
       class TooLarge < StandardError
       end
     end
@@ -964,7 +1006,7 @@ module Paquette
       # path forever, which leaked one spec per gem served.
       # 
       # _@param_ `spec`
-      def repacked_spec: (Gem::Specification spec) -> Gem::Specification
+      def repacked_spec: (::Gem::Specification spec) -> ::Gem::Specification
 
       def cleanup: () -> void
 
@@ -973,7 +1015,7 @@ module Paquette
       # ENV["SOURCE_DATE_EPOCH"] for this, which is process-wide and thus unsafe
       # with concurrent repacks; this overrides the reader instead.
       module BuildTime
-        KEY: untyped
+        KEY: Symbol
 
         # Runs the block with the given build timestamp pinned. Fiber-local rather
         # than thread-local, deliberately: a build runs to completion inside the
@@ -1011,7 +1053,7 @@ module Paquette
         # 
         # _@return_ — file_name
         def self.build: (
-                          Gem::Specification spec,
+                          ::Gem::Specification spec,
                           String root,
                           String file_name,
                           build_time: Time
@@ -1021,7 +1063,7 @@ module Paquette
         # names written into the tar stay relative, which is what a .gem holds.
         # 
         # _@param_ `tar`
-        def add_files: (Gem::Package::TarWriter tar) -> void
+        def add_files: (::Gem::Package::TarWriter tar) -> void
 
         # Gem::Package#build reports on stdout, which is what a person running
         # `gem build` asked for and not what a request asked for.
@@ -1036,7 +1078,7 @@ module Paquette
     # into the gemspec metadata — with the repacked gems and their checksums
     # cached on disk.
     class Personalizer < SimpleDelegator
-      CHECKSUM_SIDECAR_FORMAT_VERSION: untyped
+      CHECKSUM_SIDECAR_FORMAT_VERSION: Integer
 
       # Two rules make the caching sound, and they are the caller's to keep:
       # what `files_for:` returns may depend on the gem file and
@@ -1136,7 +1178,7 @@ module Paquette
       # _@param_ `served`
       # 
       # _@param_ `stat`
-      def read_checksum_sidecar: (String served, File::Stat stat) -> String?
+      def read_checksum_sidecar: (String served, ::File::Stat stat) -> String?
 
       # Tempfile-and-rename, so a reader never sees half a digest. Failure is
       # ignored on purpose: an unwritable cache costs a hash per request, not
@@ -1147,13 +1189,13 @@ module Paquette
       # _@param_ `stat`
       # 
       # _@param_ `checksum`
-      def write_checksum_sidecar: (String served, File::Stat stat, String checksum) -> void
+      def write_checksum_sidecar: (String served, ::File::Stat stat, String checksum) -> void
 
       # Whole nanoseconds. Float mtimes lose precision on large timestamps, and
       # this is compared for equality.
       # 
       # _@param_ `stat`
-      def mtime_ns: (File::Stat stat) -> Integer
+      def mtime_ns: (::File::Stat stat) -> Integer
 
       # Stat identity in the name, so a replaced source file misses the cache
       # without anything having to be invalidated.
@@ -1163,7 +1205,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      def cache_path: (String gem_name, String version, File::Stat stat) -> String
+      def cache_path: (String gem_name, String version, ::File::Stat stat) -> String
 
       # Where "this gem carries nothing to personalize" is written down — an
       # empty file whose presence is the fact. Keyed by the source identity
@@ -1175,7 +1217,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      def plain_marker_path: (String gem_name, String version, File::Stat stat) -> String
+      def plain_marker_path: (String gem_name, String version, ::File::Stat stat) -> String
 
       # Everything this personalizer would write into a gem, as one short hash.
       # Stable across processes, so a restart does not orphan the cache.
@@ -1212,7 +1254,7 @@ module Paquette
       # _@param_ `gem_name`
       # 
       # _@param_ `version`
-      def gem_spec: (String gem_name, String version) -> Gem::Specification?
+      def gem_spec: (String gem_name, String version) -> ::Gem::Specification?
 
       # _@param_ `gem_name`
       # 
@@ -1289,7 +1331,7 @@ module Paquette
       # _@param_ `spec`
       # 
       # _@param_ `checksum`
-      def self.compact_info_line: (String version, Gem::Specification spec, String checksum) -> String
+      def self.compact_info_line: (String version, ::Gem::Specification spec, String checksum) -> String
 
       # The spec boiled down to plain strings and arrays — this hash is what a
       # repository may cache on disk, and strings deserialize into no surprises.
@@ -1297,7 +1339,7 @@ module Paquette
       # _@param_ `spec`
       # 
       # _@param_ `checksum`
-      def self.compact_info_fields: (Gem::Specification spec, String checksum) -> ::Hash[String, Object]
+      def self.compact_info_fields: (::Gem::Specification spec, String checksum) -> ::Hash[String, Object]
 
       # Renders a line from a fields hash — freshly extracted or read back from
       # a cache, the bytes must come out the same either way. Keys beyond the
@@ -1332,18 +1374,18 @@ module Paquette
     # traversal or a forged index row. Runs before the upload is moved into
     # place; gems already on disk are not re-checked.
     class SpecValidator
-      NAME: untyped
-      PLATFORM: untyped
-      PLATFORM_DOT_DOT: untyped
-      VERSION: untyped
-      FORBIDDEN_IN_FIELD: untyped
-      MAX_FIELD_BYTES: untyped
+      NAME: Regexp
+      PLATFORM: Regexp
+      PLATFORM_DOT_DOT: String
+      VERSION: Regexp
+      FORBIDDEN_IN_FIELD: Regexp
+      MAX_FIELD_BYTES: Integer
 
       # One error class deliberately: a client cannot act differently on
       # unreadable versus dishonest.
       # 
       # _@param_ `message`
-      def self.invalid!: (String message) -> untyped
+      def self.invalid!: (String message) -> void
 
       # Checks `spec` and returns the validated triple as plain Strings, so a
       # caller cannot go on using the unvalidated `spec.name`. The platform
@@ -1352,7 +1394,7 @@ module Paquette
       # _@param_ `spec`
       # 
       # _@return_ — name, version, platform
-      def self.validate!: (Gem::Specification spec) -> [String, String, String]
+      def self.validate!: (::Gem::Specification spec) -> [String, String, String]
 
       # The same checks applied to the params of a yank, which name a path
       # exactly as a pushed gemspec's fields do. `platform` may be nil or ""
@@ -1374,13 +1416,13 @@ module Paquette
       # that produces no filename suffix at all.
       # 
       # _@param_ `spec`
-      def self.platform_of: (Gem::Specification spec) -> String
+      def self.platform_of: (::Gem::Specification spec) -> String
 
       # Every uploader-controlled field that reaches a line of the compact
       # index — the list reads as "what gets interpolated", not "what is safe".
       # 
       # _@param_ `spec`
-      def self.text_fields: (Gem::Specification spec) -> ::Array[[String, String]]
+      def self.text_fields: (::Gem::Specification spec) -> ::Array[[String, String]]
 
       # Bounds, reads as text and re-tags a field as UTF-8 — reinterpreted,
       # not merely asked: a string tagged ASCII-8BIT is *always* "valid", and
@@ -1502,9 +1544,9 @@ module Paquette
 
     # Forbids package pushes
     class ReadonlyRepository < SimpleDelegator
-      def add_gem: () -> untyped
+      def add_gem: () -> void
 
-      def yank_gem: () -> untyped
+      def yank_gem: () -> void
 
       # Raised by every write on a readonly repository.
       class WriteNotAllowed < StandardError
@@ -1569,9 +1611,9 @@ module Paquette
 
     # Repository implementation that reads gems from a directory
     class DirectoryGemRepository < Paquette::GemServer::GemRepository
-      YAML_ALIAS_MUTEX: untyped
-      CACHE_DIR_BASENAME: untyped
-      SIDECAR_FORMAT_VERSION: untyped
+      YAML_ALIAS_MUTEX: Mutex
+      CACHE_DIR_BASENAME: String
+      SIDECAR_FORMAT_VERSION: Integer
 
       # _@param_ `gems_dir` — the corpus root, created if absent
       def initialize: (String gems_dir) -> void
@@ -1603,7 +1645,7 @@ module Paquette
       # _@param_ `gem_payload` — an IO to stream from (the form the server uses — a 50MB push should not become a 50MB Ruby String) or raw bytes
       # 
       # _@return_ — the parsed spec
-      def add_gem: ((IO | String) gem_payload) -> Gem::Specification
+      def add_gem: ((IO | String) gem_payload) -> ::Gem::Specification
 
       # Reads the spec out of an uploaded .gem with YAML alias expansion off:
       # aliases are the billion-laughs DoS, and no real gemspec carries one.
@@ -1612,7 +1654,7 @@ module Paquette
       # never permanently at require time.
       # 
       # _@param_ `gem_path`
-      def read_uploaded_spec: (String gem_path) -> Gem::Specification
+      def read_uploaded_spec: (String gem_path) -> ::Gem::Specification
 
       # Whether a path the repository is about to write to is really inside the
       # corpus. The trailing separator stops a sibling directory whose name
@@ -1673,7 +1715,7 @@ module Paquette
       # _@param_ `gem_name`
       # 
       # _@param_ `version`
-      def gem_spec: (String gem_name, String version) -> Gem::Specification?
+      def gem_spec: (String gem_name, String version) -> ::Gem::Specification?
 
       # The publication date out of the sidecar when one is there, and out of
       # the gem itself when it is not — same answer either way.
@@ -1712,32 +1754,52 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      def read_sidecar: (String gem_name, String version, File::Stat stat) -> ::Hash[String, Object]?
+      def read_sidecar: (String gem_name, String version, ::File::Stat stat) -> ::Hash[String, Object]?
 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `gem_file`
+      # 
+      # _@param_ `stat`
       def derive_sidecar: (
-                            untyped gem_name,
-                            untyped version,
-                            untyped gem_file,
-                            untyped stat
+                            String gem_name,
+                            String version,
+                            String gem_file,
+                            ::File::Stat stat
                           ) -> ::Hash[String, Object]?
 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `gem_file`
+      # 
+      # _@param_ `stat`
       def derive_sidecar_fields: (
-                                   untyped gem_name,
-                                   untyped version,
-                                   untyped gem_file,
-                                   untyped stat
+                                   String gem_name,
+                                   String version,
+                                   String gem_file,
+                                   ::File::Stat stat
                                  ) -> ::Hash[String, Object]?
 
       # Tempfile-and-rename, so a reader never sees a torn write; no locking,
       # since two racing writers derived the same bytes. The cache is an
       # optimization — on a read-only directory the rescue eats every write.
-      def write_sidecar: (untyped gem_name, untyped version, untyped fields) -> void
+      # 
+      # _@param_ `gem_name`
+      # 
+      # _@param_ `version`
+      # 
+      # _@param_ `fields`
+      def write_sidecar: (String gem_name, String version, ::Hash[String, Object] fields) -> void
 
       # An integer rather than a Float on purpose: the guard is an
       # exact-equality check, and integers survive a trip through JSON.
       # 
       # _@param_ `stat`
-      def mtime_ns: (File::Stat stat) -> Integer
+      def mtime_ns: (::File::Stat stat) -> Integer
 
       # Raised on a push of a name+version+platform already on disk.
       class GemAlreadyExists < StandardError
@@ -1763,9 +1825,9 @@ module Paquette
   # get your own root. The blurb is HTML-escaped on the way in: a caller
   # wanting markup is a caller wanting their own index app.
   class IndexPage
-    TEMPLATE_PATH: untyped
-    MASTHEAD_PATH: untyped
-    XML_DECLARATION: untyped
+    TEMPLATE_PATH: String
+    MASTHEAD_PATH: String
+    XML_DECLARATION: Regexp
 
     # Read once per process rather than once per request: the root is what
     # every uptime check hits.
@@ -1798,9 +1860,9 @@ module Paquette
   class NpmServer
     include Paquette::RegexpTimeout
     include Paquette::ConditionalGet
-    SCOPED_PATH: untyped
-    DEFAULT_BLURB: untyped
-    GatedNpmRepository: untyped
+    SCOPED_PATH: Regexp
+    DEFAULT_BLURB: String
+    GatedNpmRepository: Class
 
     # What a request would dispatch to, without dispatching it — the npm twin
     # of GemServer.route_for. The scoped-name normalization is applied first,
@@ -1891,11 +1953,19 @@ module Paquette
     # The very value the packument publishes as dist.integrity, so a
     # download ETag can never disagree with the document that sent npm here —
     # npm hard-fails an install when those two disagree.
+    # 
+    # _@param_ `package_name`
+    # 
+    # _@param_ `version`
+    # 
+    # _@param_ `path`
+    # 
+    # _@param_ `stat`
     def tarball_etag: (
-                        untyped package_name,
-                        untyped version,
-                        untyped path,
-                        untyped stat
+                        String package_name,
+                        String version,
+                        String path,
+                        ::File::Stat stat
                       ) -> String
 
     # _@param_ `package_name`
@@ -2170,7 +2240,7 @@ module Paquette
     # Rack::Files, so the range machinery is Rack's rather than ours. A nil
     # root: #serving takes an absolute path and never reads @root, and the
     # path is the repository's to decide.
-    def package_file_server: () -> Rack::Files
+    def package_file_server: () -> ::Rack::Files
 
     # Serves one immutable artifact off disk — a .gem or .tgz at a given
     # path never changes; yank and unpublish rename away.
@@ -2182,7 +2252,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@return_ — a Rack response triplet
-    def serve_immutable_file: (String path, File::Stat stat, String? etag) -> ::Array[untyped]
+    def serve_immutable_file: (String path, ::File::Stat stat, String? etag) -> ::Array[untyped]
 
     # The request as Rack::Files should see it: If-Modified-Since comes out
     # because we already answered it (Rack::Files would 304 bare, dropping
@@ -2192,7 +2262,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    def rack_files_request: (String? etag, File::Stat stat) -> Rack::Request
+    def rack_files_request: (String? etag, ::File::Stat stat) -> ::Rack::Request
 
     # An If-Range carries either an entity tag or an HTTP date. A tag is
     # compared strongly — a weak validator says nothing about byte offsets,
@@ -2203,7 +2273,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    def if_range_matches?: (String if_range, String? etag, File::Stat stat) -> bool
+    def if_range_matches?: (String if_range, String? etag, ::File::Stat stat) -> bool
 
     # A request body past `max_push_bytes:`, answered 413 before the JSON
     # parse — and before most of the read.
@@ -2328,7 +2398,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      def cache_digest: (String package_name, String version, File::Stat stat) -> String
+      def cache_digest: (String package_name, String version, ::File::Stat stat) -> String
 
       # Where "this package carries nothing to personalize" is written down.
       # Keyed by the package and its source identity alone, never by the
@@ -2339,7 +2409,7 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      def plain_marker_path: (String package_name, String version, File::Stat stat) -> String
+      def plain_marker_path: (String package_name, String version, ::File::Stat stat) -> String
 
       # Stable across processes, so a restart does not orphan the cache.
       def personalization_digest: () -> String
@@ -2347,8 +2417,8 @@ module Paquette
 
     # Abstract base class for NPM package repositories; mirrors GemRepository.
     class NpmRepository
-      SEGMENT: untyped
-      VERSION: untyped
+      SEGMENT: Regexp
+      VERSION: Regexp
 
       def initialize: () -> void
 
@@ -2553,11 +2623,11 @@ module Paquette
       # _@return_ — truthy when entitled
       def entitled?: (**::Hash[untyped, untyped] criteria) -> Object
 
-      def add_package: () -> untyped
+      def add_package: () -> void
 
-      def yank_package: () -> untyped
+      def yank_package: () -> void
 
-      def write_dist_tag: () -> untyped
+      def write_dist_tag: () -> void
 
       # Raised by every write on a gated repository.
       class WriteNotAllowed < StandardError
@@ -2567,9 +2637,9 @@ module Paquette
     # Reads NPM packages from a directory; a scope is an ordinary directory:
     #   packages/npm/@acme/widgets/widgets-1.0.0.tgz
     class DirectoryNpmRepository < Paquette::NpmServer::NpmRepository
-      DIST_TAGS_FILE: untyped
-      SEGMENT: untyped
-      VERSION: untyped
+      DIST_TAGS_FILE: String
+      SEGMENT: Regexp
+      VERSION: Regexp
 
       # _@param_ `packages_dir` — the corpus root, created if absent
       def initialize: (String packages_dir) -> void
@@ -2750,7 +2820,7 @@ module Paquette
   # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
   # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
   class NpmRepacker
-    SOURCE_EXTENSIONS: untyped
+    SOURCE_EXTENSIONS: ::Array[String]
 
     # One line in, one line out — the rule the whole personalization scheme
     # rests on (a changed line count shifts every sourcemap mapping below it),
@@ -2862,8 +2932,8 @@ module Paquette
   # side. Prepended into every Rack app in this gem; an application wanting a
   # different ceiling sets `Paquette.regexp_timeout` once, at boot.
   module RegexpTimeout
-    SUPPORTED: untyped
-    TimedOut: untyped
+    SUPPORTED: bool
+    TimedOut: Class
 
     # Arms the process-wide regexp ceiling for one request.
     def self.acquire: () -> void
@@ -2890,10 +2960,10 @@ module Paquette
   # supplies `@request` (the Rack::Request being served), `@repository` (the
   # wrapper stack) and `@shared_caching`.
   module ConditionalGet
-    IMMUTABLE_MAX_AGE: untyped
-    CREDENTIAL_HEADERS: untyped
-    MAX_RANGE_HEADER_BYTES: untyped
-    BYTE_OFFSET: untyped
+    IMMUTABLE_MAX_AGE: Integer
+    CREDENTIAL_HEADERS: ::Array[String]
+    MAX_RANGE_HEADER_BYTES: Integer
+    BYTE_OFFSET: Regexp
 
     # The validator for one response. nil (no ETag at all) when the stack
     # refuses to name itself: a wrong ETag on a gated index is worse than
@@ -3036,7 +3106,7 @@ module Paquette
     # Rack::Files, so the range machinery is Rack's rather than ours. A nil
     # root: #serving takes an absolute path and never reads @root, and the
     # path is the repository's to decide.
-    def package_file_server: () -> Rack::Files
+    def package_file_server: () -> ::Rack::Files
 
     # Serves one immutable artifact off disk — a .gem or .tgz at a given
     # path never changes; yank and unpublish rename away.
@@ -3048,7 +3118,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@return_ — a Rack response triplet
-    def serve_immutable_file: (String path, File::Stat stat, String? etag) -> ::Array[untyped]
+    def serve_immutable_file: (String path, ::File::Stat stat, String? etag) -> ::Array[untyped]
 
     # The request as Rack::Files should see it: If-Modified-Since comes out
     # because we already answered it (Rack::Files would 304 bare, dropping
@@ -3058,7 +3128,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    def rack_files_request: (String? etag, File::Stat stat) -> Rack::Request
+    def rack_files_request: (String? etag, ::File::Stat stat) -> ::Rack::Request
 
     # An If-Range carries either an entity tag or an HTTP date. A tag is
     # compared strongly — a weak validator says nothing about byte offsets,
@@ -3069,7 +3139,7 @@ module Paquette
     # _@param_ `etag`
     # 
     # _@param_ `stat`
-    def if_range_matches?: (String if_range, String? etag, File::Stat stat) -> bool
+    def if_range_matches?: (String if_range, String? etag, ::File::Stat stat) -> bool
   end
 
   # How a repository stack names itself to an HTTP cache. Both servers wrap a
@@ -3183,7 +3253,7 @@ module Paquette
   # config. The resolved identity is stored in env["paquette.identity"].
   class TokenAuthorization < Rack::Auth::AbstractHandler
     include Paquette::RegexpTimeout
-    BEARER_SENTINEL: untyped
+    BEARER_SENTINEL: String
 
     # _@param_ `app` — the downstream Rack app
     # 
@@ -3197,6 +3267,8 @@ module Paquette
 
     def challenge: () -> String
 
+    # Reads the token out of one request, whichever of the two schemes the
+    # client used to carry it.
     class Request < Rack::Auth::AbstractRequest
       # _@return_ — the token, whichever scheme carried it
       def token: () -> String?

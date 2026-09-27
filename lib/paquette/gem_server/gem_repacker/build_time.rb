@@ -5,6 +5,7 @@ require "rubygems"
 # ENV["SOURCE_DATE_EPOCH"] for this, which is process-wide and thus unsafe
 # with concurrent repacks; this overrides the reader instead.
 module Paquette::GemServer::GemRepacker::BuildTime
+  # @return [Symbol]
   KEY = :paquette_gem_repacker_source_date_epoch
 
   # Runs the block with the given build timestamp pinned. Fiber-local rather

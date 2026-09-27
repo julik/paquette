@@ -9,29 +9,41 @@ class Paquette::GemServer::SpecValidator
   # RubyGems' own charset, first character narrowed to alphanumeric so a
   # name can never start with ".". \A..\z, never ^..$: a "$" would happily
   # match the end of the first line of "safe\nforged 9.9.9 …".
+  #
+  # @return [Regexp]
   NAME = /\A[A-Za-z0-9]#{Paquette::GemServer::NAME_CHAR}{0,254}\z/
 
   # A platform becomes a path too and legitimately carries dashes, so it
   # gets its own charset — no path separators, NUL, newline or leading dot.
   # Flat rather than the honest `(?:-seg){0,3}` grammar, which fails
   # Regexp.linear_time? on an uploader-chosen string.
+  #
+  # @return [Regexp]
   PLATFORM = /\A[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\z/
 
   # Refused outright anywhere in a platform: it is the single string whose
   # meaning changes if anything downstream ever splits the basename on a
   # dash again.
+  #
+  # @return [String]
   PLATFORM_DOT_DOT = ".."
 
   # RubyGems' own — but it accepts "" and a trailing "\n", hence the
   # emptiness check and FORBIDDEN_IN_FIELD over the same string.
+  #
+  # @return [Regexp]
   VERSION = Gem::Version::ANCHORED_VERSION_PATTERN
 
   # The three bytes that turn one field into two index lines, or truncate
   # a path at the filesystem boundary.
+  #
+  # @return [Regexp]
   FORBIDDEN_IN_FIELD = /[\r\n\x00]/
 
   # No field in a gemspec has any business being longer than this, so
   # nothing longer gets as far as an encoding check or a regexp.
+  #
+  # @return [Integer]
   MAX_FIELD_BYTES = 2048
 
   # One error class deliberately: a client cannot act differently on
@@ -39,6 +51,7 @@ class Paquette::GemServer::SpecValidator
   #
   # @param message [String]
   # @raise [Paquette::GemServer::DirectoryGemRepository::InvalidGem] always
+  # @return [void]
   def self.invalid!(message)
     raise Paquette::GemServer::DirectoryGemRepository::InvalidGem, message
   end
@@ -47,7 +60,7 @@ class Paquette::GemServer::SpecValidator
   # caller cannot go on using the unvalidated `spec.name`. The platform
   # comes back canonicalized, RubyGems' own spelling.
   #
-  # @param spec [Gem::Specification]
+  # @param spec [::Gem::Specification]
   # @return [Array(String, String, String)] name, version, platform
   # @raise [Paquette::GemServer::DirectoryGemRepository::InvalidGem]
   def self.validate!(spec)
@@ -105,7 +118,7 @@ class Paquette::GemServer::SpecValidator
   # otherwise; "ruby" is let through as itself because it is the one value
   # that produces no filename suffix at all.
   #
-  # @param spec [Gem::Specification]
+  # @param spec [::Gem::Specification]
   # @return [String]
   def self.platform_of(spec)
     platform = scannable("platform", spec.platform)
@@ -118,7 +131,7 @@ class Paquette::GemServer::SpecValidator
   # Every uploader-controlled field that reaches a line of the compact
   # index — the list reads as "what gets interpolated", not "what is safe".
   #
-  # @param spec [Gem::Specification]
+  # @param spec [::Gem::Specification]
   # @return [Array<Array(String, String)>]
   def self.text_fields(spec)
     fields = [

@@ -117,6 +117,7 @@ class Paquette::GemServer::GemRepacker
       temp_output.flush
     end
 
+    File.chmod(File.stat(file_path).mode & 0o7777, temp_output.path)
     FileUtils.mv(temp_output.path, file_path)
   ensure
     temp_output.close

@@ -2792,7 +2792,9 @@ module Paquette
       sig { params(package_name: String, version: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(package_name, version, stat); end
 
-      # Stable across processes, so a restart does not orphan the cache.
+      # Everything this personalizer would write into a tarball, and the
+      # repacker format it writes it with. Stable across processes, so a restart
+      # does not orphan the cache; a new repacker format does, on purpose.
       sig { returns(String) }
       def personalization_digest; end
     end
@@ -3278,6 +3280,7 @@ module Paquette
   # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
   # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
   class NpmRepacker
+    FORMAT_VERSION = T.let(2, T.untyped)
     SOURCE_EXTENSIONS = T.let(%w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze, T.untyped)
 
     # One line in, one line out — the rule the whole personalization scheme
@@ -3379,7 +3382,8 @@ module Paquette
     def apply_package_json_extras(entries, root); end
 
     # Injected files inherit the package's oldest mtime, keeping the tarball
-    # independent of when they were added.
+    # independent of when they were added. One that replaces a shipped file
+    # keeps that file's mode, so replacing a bin script leaves it executable.
     # 
     # _@param_ `entries`
     # 

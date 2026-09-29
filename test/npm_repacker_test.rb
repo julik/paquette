@@ -187,6 +187,46 @@ class NpmRepackerTest < Minitest::Test
     assert_equal 1, Paquette::Tarball.entries(path).count { |entry| entry.name == "package/README.md" }
   end
 
+  def test_an_injected_file_keeps_the_mode_of_the_one_it_replaces
+    source = File.join(@work_dir, "source.tgz")
+    Paquette::Tarball.write(source, [
+      Paquette::Tarball::Entry.new(name: "package/package.json", mode: 0o644, mtime: NPM_EPOCH, content: '{"name":"widget"}'),
+      Paquette::Tarball::Entry.new(name: "package/bin/cli.js", mode: 0o755, mtime: NPM_EPOCH, content: "#!/usr/bin/env node\n")
+    ])
+
+    path = Paquette::NpmRepacker.repack(source,
+      files: {"bin/cli.js" => "#!/usr/bin/env node\n// licensed\n", "LICENSE.txt" => "Licensed to Acme"}, into: into)
+
+    modes = Paquette::Tarball.entries(path).to_h { |entry| [entry.name, entry.mode] }
+    assert_equal 0o755, modes["package/bin/cli.js"]
+    assert_equal 0o644, modes["package/LICENSE.txt"]
+  end
+
+  # The tarball is rewritten in memory and never unpacked, so nothing on the
+  # way — a Tempfile, the process umask — reaches the modes it writes. The
+  # gem repacker learned that the hard way.
+  def test_repacking_is_byte_identical_whatever_the_umask
+    source = File.join(@work_dir, "source.tgz")
+    Paquette::Tarball.write(source, [
+      Paquette::Tarball::Entry.new(name: "package/package.json", mode: 0o664, mtime: NPM_EPOCH, content: '{"name":"widget"}'),
+      Paquette::Tarball::Entry.new(name: "package/index.js", mode: 0o600, mtime: NPM_EPOCH, content: "module.exports = 1;\n"),
+      Paquette::Tarball::Entry.new(name: "package/bin/cli.js", mode: 0o755, mtime: NPM_EPOCH, content: "#!/usr/bin/env node\n")
+    ])
+
+    digests = [0o022, 0o002, 0o077].map do |umask|
+      previous = File.umask(umask)
+      begin
+        path = Paquette::NpmRepacker.repack(source,
+          files: {"LICENSE.txt" => "Licensed to Acme"}, into: into("umask-#{umask.to_s(8)}.tgz"))
+        Digest::SHA256.file(path).hexdigest
+      ensure
+        File.umask(previous)
+      end
+    end
+
+    assert_equal 1, digests.uniq.length
+  end
+
   def test_repack_changes_the_checksum
     source = fixture_package
     original = Digest::SHA256.file(source).hexdigest

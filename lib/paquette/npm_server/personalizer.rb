@@ -192,11 +192,14 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
     File.join(@cache_dir, "#{File.basename(package_name)}-#{version}-#{digest}.plain")
   end
 
-  # Stable across processes, so a restart does not orphan the cache.
+  # Everything this personalizer would write into a tarball, and the
+  # repacker format it writes it with. Stable across processes, so a restart
+  # does not orphan the cache; a new repacker format does, on purpose.
   #
   # @return [String]
   def personalization_digest
     @personalization_digest ||= Digest::SHA256.hexdigest([
+      Paquette::NpmRepacker::FORMAT_VERSION,
       @license_key,
       @magic_comment_replacements.sort.inspect,
       @files.sort.inspect,

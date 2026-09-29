@@ -287,12 +287,15 @@ class Paquette::GemServer::Personalizer < SimpleDelegator
     File.join(@cache_dir, "#{gem_name}-#{version}-#{digest}.plain")
   end
 
-  # Everything this personalizer would write into a gem, as one short hash.
-  # Stable across processes, so a restart does not orphan the cache.
+  # Everything this personalizer would write into a gem, and the repacker
+  # format it writes it with, as one short hash. Stable across processes, so
+  # a restart does not orphan the cache; a new repacker format does, on
+  # purpose.
   #
   # @return [String]
   def personalization_digest
     @personalization_digest ||= Digest::SHA256.hexdigest([
+      Paquette::GemServer::GemRepacker::FORMAT_VERSION,
       @license_key,
       @magic_comment_replacements.sort.inspect,
       @files.sort.inspect,

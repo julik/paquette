@@ -1078,6 +1078,9 @@ module Paquette
     # Rewrites the contents of a .gem into a new, byte-reproducible .gem —
     # replacing magic comment lines, merging gemspec metadata and injecting files.
     class GemRepacker
+      FORMAT_VERSION = T.let(2, T.untyped)
+      INJECTED_FILE_MODE = T.let(0o100644, T.untyped)
+
       # One-shot convenience for {#initialize} + {#repack}.
       # 
       # _@param_ `gem_path`
@@ -1138,6 +1141,19 @@ module Paquette
       sig { void }
       def process_ruby_files; end
 
+      # The mode of every entry in the source gem's data.tar.gz, as its packer
+      # wrote it. The repack writes these back rather than what is on disk:
+      # extraction masks each mode with this process's umask, and the .rb files
+      # are rewritten through a Tempfile created 0600, so the disk says more
+      # about the server than about the gem.
+      # 
+      # _@return_ — entry name => mode
+      sig { returns(T::Hash[String, Integer]) }
+      def source_entry_modes; end
+
+      # A file that replaces one the gem shipped keeps that file's mode. Removed
+      # before it is written, because the one it replaces may have been shipped
+      # read-only.
       sig { void }
       def inject_files; end
 
@@ -1190,7 +1206,8 @@ module Paquette
       end
 
       # Gem::Package that reads the files it packs from a directory of the
-      # caller's choosing instead of from the working directory, silently.
+      # caller's choosing instead of from the working directory, silently, and
+      # records the modes it is given instead of the ones on disk.
       # `gem build` only works because the CLI chdir's into the unpacked gem
       # first — and chdir is process-global, so a server cannot do that. Only the
       # two methods that reach outside are overridden; the .gem format itself
@@ -1209,19 +1226,23 @@ module Paquette
         # 
         # _@param_ `build_time` — the timestamp stamped into the archive — see BuildTime for why this is a block around the build, not an argument
         # 
+        # _@param_ `modes` — the tar mode of every file in spec.files
+        # 
         # _@return_ — file_name
         sig do
           params(
             spec: ::Gem::Specification,
             root: String,
             file_name: String,
-            build_time: Time
+            build_time: Time,
+            modes: T::Hash[String, Integer]
           ).returns(String)
         end
-        def self.build(spec, root, file_name, build_time:); end
+        def self.build(spec, root, file_name, build_time:, modes:); end
 
-        # The RubyGems original with @root joined onto every path it looks at. The
-        # names written into the tar stay relative, which is what a .gem holds.
+        # The RubyGems original with @root joined onto every path it looks at, and
+        # each mode taken from @modes rather than from the file's stat. The names
+        # written into the tar stay relative, which is what a .gem holds.
         # 
         # _@param_ `tar`
         sig { params(tar: ::Gem::Package::TarWriter).void }
@@ -1234,6 +1255,9 @@ module Paquette
 
         sig { returns(String) }
         attr_accessor :root
+
+        sig { returns(T::Hash[String, Integer]) }
+        attr_accessor :modes
       end
     end
 
@@ -1400,8 +1424,10 @@ module Paquette
       sig { params(gem_name: String, version: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(gem_name, version, stat); end
 
-      # Everything this personalizer would write into a gem, as one short hash.
-      # Stable across processes, so a restart does not orphan the cache.
+      # Everything this personalizer would write into a gem, and the repacker
+      # format it writes it with, as one short hash. Stable across processes, so
+      # a restart does not orphan the cache; a new repacker format does, on
+      # purpose.
       sig { returns(String) }
       def personalization_digest; end
     end

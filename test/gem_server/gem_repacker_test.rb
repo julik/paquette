@@ -30,18 +30,56 @@ class GemRepackerTest < Minitest::Test
     File.delete(new_gem_path) if File.exist?(new_gem_path)
   end
 
-  # The .rb files go through a Tempfile, which is created 0600 — and a gem
-  # that installs root-owned 0600 files cannot be required by anyone else.
-  # Every entry keeps the mode the source gem's own packer gave it, less the
-  # umask RubyGems applies when it unpacks.
+  # Every entry keeps the mode the source gem's packer gave it — not the 0600
+  # of the Tempfile the .rb files are rewritten through (a gem that installs
+  # root-owned 0600 files cannot be required by anyone else), and not the
+  # mode extraction leaves on disk after this process's umask.
   def test_repack_keeps_the_file_modes_of_the_source_gem
     Dir.mktmpdir("gem_repacker_permissions") do |dir|
-      repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-        magic_comment_replacements: {"# paquette_license_info" => "LIC-1"},
-        into: File.join(dir, "repacked.gem"))
+      source = build_gem_with_modes(dir)
 
-      expected = data_entry_modes(@test_gem_path).transform_values { |mode| mode & ~File.umask }
-      assert_equal expected, data_entry_modes(repacked)
+      [0o022, 0o077].each do |umask|
+        repacked = with_umask(umask) do
+          Paquette::GemServer::GemRepacker.repack(source,
+            magic_comment_replacements: {"# paquette_license_info" => "LIC-1"},
+            into: File.join(dir, "repacked-#{umask.to_s(8)}.gem"))
+        end
+
+        assert_equal data_entry_modes(source), data_entry_modes(repacked), "under umask #{umask.to_s(8)}"
+      end
+    end
+  end
+
+  def test_repack_is_byte_identical_whatever_the_umask
+    Dir.mktmpdir("gem_repacker_umask") do |dir|
+      source = build_gem_with_modes(dir)
+
+      digests = [0o022, 0o002, 0o077].map do |umask|
+        with_umask(umask) do
+          repacked = Paquette::GemServer::GemRepacker.repack(source,
+            files: {"LICENSE-EXTRA.txt" => "Licensed to somebody\n"},
+            into: File.join(dir, "repacked-#{umask.to_s(8)}.gem"))
+          Digest::SHA256.file(repacked).hexdigest
+        end
+      end
+
+      assert_equal 1, digests.uniq.length
+    end
+  end
+
+  def test_repack_gives_an_injected_file_a_readable_mode_and_a_replaced_one_its_old_mode
+    Dir.mktmpdir("gem_repacker_injected") do |dir|
+      source = build_gem_with_modes(dir)
+
+      repacked = with_umask(0o077) do
+        Paquette::GemServer::GemRepacker.repack(source,
+          files: {"LICENSE-EXTRA.txt" => "new\n", "data/readonly.txt" => "replaced\n"},
+          into: File.join(dir, "repacked.gem"))
+      end
+
+      modes = data_entry_modes(repacked)
+      assert_equal 0o100644, modes["LICENSE-EXTRA.txt"]
+      assert_equal data_entry_modes(source)["data/readonly.txt"], modes["data/readonly.txt"]
     end
   end
 
@@ -341,6 +379,45 @@ class GemRepackerTest < Minitest::Test
   end
 
   private
+
+  # A gem whose files do not all share one mode, the way a gem built on a
+  # umask-002 machine or shipping an executable arrives.
+  #
+  # @return [String] path of the built gem
+  def build_gem_with_modes(dir)
+    root = File.join(dir, "source")
+    {
+      "lib/moded.rb" => ["# paquette_license_info\nmodule Moded; end\n", 0o664],
+      "exe/moded" => ["#!/usr/bin/env ruby\n", 0o755],
+      "data/readonly.txt" => ["read me\n", 0o444],
+      "README.md" => ["# Moded\n", 0o644]
+    }.each do |path, (content, mode)|
+      full = File.join(root, path)
+      FileUtils.mkdir_p(File.dirname(full))
+      File.write(full, content)
+      File.chmod(mode, full)
+    end
+
+    spec = Gem::Specification.new do |s|
+      s.name = "moded"
+      s.version = "0.1.0"
+      s.summary = "Files with different modes"
+      s.authors = ["Paquette"]
+      s.files = ["README.md", "data/readonly.txt", "exe/moded", "lib/moded.rb"]
+    end
+    modes = spec.files.to_h { |path| [path, File.stat(File.join(root, path)).mode] }
+
+    gem_path = File.join(dir, "moded-0.1.0.gem")
+    Paquette::GemServer::GemRepacker::RootedPackage.build(spec, root, gem_path, build_time: Time.utc(2026, 1, 1), modes: modes)
+    gem_path
+  end
+
+  def with_umask(umask)
+    previous = File.umask(umask)
+    yield
+  ensure
+    File.umask(previous)
+  end
 
   # @return [Hash{String => Integer}] tar entry name => mode, from data.tar.gz
   def data_entry_modes(gem_path)

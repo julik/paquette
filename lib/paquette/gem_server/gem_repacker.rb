@@ -5,6 +5,7 @@ require "fileutils"
 require "digest"
 require "tmpdir"
 require "tempfile"
+require "zlib"
 require "measurometer"
 
 # Rewrites the contents of a .gem into a new, byte-reproducible .gem —
@@ -12,6 +13,19 @@ require "measurometer"
 class Paquette::GemServer::GemRepacker
   autoload :BuildTime, "#{__dir__}/gem_repacker/build_time"
   autoload :RootedPackage, "#{__dir__}/gem_repacker/rooted_package"
+
+  # Bumped whenever the same source gem and the same arguments would repack
+  # into different bytes, so a cache keyed on the inputs can include it.
+  # 2: file modes come from the source gem rather than the unpacked copy.
+  #
+  # @return [Integer]
+  FORMAT_VERSION = 2
+
+  # What `gem build` records for a plain file on a umask-022 machine, given
+  # to a file the source gem did not have.
+  #
+  # @return [Integer]
+  INJECTED_FILE_MODE = 0o100644
 
   # One-shot convenience for {#initialize} + {#repack}.
   #
@@ -42,6 +56,7 @@ class Paquette::GemServer::GemRepacker
     @into = into
     @temp_dir = nil
     @unpacked_gem_dir = nil
+    @entry_modes = nil
   end
 
   # Four subprocess-and-disk stages, each timed separately: a repack that
@@ -80,6 +95,7 @@ class Paquette::GemServer::GemRepacker
     Measurometer.instrument("paquette.gem_repacker.gem_unpack") do
       package.extract_files(@gem_dir)
     end
+    @entry_modes = source_entry_modes
   rescue Gem::Exception => e
     raise "Failed to unpack gem: #{@gem_path}. Error: #{e.message}"
   end
@@ -91,12 +107,38 @@ class Paquette::GemServer::GemRepacker
     rb_files.each { |rb_file| process_ruby_file(rb_file) }
   end
 
+  # The mode of every entry in the source gem's data.tar.gz, as its packer
+  # wrote it. The repack writes these back rather than what is on disk:
+  # extraction masks each mode with this process's umask, and the .rb files
+  # are rewritten through a Tempfile created 0600, so the disk says more
+  # about the server than about the gem.
+  #
+  # @return [Hash{String => Integer}] entry name => mode
+  def source_entry_modes
+    modes = {}
+    File.open(@gem_path, "rb") do |io|
+      Gem::Package::TarReader.new(io).each do |entry|
+        next unless entry.full_name == "data.tar.gz"
+        Zlib::GzipReader.wrap(entry) do |gz|
+          Gem::Package::TarReader.new(gz).each { |file| modes[file.full_name] = file.header.mode }
+        end
+      end
+    end
+    modes
+  end
+
+  # A file that replaces one the gem shipped keeps that file's mode. Removed
+  # before it is written, because the one it replaces may have been shipped
+  # read-only.
+  #
   # @return [void]
   def inject_files
     @files.each do |file_path, content|
       full_path = File.join(@gem_dir, file_path)
       FileUtils.mkdir_p(File.dirname(full_path))
+      FileUtils.rm_f(full_path)
       File.write(full_path, content)
+      @entry_modes[file_path] ||= INJECTED_FILE_MODE
     end
   end
 
@@ -117,7 +159,6 @@ class Paquette::GemServer::GemRepacker
       temp_output.flush
     end
 
-    File.chmod(File.stat(file_path).mode & 0o7777, temp_output.path)
     FileUtils.mv(temp_output.path, file_path)
   ensure
     temp_output.close
@@ -161,7 +202,8 @@ class Paquette::GemServer::GemRepacker
     Measurometer.instrument("paquette.gem_repacker.gem_build") do
       Paquette::GemServer::GemRepacker::RootedPackage.build(
         repacked_spec(original_spec), @gem_dir, final_gem_path,
-        build_time: original_spec.date
+        build_time: original_spec.date,
+        modes: @entry_modes
       )
     end
 

@@ -2,6 +2,7 @@ require_relative "../test_helper"
 require "digest"
 require "rubygems/package"
 require "open3"
+require "zlib"
 
 class GemRepackerTest < Minitest::Test
   def setup
@@ -29,12 +30,18 @@ class GemRepackerTest < Minitest::Test
     File.delete(new_gem_path) if File.exist?(new_gem_path)
   end
 
-  def test_repack_preserves_ruby_file_permissions
+  # The .rb files go through a Tempfile, which is created 0600 — and a gem
+  # that installs root-owned 0600 files cannot be required by anyone else.
+  # Every entry keeps the mode the source gem's own packer gave it, less the
+  # umask RubyGems applies when it unpacks.
+  def test_repack_keeps_the_file_modes_of_the_source_gem
     Dir.mktmpdir("gem_repacker_permissions") do |dir|
-      repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path, into: File.join(dir, "repacked.gem"))
-      unpacked = File.join(dir, "unpacked")
-      Gem::Package.new(repacked).extract_files(unpacked)
-      assert_equal 0o644, File.stat(File.join(unpacked, "lib/minuscule_test.rb")).mode & 0o7777
+      repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
+        magic_comment_replacements: {"# paquette_license_info" => "LIC-1"},
+        into: File.join(dir, "repacked.gem"))
+
+      expected = data_entry_modes(@test_gem_path).transform_values { |mode| mode & ~File.umask }
+      assert_equal expected, data_entry_modes(repacked)
     end
   end
 
@@ -334,6 +341,20 @@ class GemRepackerTest < Minitest::Test
   end
 
   private
+
+  # @return [Hash{String => Integer}] tar entry name => mode, from data.tar.gz
+  def data_entry_modes(gem_path)
+    modes = {}
+    File.open(gem_path, "rb") do |io|
+      Gem::Package::TarReader.new(io).each do |entry|
+        next unless entry.full_name == "data.tar.gz"
+        Zlib::GzipReader.wrap(entry) do |gz|
+          Gem::Package::TarReader.new(gz).each { |file| modes[file.full_name] = file.header.mode }
+        end
+      end
+    end
+    modes
+  end
 
   def verify_repacking(gem_path, expected_random_chars)
     # Create a temporary directory to unpack the new gem

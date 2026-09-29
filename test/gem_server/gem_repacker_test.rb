@@ -29,6 +29,15 @@ class GemRepackerTest < Minitest::Test
     File.delete(new_gem_path) if File.exist?(new_gem_path)
   end
 
+  def test_repack_preserves_ruby_file_permissions
+    Dir.mktmpdir("gem_repacker_permissions") do |dir|
+      repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path, into: File.join(dir, "repacked.gem"))
+      unpacked = File.join(dir, "unpacked")
+      Gem::Package.new(repacked).extract_files(unpacked)
+      assert_equal 0o644, File.stat(File.join(unpacked, "lib/minuscule_test.rb")).mode & 0o7777
+    end
+  end
+
   def test_repack_with_metadata_keys
     assert File.exist?(@test_gem_path), "Test gem not found at #{@test_gem_path}"
 

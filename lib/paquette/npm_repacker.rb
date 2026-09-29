@@ -15,6 +15,14 @@ class Paquette::NpmRepacker
   # Raised for a marker or replacement spanning several lines.
   class MultilineReplacement < StandardError; end
 
+  # Bumped whenever the same source tarball and the same arguments would
+  # repack into different bytes, so a cache keyed on the inputs can include
+  # it — the counterpart of GemServer::GemRepacker::FORMAT_VERSION.
+  # 2: a file that replaces a shipped one keeps that file's mode.
+  #
+  # @return [Integer]
+  FORMAT_VERSION = 2
+
   # Binary assets and sourcemaps are copied through untouched.
   #
   # @return [Array<String>]
@@ -203,7 +211,8 @@ class Paquette::NpmRepacker
   end
 
   # Injected files inherit the package's oldest mtime, keeping the tarball
-  # independent of when they were added.
+  # independent of when they were added. One that replaces a shipped file
+  # keeps that file's mode, so replacing a bin script leaves it executable.
   #
   # @param entries [Array<Paquette::Tarball::Entry>]
   # @param root [String]
@@ -216,7 +225,8 @@ class Paquette::NpmRepacker
 
     @files.each do |relative_path, content|
       name = "#{root}/#{relative_path}"
-      by_name[name] = Paquette::Tarball::Entry.new(name: name, mode: 0o644, mtime: mtime, content: content.to_s)
+      mode = by_name[name]&.mode || 0o644
+      by_name[name] = Paquette::Tarball::Entry.new(name: name, mode: mode, mtime: mtime, content: content.to_s)
     end
 
     by_name.values

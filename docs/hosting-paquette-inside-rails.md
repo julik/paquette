@@ -13,8 +13,10 @@ gems_dir = Rails.root.join("packages/gems")
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 
 gem_app = ->(env) {
-  request = Rack::Request.new(env)
-  Current.user = User.find_by(api_key: request.get_header("HTTP_AUTHORIZATION"))
+  # Bundler sends the token as the Basic auth username, npm as a Bearer
+  # token; token_in reads either.
+  token = Paquette::TokenAuthorization.token_in(env)
+  Current.user = token && User.find_by(api_key: token)
 
   repo = if Current.user
     Paquette::GemServer::ReadGatedRepository.new(gems_repo) do |name:, version: nil|
@@ -24,13 +26,15 @@ gem_app = ->(env) {
     Paquette::GemServer::ReadGatedRepository.new(gems_repo) { |**| false }
   end
 
-  Paquette::GemServer.new(repo).call(env)
+  Paquette::GemServer.new(repo, otp_secret: Current.user&.totp_secret).call(env)
 }
 
 Rails.application.routes.draw do
   mount gem_app, at: "/gems"
 end
 ```
+
+`otp_secret:` makes every push and yank carry a one-time password from the user's authenticator app; `nil` turns the check off. See [Authentication](../README.md#authentication).
 
 Note that the `DirectoryGemRepository` is created once and shared across requests — it just does file I/O and is safe to reuse. The `ReadGatedRepository` wrapper and `GemServer` are built per-request so that user-specific state is captured in plain closures.
 

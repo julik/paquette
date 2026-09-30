@@ -17,10 +17,14 @@ npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 
 # Uncomment and configure to require token authentication.
 # The block receives the raw token and should return an identity object
-# (stored in env["paquette.identity"]) or nil/false to reject.
+# (stored in env["paquette.identity"]) or nil/false to reject. Add
+# `anonymous: true` to let requests without credentials through.
 # use Paquette::TokenAuthorization, "Paquette" do |token|
 #   AccessToken.find_by(secret: token)&.owner
 # end
+#
+# To require a one-time password on every push, pass the TOTP secret to the
+# server: Paquette::GemServer.new(gems_repo, otp_secret: ENV["PAQUETTE_OTP_SECRET"])
 
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
   router.map "gem", to: Paquette::GemServer.new(gems_repo)

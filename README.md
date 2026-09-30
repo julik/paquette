@@ -127,10 +127,11 @@ Since Paquette is very modular and is supposed to be assembled per use case, you
 
 ```ruby
 def call(env)
-  username = env["REMOTE_USER"]
-  user = User.where(login: username).first!
-  packages_dir = Rails.root.join("packages", "gems").to_s
+  token = Paquette::TokenAuthorization.token_in(env)
+  user = token && User.find_by(api_token: token)
+  return [401, {"www-authenticate" => %(Bearer realm="Paquette")}, []] unless user
 
+  packages_dir = Rails.root.join("packages", "gems").to_s
   repo = Paquette::GemServer::DirectoryGemRepository.new(packages_dir)
 
   repo_with_gating = Paquette::GemServer::ReadGatedRepository.new(repo) do |name:, version: nil|
@@ -149,6 +150,47 @@ end
 
 The NPM server is assembled exactly the same way, out of the same kind of parts - see [Usage for NPM packages](#usage-for-npm-packages).
 
+## Authentication
+
+Each of the three questions has one place where it is answered:
+
+| Question | Where |
+|---|---|
+| Who is this? | `Paquette::TokenAuthorization`, as middleware or through `TokenAuthorization.token_in(env)` |
+| What may they see, and may they write? | The repository stack you build for them |
+| Is this push really them? | `otp_secret:` on the server |
+
+### Who is this
+
+Bundler, `gem` and npm all send a token, but not the same way: Bundler and `gem` send Basic auth with the token as the username (`https://TOKEN:x-oauth-basic@gem.example.com`), npm sends `Authorization: Bearer TOKEN`. `TokenAuthorization.token_in(env)` reads either and hands you the token, or `nil` - use it rather than reading `HTTP_AUTHORIZATION` yourself, which holds `Basic dG9r...` for Bundler.
+
+If you would rather not resolve the caller yourself, use the middleware. The block gets the token and returns an identity, which lands in `env["paquette.identity"]`:
+
+```ruby
+use Paquette::TokenAuthorization, "Paquette" do |token|
+  AccessToken.find_by(secret: token)&.owner
+end
+```
+
+By default a request without credentials is refused with a 401. Pass `anonymous: true` to let it through with no identity, and decide what an anonymous caller gets in the repository stack - a public registry that only wants a token for pushes, say. A token that does not resolve is refused either way.
+
+### What may they do
+
+Build the stack for the caller. A `ReadGatedRepository` refuses every write, and so does a `ReadonlyRepository`; a caller who may push gets a stack without either.
+
+### Is this push really them
+
+Give the server the caller's TOTP secret, and every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag` - has to carry a live code:
+
+```ruby
+Paquette::GemServer.new(repo, otp_secret: user.totp_secret)
+Paquette::NpmServer.new(repo, otp_secret: user.totp_secret)
+```
+
+Each server asks in its client's own dialect, so `gem push` and `npm publish` prompt for the code the way they do against rubygems.org and npmjs.com, and `--otp` works on both. Reads never ask. The check runs before the handler, so a push without a code is refused before its body is read.
+
+`otp_secret: nil` (the default) turns the check off. An empty string raises: a user row with no secret set is not a decision to skip the check. `otp_drift:` sets the allowed clock drift, 30 seconds each way by default.
+
 ## Hostname limitations
 
 The server will run on `http://localhost:9292` by default. Note that the NPM registry and the RubyGems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
@@ -160,7 +202,7 @@ You can publish gems two ways.
 1. Place `.gem` files in a per-gem directory under `gems/`, as `gems/gemname/gemname-version.gem`
 2. Actually do a `gem push` - from your shell, do `gem push --host http://gem.localhost:9292 pkg/your-gem-0.1.0.gem`
 
-Note that Paquette will use whichever auth you wrap it with - that is to say, in the default dev setup - _none._ I told you it is slightly unhinged.
+Note that Paquette will use whichever auth you wrap it with - that is to say, in the default dev setup - _none._ I told you it is slightly unhinged. See [Authentication](#authentication) for tokens and OTP.
 
 ### Consuming gems provided by a Paquette server
 

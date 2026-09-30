@@ -21,6 +21,7 @@ class Paquette::GemServer
 
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
+  include Paquette::Otp
 
   # RubyGems' own charset for a name.
   #
@@ -171,40 +172,6 @@ class Paquette::GemServer
     nil
   end
 
-  # How `gem push` speaks OTP: the code arrives in the `OTP` header, and a
-  # refusal is a plain 401 carrying one of the two sentences the client
-  # expects, word for word.
-  module OtpDialect
-    module_function
-
-    # @param env [Hash] the Rack env
-    # @return [String, nil]
-    def code_in(env)
-      env["HTTP_OTP"]
-    end
-
-    # @return [Array] a Rack response triplet
-    def otp_missing
-      [401, {}, ["You have enabled multifactor authentication"]]
-    end
-
-    # @return [Array] a Rack response triplet
-    def otp_rejected
-      [401, {}, ["OTP verification failed"]]
-    end
-  end
-
-  # An OtpGate that reads and refuses the way this server's publishing
-  # client does — an application only brings the secret.
-  #
-  # @param secret [String]
-  # @param issuer [String]
-  # @param drift [Integer]
-  # @return [Paquette::OtpGate]
-  def self.otp_gate(secret:, issuer:, drift: 30)
-    Paquette::OtpGate.new(secret: secret, issuer: issuer, drift: drift, dialect: OtpDialect)
-  end
-
   # "zip_kit-6.2.1.gem" into ["zip_kit", "6.2.1"] — the one dash rule;
   # nothing outside this class should guess at it with a regex of its own.
   #
@@ -311,12 +278,20 @@ class Paquette::GemServer
   # @param shared_caching [Boolean] false keeps every response `private`,
   #   as if every request carried a credential — set it when you authorize
   #   by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
+  # @param otp_secret [String, nil] the base32 TOTP secret of whoever this
+  #   server is built for; given one, every push and yank must carry a live
+  #   code in the `OTP` header, which `gem push` prompts for. nil turns the
+  #   check off
+  # @param otp_drift [Integer] allowed clock drift in seconds, both directions
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true,
+    otp_secret: nil, otp_drift: Paquette::Otp::DEFAULT_DRIFT)
     @repository = repository
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
+    @otp_secret = Paquette::Otp.checked_secret(otp_secret)
+    @otp_drift = otp_drift
   end
 
   # @param env [Hash] the Rack env
@@ -334,12 +309,37 @@ class Paquette::GemServer
       request = Rack::Request.new(env)
       route = @@routes.match(request)
       next not_found("Not found") unless route
+      if route.write? && (refusal = otp_refusal(env))
+        next refusal
+      end
 
       @request = request
       @@routes.perform_action(route, self, request)
     end
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
+  end
+
+  # `gem push` sends the code in the `OTP` header.
+  #
+  # @param env [Hash] the Rack env
+  # @return [String, nil]
+  def otp_code(env)
+    env["HTTP_OTP"]
+  end
+
+  # The client matches this sentence word for word to decide to prompt.
+  #
+  # @return [Array] a Rack response triplet
+  def otp_missing
+    [401, {"Content-Type" => "text/plain"}, ["You have enabled multifactor authentication"]]
+  end
+
+  # And this one to report a wrong code rather than a failed login.
+  #
+  # @return [Array] a Rack response triplet
+  def otp_rejected
+    [401, {"Content-Type" => "text/plain"}, ["OTP verification failed"]]
   end
 
   # One entry per name+version+platform, in the shape rubygems.org serves.

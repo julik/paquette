@@ -39,7 +39,7 @@ module Paquette
   autoload :IndexPage, "#{__dir__}/paquette/index_page"
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
-  autoload :OtpGate, "#{__dir__}/paquette/otp_gate"
+  autoload :Otp, "#{__dir__}/paquette/otp"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
   autoload :Routes, "#{__dir__}/paquette/routes"
   autoload :SafeUrl, "#{__dir__}/paquette/safe_url"

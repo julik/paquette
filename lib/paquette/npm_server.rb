@@ -14,6 +14,7 @@ class Paquette::NpmServer
 
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
+  include Paquette::Otp
 
   # A request body past `max_push_bytes:`, answered 413 before the JSON
   # parse — and before most of the read.
@@ -108,47 +109,6 @@ class Paquette::NpmServer
     "#{prefix}#{scope}%2F#{name}#{rest}"
   end
 
-  # How npm speaks OTP: the code arrives in the `npm-otp` header (plain
-  # `OTP` accepted as a curl fallback), and a refusal is a 401 challenge —
-  # `www-authenticate: OTP` plus "one-time pass" in the body — so npm
-  # prompts for a fresh code instead of reporting a failed login.
-  module OtpDialect
-    module_function
-
-    # @param env [Hash] the Rack env
-    # @return [String, nil]
-    def code_in(env)
-      env["HTTP_NPM_OTP"] || env["HTTP_OTP"]
-    end
-
-    # @return [Array] a Rack response triplet
-    def otp_missing
-      challenge("This registry requires a one-time password. Retry with the npm-otp header.")
-    end
-
-    # @return [Array] a Rack response triplet
-    def otp_rejected
-      challenge("The one-time password was not accepted. Retry with a fresh code.")
-    end
-
-    # @param message [String]
-    # @return [Array] a Rack response triplet
-    def challenge(message)
-      [401, {"www-authenticate" => "OTP"}, [message]]
-    end
-  end
-
-  # An OtpGate that reads and refuses the way npm does — see the gem-side
-  # twin.
-  #
-  # @param secret [String]
-  # @param issuer [String]
-  # @param drift [Integer]
-  # @return [Paquette::OtpGate]
-  def self.otp_gate(secret:, issuer:, drift: 30)
-    Paquette::OtpGate.new(secret: secret, issuer: issuer, drift: drift, dialect: OtpDialect)
-  end
-
   # "helpers-1.0.0.tgz" under "@stanquette/helpers" is version "1.0.0".
   # Strips a prefix and a suffix rather than matching: a name interpolated
   # into a regexp raised out of the compile on invalid UTF-8.
@@ -178,8 +138,14 @@ class Paquette::NpmServer
   #   to make knowingly
   # @param shared_caching [Boolean] false keeps every response `private` —
   #   see the same option on GemServer
+  # @param otp_secret [String, nil] the base32 TOTP secret of whoever this
+  #   server is built for; given one, every publish, unpublish and dist-tag
+  #   change must carry a live code in the `npm-otp` header, which npm
+  #   prompts for. nil turns the check off
+  # @param otp_drift [Integer] allowed clock drift in seconds, both directions
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true,
+    otp_secret: nil, otp_drift: Paquette::Otp::DEFAULT_DRIFT)
     @repository = if repository.is_a?(String)
       DirectoryNpmRepository.new(repository)
     else
@@ -188,6 +154,8 @@ class Paquette::NpmServer
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
+    @otp_secret = Paquette::Otp.checked_secret(otp_secret)
+    @otp_drift = otp_drift
   end
 
   # @param env [Hash] the Rack env
@@ -208,6 +176,9 @@ class Paquette::NpmServer
       request = Rack::Request.new(env)
       route = @@routes.match(request)
       next not_found("Not Found") unless route
+      if route.write? && (refusal = otp_refusal(env))
+        next refusal
+      end
 
       # Shared across Rack threads: the request lives on a per-request clone.
       handler = clone
@@ -224,6 +195,36 @@ class Paquette::NpmServer
   # @return [String]
   def normalize_scoped_path(path)
     self.class.normalize_scoped_path(path)
+  end
+
+  # npm sends the code in `npm-otp`; the plain `OTP` header is accepted
+  # too, for a registry scripted with curl. npm's own wins when both are
+  # present.
+  #
+  # @param env [Hash] the Rack env
+  # @return [String, nil]
+  def otp_code(env)
+    env["HTTP_NPM_OTP"] || env["HTTP_OTP"]
+  end
+
+  # @return [Array] a Rack response triplet
+  def otp_missing
+    otp_challenge("This registry requires a one-time password. Retry with the npm-otp header.")
+  end
+
+  # @return [Array] a Rack response triplet
+  def otp_rejected
+    otp_challenge("The one-time password was not accepted. Retry with a fresh code.")
+  end
+
+  # `www-authenticate: OTP` plus "one-time pass" in the body — both, since
+  # npm versions detect it by one or the other — so npm prompts for a code
+  # instead of reporting a failed login.
+  #
+  # @param message [String]
+  # @return [Array] a Rack response triplet
+  def otp_challenge(message)
+    [401, {"Content-Type" => "text/plain", "www-authenticate" => "OTP"}, [message]]
   end
 
   # The hot read path for `npm install`. The validator folds in the

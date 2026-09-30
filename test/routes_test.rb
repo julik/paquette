@@ -54,6 +54,20 @@ class RoutesTest < Minitest::Test
 
   attr_reader :app
 
+  # What both servers ask a one-time password for.
+  def test_every_method_but_get_and_head_is_a_write
+    routes = Paquette::Routes.draw do |r|
+      r.get("/") {}
+      r.post("/") {}
+      r.put("/") {}
+      r.delete("/") {}
+      r.patch("/") {}
+    end
+
+    assert_equal({"GET" => false, "POST" => true, "PUT" => true, "DELETE" => true, "PATCH" => true},
+      routes.routes.to_h { |route| [route.method, route.write?] })
+  end
+
   def test_root_route
     get "/"
     assert_equal 200, last_response.status

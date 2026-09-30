@@ -1,5 +1,10 @@
 ## Unreleased
 
+- Check one-time passwords inside the servers: `GemServer.new(repo, otp_secret:)` and `NpmServer.new(repo, otp_secret:)` ask every write — push, yank, publish, unpublish, dist-tag — for a live TOTP code in the header their client sends, and refuse in the words that make `gem` and `npm` prompt for one. The check runs before the handler, so a refused push is not read. `otp_drift:` sets the allowed drift. An empty `otp_secret:` raises rather than turning the check off
+- Remove `Paquette::OtpGate`, `GemServer.otp_gate`, `NpmServer.otp_gate` and the two `OtpDialect` modules, which left finding the write routes and returning the refusal to the application (breaking). `Paquette::Otp.verify(secret, code, drift:)` is what remains of the gate, answering `:authorized`, `:missing` or `:rejected`
+- Add `Paquette::TokenAuthorization.token_in(env)`, which reads a token out of a Bearer header or out of Basic auth the way Bundler sends it, for an application that resolves the caller itself. The Rails guide read the raw `Authorization` header instead, which never matched a Bundler request
+- Add `anonymous: true` to `TokenAuthorization`, which lets a request without credentials through with no identity; credentials that do not resolve are still refused
+- Add `Routes::Route#write?`
 - Give every file in a repacked gem the mode the source gem recorded for it. The modes used to come from the unpacked copy on disk, which carried the 0600 of the Tempfile each `.rb` file is rewritten through, and the serving process's umask for everything else — so the same gem repacked to different bytes on servers with different umasks. A file Paquette injects gets 0644; one that replaces a shipped file keeps that file's mode
 - Replace a file the source gem shipped read-only instead of failing the repack
 - Include `GemRepacker::FORMAT_VERSION` in the personalizer's cache key, so personalized gems cached by an earlier repacker are rebuilt rather than served. Every personalized gem's checksum changes with this release, and a consumer whose lockfile records one will need to refresh it

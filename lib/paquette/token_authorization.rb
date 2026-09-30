@@ -7,6 +7,9 @@ require "measurometer"
 # (the GitHub registry convention) — so machine clients like Bundler and npm,
 # which only speak Basic auth, can authenticate with just a token in their
 # config. The resolved identity is stored in env["paquette.identity"].
+#
+# An application that resolves the caller itself, per request, reads the
+# token with {.token_in} rather than parsing the header on its own.
 class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
   prepend Paquette::RegexpTimeout
 
@@ -16,13 +19,29 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
   # @return [String]
   BEARER_SENTINEL = "x-oauth-token"
 
+  # The token a request carries, whichever of the two schemes carried it.
+  #
+  # @param env [Hash] the Rack env
+  # @return [String, nil] nil when there is none, or when Basic auth carries
+  #   a real password — that is a login, not a token
+  def self.token_in(env)
+    auth = Request.new(env)
+    auth.token if auth.provided?
+  end
+
   # @param app [#call] the downstream Rack app
   # @param realm [String] the authentication realm (used in WWW-Authenticate)
+  # @param anonymous [Boolean] let a request with no credentials at all
+  #   through, with no identity, so the server and the repository stack
+  #   decide what an anonymous caller gets. Credentials that do not resolve
+  #   are refused either way: a typo in a token must not quietly become an
+  #   anonymous session
   # @yield [token] receives the raw token string on every request
   # @yieldreturn [Object, nil] an identity object (user, team, account), or
   #   a falsy value to reject the request
-  def initialize(app, realm = "Paquette", &authenticator)
+  def initialize(app, realm = "Paquette", anonymous: false, &authenticator)
     super(app, realm)
+    @anonymous = anonymous
     @authenticator = authenticator || ->(_token) { true }
   end
 
@@ -30,6 +49,10 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
   # @return [Array] a Rack response triplet
   def call(env)
     auth = Request.new(env)
+    if @anonymous && !auth.provided?
+      Measurometer.increment_counter("paquette.token_authorization.anonymous")
+      return @app.call(env)
+    end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token — on every single request, before any of the work the

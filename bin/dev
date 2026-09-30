@@ -24,7 +24,7 @@ gems_dir = File.expand_path("../tmp/gems", __dir__)
 
 FileUtils.mkdir_p(gems_dir)
 
-# No ReadGatedRepository, no Personalizer, no TokenAuthorization: a bare
+# No ReadGatedRepository, no Personalizer, no authenticator: a bare
 # repository is readwrite, and the server hands every request straight to it.
 repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 

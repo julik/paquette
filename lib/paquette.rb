@@ -33,17 +33,16 @@ module Paquette
   # should not pay for the npm side. Absolute paths because config.ru and
   # bin/dev reach this file through require_relative, which does not put
   # lib/ on the load path.
+  autoload :Authentication, "#{__dir__}/paquette/authentication"
   autoload :CacheValidation, "#{__dir__}/paquette/cache_validation"
   autoload :ConditionalGet, "#{__dir__}/paquette/conditional_get"
   autoload :GemServer, "#{__dir__}/paquette/gem_server"
   autoload :IndexPage, "#{__dir__}/paquette/index_page"
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
-  autoload :OtpGate, "#{__dir__}/paquette/otp_gate"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
   autoload :Routes, "#{__dir__}/paquette/routes"
   autoload :SafeUrl, "#{__dir__}/paquette/safe_url"
   autoload :SubdomainRouter, "#{__dir__}/paquette/subdomain_router"
   autoload :Tarball, "#{__dir__}/paquette/tarball"
-  autoload :TokenAuthorization, "#{__dir__}/paquette/token_authorization"
 end

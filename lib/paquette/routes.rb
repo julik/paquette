@@ -42,6 +42,14 @@ class Paquette::Routes
       @metric_name = "#{method} #{pattern}"
     end
 
+    # Anything that is not a read changes the corpus, and is what a server
+    # asks a one-time password for.
+    #
+    # @return [Boolean]
+    def write?
+      @method != "GET" && @method != "HEAD"
+    end
+
     # @param request [::Rack::Request]
     # @return [Boolean]
     def match?(request)

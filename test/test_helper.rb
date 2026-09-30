@@ -279,6 +279,25 @@ end
 
 # Rack::Test cannot build a body that disagrees with its own Content-Length,
 # which is exactly the shape of request these tests are about.
+# An authenticator in the shape both servers take: tokens map to
+# identities, identities to TOTP secrets, and `guest:` is what a caller with
+# no credentials is (nil refuses them).
+class TestAuthenticator
+  def initialize(tokens: {}, secrets: {}, guest: nil)
+    @tokens = tokens
+    @secrets = secrets
+    @guest = guest
+  end
+
+  def identify(token)
+    token ? @tokens[token] : @guest
+  end
+
+  def otp_secret(identity)
+    @secrets[identity]
+  end
+end
+
 module MalformedRequestHelpers
   def malformed_multipart_env(path, body: nil, content_length: nil)
     env = Rack::MockRequest.env_for(path, "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x")

@@ -12,19 +12,25 @@ The simplest approach is to mount Paquette as a Rack app in your Rails routes:
 gems_dir = Rails.root.join("packages/gems")
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 
-gem_app = ->(env) {
-  request = Rack::Request.new(env)
-  Current.user = User.find_by(api_key: request.get_header("HTTP_AUTHORIZATION"))
-
-  repo = if Current.user
-    Paquette::GemServer::ReadGatedRepository.new(gems_repo) do |name:, version: nil|
-      Current.user.entitlements.exists?(gem_name: name)
-    end
-  else
-    Paquette::GemServer::ReadGatedRepository.new(gems_repo) { |**| false }
+class GemAuthenticator
+  def identify(token)
+    token && User.find_by(api_key: token)
   end
 
-  Paquette::GemServer.new(repo).call(env)
+  def otp_secret(user)
+    user.totp_secret
+  end
+end
+authenticator = GemAuthenticator.new
+
+gem_app = ->(env) {
+  Current.user = Paquette::Authentication.identify(env, authenticator)
+
+  repo = Paquette::GemServer::ReadGatedRepository.new(gems_repo) do |name:, version: nil|
+    Current.user&.entitlements&.exists?(gem_name: name)
+  end
+
+  Paquette::GemServer.new(repo, authenticator: authenticator).call(env)
 }
 
 Rails.application.routes.draw do
@@ -32,7 +38,9 @@ Rails.application.routes.draw do
 end
 ```
 
-Note that the `DirectoryGemRepository` is created once and shared across requests — it just does file I/O and is safe to reuse. The `ReadGatedRepository` wrapper and `GemServer` are built per-request so that user-specific state is captured in plain closures.
+`Paquette::Authentication.identify` reads the token however the client sent it - Bundler puts it in Basic auth, `gem push` sends it bare - and remembers the answer in the env, so the server does not look the user up a second time. With `otp_secret` answering a secret, every push and yank has to carry a one-time password. See [Authentication](../README.md#authentication).
+
+Note that the `DirectoryGemRepository` is created once and shared across requests — it just does file I/O and is safe to reuse. The authenticator is shared too. The `ReadGatedRepository` wrapper and `GemServer` are built per-request so that user-specific state is captured in plain closures.
 
 ## Rails execution context
 

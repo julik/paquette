@@ -15,20 +15,18 @@ gems_dir = File.join(packages_dir, "gems")
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 
-# Uncomment and configure to require token authentication.
-# The block receives the raw token and should return an identity object
-# (stored in env["paquette.identity"]) or nil/false to reject. Add
-# `anonymous: true` to let requests without credentials through.
-# use Paquette::TokenAuthorization, "Paquette" do |token|
-#   AccessToken.find_by(secret: token)&.owner
+# Uncomment and configure to require token authentication, and a one-time
+# password on every push. One object serves both servers; see the README's
+# Authentication section.
+# class Authenticator
+#   def identify(token) = token && AccessToken.find_by(secret: token)&.owner
+#   def otp_secret(owner) = owner.totp_secret
 # end
-#
-# To require a one-time password on every push, pass the TOTP secret to the
-# server: Paquette::GemServer.new(gems_repo, otp_secret: ENV["PAQUETTE_OTP_SECRET"])
+authenticator = nil # Authenticator.new
 
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
-  router.map "gem", to: Paquette::GemServer.new(gems_repo)
-  router.map "npm", to: Paquette::NpmServer.new(npm_repo)
+  router.map "gem", to: Paquette::GemServer.new(gems_repo, authenticator: authenticator)
+  router.map "npm", to: Paquette::NpmServer.new(npm_repo, authenticator: authenticator)
   router.fallback to: ->(*) { [404, {}, ["Need subdomain gem/npm"]] }
 end
 

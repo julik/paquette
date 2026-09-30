@@ -176,14 +176,9 @@ class DockerNpmClientTest < Minitest::Test
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     repository = @repository
 
-    authorized = Rack::Builder.new do
-      use Paquette::TokenAuthorization, "Paquette" do |token|
-        (token == TOKEN) ? Struct.new(:username).new("acme") : nil
-      end
-      run Paquette::NpmServer.new(repository)
-    end
+    authenticator = TestAuthenticator.new(tokens: {TOKEN => Struct.new(:username).new("acme")})
 
-    serve_app(authorized.to_app)
+    serve_app(Paquette::NpmServer.new(repository, authenticator: authenticator))
 
     assert_npm_ok run_npm("npm install widget --loglevel error")
 

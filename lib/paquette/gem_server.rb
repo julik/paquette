@@ -21,7 +21,7 @@ class Paquette::GemServer
 
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
-  include Paquette::Otp
+  include Paquette::Authentication
 
   # RubyGems' own charset for a name.
   #
@@ -278,19 +278,19 @@ class Paquette::GemServer
   # @param shared_caching [Boolean] false keeps every response `private`,
   #   as if every request carried a credential — set it when you authorize
   #   by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
-  # @param otp_secret [String, nil] the base32 TOTP secret of whoever this
-  #   server is built for; given one, every push and yank must carry a live
-  #   code in the `OTP` header, which `gem push` prompts for. nil turns the
-  #   check off
+  # @param authenticator [Object, nil] answers `identify(token)` and
+  #   `otp_secret(identity)` — see Paquette::Authentication. Given one,
+  #   a caller it refuses gets a 401, and a write by an identity with a
+  #   secret must carry a live code in the `OTP` header. nil serves everyone
   # @param otp_drift [Integer] allowed clock drift in seconds, both directions
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
     max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true,
-    otp_secret: nil, otp_drift: Paquette::Otp::DEFAULT_DRIFT)
+    authenticator: nil, otp_drift: Paquette::Authentication::DEFAULT_OTP_DRIFT)
     @repository = repository
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
-    @otp_secret = Paquette::Otp.checked_secret(otp_secret)
+    @authenticator = authenticator
     @otp_drift = otp_drift
   end
 
@@ -306,6 +306,10 @@ class Paquette::GemServer
   # @return [Array] a Rack response triplet
   def dispatch(env)
     Measurometer.instrument("paquette.gem_server.call") do
+      if (refusal = authentication_refusal(env))
+        next refusal
+      end
+
       request = Rack::Request.new(env)
       route = @@routes.match(request)
       next not_found("Not found") unless route

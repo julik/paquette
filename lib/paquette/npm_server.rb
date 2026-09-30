@@ -14,7 +14,7 @@ class Paquette::NpmServer
 
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
-  include Paquette::Otp
+  include Paquette::Authentication
 
   # A request body past `max_push_bytes:`, answered 413 before the JSON
   # parse — and before most of the read.
@@ -138,14 +138,14 @@ class Paquette::NpmServer
   #   to make knowingly
   # @param shared_caching [Boolean] false keeps every response `private` —
   #   see the same option on GemServer
-  # @param otp_secret [String, nil] the base32 TOTP secret of whoever this
-  #   server is built for; given one, every publish, unpublish and dist-tag
-  #   change must carry a live code in the `npm-otp` header, which npm
-  #   prompts for. nil turns the check off
+  # @param authenticator [Object, nil] answers `identify(token)` and
+  #   `otp_secret(identity)` — see Paquette::Authentication. Given one,
+  #   a caller it refuses gets a 401, and a write by an identity with a
+  #   secret must carry a live code in the `npm-otp` header. nil serves everyone
   # @param otp_drift [Integer] allowed clock drift in seconds, both directions
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
     max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true,
-    otp_secret: nil, otp_drift: Paquette::Otp::DEFAULT_DRIFT)
+    authenticator: nil, otp_drift: Paquette::Authentication::DEFAULT_OTP_DRIFT)
     @repository = if repository.is_a?(String)
       DirectoryNpmRepository.new(repository)
     else
@@ -154,7 +154,7 @@ class Paquette::NpmServer
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
-    @otp_secret = Paquette::Otp.checked_secret(otp_secret)
+    @authenticator = authenticator
     @otp_drift = otp_drift
   end
 
@@ -172,6 +172,10 @@ class Paquette::NpmServer
     Measurometer.instrument("paquette.npm_server.call") do
       env = env.dup
       env["PATH_INFO"] = normalize_scoped_path(env["PATH_INFO"].to_s)
+
+      if (refusal = authentication_refusal(env))
+        next refusal
+      end
 
       request = Rack::Request.new(env)
       route = @@routes.match(request)
@@ -525,7 +529,7 @@ class Paquette::NpmServer
 
   # @return [String]
   def username
-    identity = @request.env["paquette.identity"]
+    identity = @request.env[Paquette::Authentication::IDENTITY_KEY]
     identity.respond_to?(:username) ? identity.username : "paquette"
   end
 

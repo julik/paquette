@@ -1,21 +1,30 @@
 require_relative "../test_helper"
 require "rotp"
 
-# How npm speaks OTP to an NpmServer given an `otp_secret:` — the code
-# arrives in `npm-otp`, with the plain `OTP` header as the curl-user
-# fallback, and a refusal must read as an OTP challenge to npm's client
-# (the www-authenticate header and "one-time pass" in the body) or npm
-# reports a failed login instead of prompting for a code.
-class NpmServerOtpTest < Minitest::Test
+# An NpmServer built once with one authenticator serving every caller.
+# Alice has a TOTP secret, Bob has none. npm sends a Bearer token and the
+# code in `npm-otp`, with the plain `OTP` header as the curl-user fallback,
+# and a refusal must read as an OTP challenge to npm's client (the
+# www-authenticate header and "one-time pass" in the body) or npm reports a
+# failed login instead of prompting for a code.
+class NpmServerAuthenticationTest < Minitest::Test
   include Rack::Test::Methods
 
+  User = Struct.new(:username)
+
   def setup
-    @dir = Dir.mktmpdir("paquette_npm_otp")
+    @dir = Dir.mktmpdir("paquette_npm_auth")
     @secret = ROTP::Base32.random
     @totp = ROTP::TOTP.new(@secret)
     @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@dir)
-    @app = Paquette::NpmServer.new(@repository, otp_secret: @secret)
+    alice = User.new("alice")
+    @authenticator = TestAuthenticator.new(
+      tokens: {"alice-token" => alice, "bob-token" => User.new("bob")},
+      secrets: {alice => @secret}
+    )
+    @app = Paquette::NpmServer.new(@repository, authenticator: @authenticator)
     write_npm_package(@dir, name: "existing", version: "1.0.0")
+    as("alice-token")
   end
 
   def teardown
@@ -23,6 +32,20 @@ class NpmServerOtpTest < Minitest::Test
   end
 
   attr_reader :app
+
+  def test_an_unknown_token_is_refused
+    as("mallory-token")
+    get "/existing"
+
+    assert_equal 401, last_response.status
+    assert_equal %(Bearer realm="Paquette"), last_response.headers["www-authenticate"]
+  end
+
+  def test_whoami_names_the_identity_the_authenticator_resolved
+    get "/-/whoami"
+
+    assert_equal "alice", JSON.parse(last_response.body)["username"]
+  end
 
   def test_a_publish_with_a_live_code_goes_through
     publish("HTTP_NPM_OTP" => @totp.now)
@@ -56,6 +79,13 @@ class NpmServerOtpTest < Minitest::Test
     refute @repository.package_exists?("new-package", "1.0.0")
   end
 
+  def test_a_caller_without_a_secret_publishes_without_a_code
+    as("bob-token")
+    publish
+
+    assert_equal 201, last_response.status
+  end
+
   def test_a_dist_tag_change_is_a_write
     put "/-/package/existing/dist-tags/beta", JSON.dump("1.0.0"), {"CONTENT_TYPE" => "application/json"}
 
@@ -75,19 +105,21 @@ class NpmServerOtpTest < Minitest::Test
 
     get "/existing/-/existing-1.0.0.tgz"
     assert_equal 200, last_response.status
-
-    get "/-/whoami"
-    assert_equal 200, last_response.status
   end
 
-  def test_without_a_secret_a_publish_needs_no_code
-    @app = Paquette::NpmServer.new(@repository)
-    publish
+  def test_without_an_authenticator_everything_is_open
+    open = Paquette::NpmServer.new(@repository)
+    response = Rack::MockRequest.new(open).put("/new-package",
+      :input => npm_publish_body(name: "new-package", version: "1.0.0"), "CONTENT_TYPE" => "application/json")
 
-    assert_equal 201, last_response.status
+    assert_equal 201, response.status
   end
 
   private
+
+  def as(token)
+    header "Authorization", "Bearer #{token}"
+  end
 
   def publish(headers = {})
     put "/new-package", npm_publish_body(name: "new-package", version: "1.0.0"),

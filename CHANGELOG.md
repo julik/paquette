@@ -1,5 +1,7 @@
 ## Unreleased
 
+## 0.3.1
+
 - Give every file in a repacked gem the mode the source gem recorded for it. The modes used to come from the unpacked copy on disk, which carried the 0600 of the Tempfile each `.rb` file is rewritten through, and the serving process's umask for everything else — so the same gem repacked to different bytes on servers with different umasks. A file Paquette injects gets 0644; one that replaces a shipped file keeps that file's mode
 - Replace a file the source gem shipped read-only instead of failing the repack
 - Include `GemRepacker::FORMAT_VERSION` in the personalizer's cache key, so personalized gems cached by an earlier repacker are rebuilt rather than served. Every personalized gem's checksum changes with this release, and a consumer whose lockfile records one will need to refresh it

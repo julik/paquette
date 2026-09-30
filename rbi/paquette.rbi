@@ -5,7 +5,7 @@
 module Paquette
   DEFAULT_REGEXP_TIMEOUT = T.let(0.05, T.untyped)
   MAX_PUSH_SIZE_BYTES = T.let(50 * 1024 * 1024, T.untyped)
-  VERSION = T.let("0.3.0", T.untyped)
+  VERSION = T.let("0.3.1", T.untyped)
 
   class << self
     # The regexp timeout every Rack app in this gem installs for the duration

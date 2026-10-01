@@ -123,70 +123,96 @@ The default is `spec.date` because it is a property of the immutable gem bytes.
 
 ## Wiring it all together
 
-Since Paquette is very modular and is supposed to be assembled per use case, you will likely want to construct your own Rack application to hold the bits together:
+Since Paquette is very modular and is supposed to be assembled per use case, you will likely want to build the repository stack per caller. That is what the authenticator is for: it turns a token into an _access_, and the access carries the repository stack that caller is served from.
 
 ```ruby
-AUTHENTICATOR = AcmeAuthenticator.new # see Authentication below
-
-def call(env)
-  user = Paquette::Authentication.identify(env, AUTHENTICATOR)
-  packages_dir = Rails.root.join("packages", "gems").to_s
-  repo = Paquette::GemServer::DirectoryGemRepository.new(packages_dir)
-
-  repo_with_gating = Paquette::GemServer::ReadGatedRepository.new(repo) do |name:, version: nil|
-    user&.license&.gem_names&.include?(name)
+class AcmeAuthenticator
+  def initialize(repo)
+    @repo = repo
   end
 
-  repo_with_gating_and_personalization = Paquette::GemServer::Personalizer.new(
-    repo_with_gating,
-    license_key: user&.license_key,
-    magic_comment_replacements: {"# paquette_license_info" => user&.license_key}
-  )
+  def authenticate(token, request)
+    user = token && AccessToken.find_by(secret: token)&.owner
+    return nil unless user # a 401
 
-  Paquette::GemServer.new(repo_with_gating_and_personalization, authenticator: AUTHENTICATOR).call(env)
+    repo_with_gating = Paquette::GemServer::ReadGatedRepository.new(@repo, gate_key: user.license_key) do |name:, version: nil|
+      user.license.gem_names.include?(name)
+    end
+
+    repo_with_gating_and_personalization = Paquette::GemServer::Personalizer.new(
+      repo_with_gating,
+      license_key: user.license_key,
+      magic_comment_replacements: {"# paquette_license_info" => user.license_key}
+    )
+
+    Paquette::Access.new(repository: repo_with_gating_and_personalization, username: user.name)
+  end
 end
+
+packages_dir = Rails.root.join("packages", "gems").to_s
+repo = Paquette::GemServer::DirectoryGemRepository.new(packages_dir)
+gem_server = Paquette::GemServer.new(authenticator: AcmeAuthenticator.new(repo))
 ```
 
-`identify` remembers the identity in the env, so the server asking again does not look it up twice - and it refuses the request with a 401 when `user` is nil, before the gate is ever asked.
+The server is built once. The authenticator runs once per request, and its answer is left in `env["paquette.access"]` for the rest of your application - `Paquette::Authentication.access(env, authenticator)` reads it, or resolves it if the server has not been called yet.
 
 The NPM server is assembled exactly the same way, out of the same kind of parts - see [Usage for NPM packages](#usage-for-npm-packages).
 
 ## Authentication
 
-Both servers take an `authenticator:` - one object, shared by the gem server and the npm server, which answers two questions:
+Both servers take either a repository - and serve everyone from it, which is the dev setup - or an `authenticator:`, which answers one question per request:
 
 ```ruby
-class AcmeAuthenticator
-  # Who is this? Return an identity, or nil to refuse with a 401.
-  # token is nil when the caller sent no credentials at all.
-  def identify(token)
-    token && AccessToken.find_by(secret: token)&.owner
+authenticator.authenticate(token, request)
+# => an access, or nil to refuse with a 401
+```
+
+The access answers three:
+
+```ruby
+access.repository       # the stack this caller is served from, and writes to
+access.otp_required?    # must a write carry a one-time password?
+access.verify_otp(code) # is this one good? Only asked with a non-empty code
+```
+
+`Paquette::Access.new(repository:, otp_secret: nil, otp_drift: 30, username: nil)` is the stock one, verifying TOTP codes against a base32 secret. Bring your own object when you need what Paquette has no place to keep - refusing a code that was already used once, or locking someone out after a few wrong guesses.
+
+Since the repository comes out of the access, a single server can hand a publisher a writable stack and a licensee a gated, read-only one:
+
+```ruby
+class RegistryAuthenticator
+  def initialize(repo, gate:)
+    @repo = repo
+    @gate = gate
   end
 
-  # Must a write by this identity carry a one-time password? Return the
-  # base32 TOTP secret, or nil for no.
-  def otp_secret(owner)
-    owner.totp_secret
+  def authenticate(token, request)
+    return nil unless token
+
+    if (publisher = Publisher.find_by_token(token))
+      Paquette::Access.new(repository: @repo, otp_secret: publisher.totp_secret)
+    elsif (license = License.find_by_token(token))
+      gated = @gate.new(@repo, gate_key: license.key) { |name:, version: nil| license.covers?(name) }
+      Paquette::Access.new(repository: gated)
+    end
   end
 end
 
-auth = AcmeAuthenticator.new
-router.map "gem", to: Paquette::GemServer.new(gem_repo, authenticator: auth)
-router.map "npm", to: Paquette::NpmServer.new(npm_repo, authenticator: auth)
+router.map "gem", to: Paquette::GemServer.new(
+  authenticator: RegistryAuthenticator.new(gem_repo, gate: Paquette::GemServer::ReadGatedRepository)
+)
+router.map "npm", to: Paquette::NpmServer.new(
+  authenticator: RegistryAuthenticator.new(npm_repo, gate: Paquette::NpmServer::ReadGatedRepository)
+)
 ```
-
-Because both questions are asked per request, this works the same in a rackup file that builds each server once as it does in an application that builds one per request.
 
 What each server does with it:
 
-- **The token.** Clients do not send it the same way: npm sends `Authorization: Bearer TOKEN`, Bundler sends Basic auth with the token as the username (`https://TOKEN:x-oauth-basic@gem.example.com`), and `gem push` sends the bare key as the whole header. The server reads all three and hands `identify` just the token. `Paquette::Authentication.token_in(env)` does the same reading if you need it on its own.
-- **The identity** lands in `env["paquette.identity"]`, where `npm whoami` reads its `username`. It is resolved once per request: `Paquette::Authentication.identify(env, auth)` in your own code and the server share the answer.
-- **Anonymous callers.** With no credentials, `identify` is called with `nil`. Return a guest object from it to let anonymous callers in - a public registry that only wants a token for pushes, say - and let the repository stack decide what a guest sees. Credentials that carry no usable token (a Basic login with a real password) are refused without asking.
-- **One-time passwords.** When `otp_secret` answers a secret, every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag` - has to carry a live code, asked for in each client's own dialect, so `gem` and `npm` prompt for it the way they do against rubygems.org and npmjs.com, and `--otp` works on both. Reads never ask. The check runs before the handler, so a push without a code is refused before its body is read. `otp_drift:` on either server sets the allowed clock drift, 30 seconds each way by default. An empty-string secret raises: a user row with no secret set is not a decision to skip the check.
-
-What a caller may see, and whether they may write at all, is not the authenticator's business - that is the repository stack you build. A `ReadGatedRepository` and a `ReadonlyRepository` both refuse every write.
-
-Without an `authenticator:` a server serves everyone, which is the dev setup.
+- **The token.** Clients do not send it the same way: npm sends `Authorization: Bearer TOKEN`, Bundler sends Basic auth with the token as the username (`https://TOKEN:x-oauth-basic@gem.example.com`), and `gem push` sends the bare key as the whole header. The server reads all three and hands `authenticate` just the token. `Paquette::Authentication.token_in(env)` does the same reading if you need it on its own.
+- **The request** is passed along as a `Rack::Request`, for whatever else the access depends on - the client IP to record a push against, say.
+- **The access** lands in `env["paquette.access"]`, where `npm whoami` reads its `username`. It is resolved once per request.
+- **Anonymous callers.** With no credentials, `authenticate` is called with a `nil` token. Return an access from it to let anonymous callers in - a public registry that only wants a token for pushes, say. Credentials that carry no usable token (a Basic login with a real password) are refused without asking.
+- **Writes.** Every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag` - is checked before the handler runs, so a refused push is refused before its body is read. A repository whose `writable?` is false - a `ReadonlyRepository`, a `ReadGatedRepository` - gets a 403. Otherwise, if `otp_required?`, the write has to carry a code, asked for in each client's own dialect, so `gem` and `npm` prompt for it the way they do against rubygems.org and npmjs.com, and `--otp` works on both. Reads never ask.
 
 ## Hostname limitations
 

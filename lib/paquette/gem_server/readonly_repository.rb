@@ -6,6 +6,11 @@ class Paquette::GemServer::ReadonlyRepository < SimpleDelegator
   # Raised by every write on a readonly repository.
   class WriteNotAllowed < StandardError; end
 
+  # @return [Boolean]
+  def writable?
+    false
+  end
+
   # @raise [WriteNotAllowed] always
   # @return [void]
   def add_gem(*)

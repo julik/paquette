@@ -88,6 +88,13 @@ class Paquette::NpmServer::NpmRepository
     true
   end
 
+  # See GemRepository#writable?
+  #
+  # @return [Boolean]
+  def writable?
+    true
+  end
+
   # @param binary_data [String] the tarball bytes
   # @param dist_tags [Hash{String => String}]
   # @return [Hash] the stored version's info

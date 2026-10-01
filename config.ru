@@ -15,18 +15,22 @@ gems_dir = File.join(packages_dir, "gems")
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 
-# Uncomment and configure to require token authentication, and a one-time
-# password on every push. One object serves both servers; see the README's
-# Authentication section.
+# Swap the repositories below for authenticators to require a token, and a
+# one-time password on every push. See the README's Authentication section.
 # class Authenticator
-#   def identify(token) = token && AccessToken.find_by(secret: token)&.owner
-#   def otp_secret(owner) = owner.totp_secret
+#   def initialize(repo) = @repo = repo
+#
+#   def authenticate(token, _request)
+#     owner = token && AccessToken.find_by(secret: token)&.owner
+#     owner && Paquette::Access.new(repository: @repo, otp_secret: owner.totp_secret)
+#   end
 # end
-authenticator = nil # Authenticator.new
+#
+# ...and then: Paquette::GemServer.new(authenticator: Authenticator.new(gems_repo))
 
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
-  router.map "gem", to: Paquette::GemServer.new(gems_repo, authenticator: authenticator)
-  router.map "npm", to: Paquette::NpmServer.new(npm_repo, authenticator: authenticator)
+  router.map "gem", to: Paquette::GemServer.new(gems_repo)
+  router.map "npm", to: Paquette::NpmServer.new(npm_repo)
   router.fallback to: ->(*) { [404, {}, ["Need subdomain gem/npm"]] }
 end
 

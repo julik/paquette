@@ -267,31 +267,30 @@ class Paquette::GemServer
     end
   end
 
-  # Reads, writes and yanks all flow through the repository stack the
-  # caller assembled, typically constructed per request.
+  # Reads, writes and yanks all flow through one repository stack per
+  # request: the one given here, or the one in the access the
+  # authenticator returns for the caller.
   #
-  # @param repository [Paquette::GemServer::GemRepository] the repository
-  #   stack to serve
+  # @param repository [Paquette::GemServer::GemRepository, nil] the stack
+  #   to serve everyone from - leave it out when passing an authenticator
   # @param placeholder_app [#call] the Rack app answering the root path
   # @param max_push_bytes [Integer, nil] the largest push this server
   #   accepts; nil removes the cap, which is a decision to make knowingly
   # @param shared_caching [Boolean] false keeps every response `private`,
   #   as if every request carried a credential — set it when you authorize
   #   by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
-  # @param authenticator [Object, nil] answers `identify(token)` and
-  #   `otp_secret(identity)` — see Paquette::Authentication. Given one,
-  #   a caller it refuses gets a 401, and a write by an identity with a
-  #   secret must carry a live code in the `OTP` header. nil serves everyone
-  # @param otp_drift [Integer] allowed clock drift in seconds, both directions
-  def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true,
-    authenticator: nil, otp_drift: Paquette::Authentication::DEFAULT_OTP_DRIFT)
-    @repository = repository
+  # @param authenticator [Object, nil] answers `authenticate(token, request)`
+  #   with an access, or nil for a 401 - see Paquette::Authentication. A
+  #   write by an access with `otp_required?` must carry a live code in the
+  #   `OTP` header
+  # @raise [ArgumentError] unless exactly one of repository and
+  #   authenticator is given
+  def initialize(repository = nil, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil)
+    setup_access(repository, authenticator)
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
-    @authenticator = authenticator
-    @otp_drift = otp_drift
   end
 
   # @param env [Hash] the Rack env
@@ -306,19 +305,22 @@ class Paquette::GemServer
   # @return [Array] a Rack response triplet
   def dispatch(env)
     Measurometer.instrument("paquette.gem_server.call") do
-      if (refusal = authentication_refusal(env))
-        next refusal
-      end
+      access = access_for(env)
+      next unauthorized unless access
 
       request = Rack::Request.new(env)
       route = @@routes.match(request)
       next not_found("Not found") unless route
-      if route.write? && (refusal = otp_refusal(env))
+      if route.write? && (refusal = write_refusal(access, env))
         next refusal
       end
 
-      @request = request
-      @@routes.perform_action(route, self, request)
+      # Shared across Rack threads: the request and the caller's repository
+      # live on a per-request clone.
+      handler = clone
+      handler.instance_variable_set(:@request, request)
+      handler.instance_variable_set(:@repository, access.repository)
+      @@routes.perform_action(route, handler, request)
     end
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)

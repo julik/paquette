@@ -2,7 +2,8 @@ require_relative "../test_helper"
 require "rotp"
 
 # A GemServer built once — the way a rackup file builds it — with one
-# authenticator serving every caller. Alice has a TOTP secret, Bob has none.
+# authenticator serving every caller. Alice has a TOTP secret, Bob has none,
+# and Carol is a licensee who reads through a gate and may not write.
 # `gem push` sends its key bare in Authorization and the code in the `OTP`
 # header, and the two refusal sentences are the contract with the client,
 # word for word.
@@ -16,11 +17,12 @@ class GemServerAuthenticationTest < Minitest::Test
     @secret = ROTP::Base32.random
     @totp = ROTP::TOTP.new(@secret)
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@dir)
-    @authenticator = TestAuthenticator.new(
-      tokens: {"alice-key" => :alice, "bob-key" => :bob},
-      secrets: {alice: @secret}
-    )
-    @app = Paquette::GemServer.new(@repository, authenticator: @authenticator)
+    licensed = Paquette::GemServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "minuscule_test" }
+    @authenticator = TestAuthenticator.new(@repository,
+      tokens: {"alice-key" => :alice, "bob-key" => :bob, "carol-key" => :carol},
+      secrets: {alice: @secret},
+      repositories: {carol: licensed})
+    @app = Paquette::GemServer.new(authenticator: @authenticator)
   end
 
   def teardown
@@ -40,7 +42,7 @@ class GemServerAuthenticationTest < Minitest::Test
     get "/versions"
     assert_equal 401, last_response.status
 
-    open_to_guests = Paquette::GemServer.new(@repository, authenticator: TestAuthenticator.new(guest: :guest))
+    open_to_guests = Paquette::GemServer.new(authenticator: TestAuthenticator.new(@repository, guest: :guest))
     assert_equal 200, Rack::MockRequest.new(open_to_guests).get("/versions").status
   end
 
@@ -131,13 +133,58 @@ class GemServerAuthenticationTest < Minitest::Test
     assert_equal "private, no-store", last_response.headers["cache-control"]
   end
 
-  # A user row with no secret set must not read as "OTP off".
-  def test_an_empty_secret_is_a_configuration_error_not_a_pass
-    @app = Paquette::GemServer.new(@repository,
-      authenticator: TestAuthenticator.new(tokens: {"alice-key" => :alice}, secrets: {alice: ""}))
+  # One server, two stacks: the publisher writes, the licensee reads what
+  # their gate lets through
+  def test_each_caller_is_served_from_the_repository_their_access_names
+    push(key: "bob-key")
+    post "/api/v1/gems", File.binread(File.join(FIXTURE_GEMS_DIR, "zip_kit", "zip_kit-6.2.1.gem")),
+      {"CONTENT_TYPE" => "application/octet-stream", "HTTP_AUTHORIZATION" => "bob-key"}
 
-    assert_raises(ArgumentError) { push(key: "alice-key") }
-    assert_empty @repository.gem_names
+    header "Authorization", "bob-key"
+    get "/names"
+    assert_includes last_response.body, "zip_kit"
+
+    header "Authorization", "carol-key"
+    get "/names"
+    assert_includes last_response.body, "minuscule_test"
+    refute_includes last_response.body, "zip_kit"
+  end
+
+  # A caller who may not write learns so before uploading the gem, and is
+  # not asked for a code they have no use for
+  def test_a_push_to_a_read_only_stack_is_refused_before_the_body_is_read
+    body = Object.new
+    def body.read(*) = raise("the body was read")
+    def body.rewind = nil
+    env = Rack::MockRequest.env_for("/api/v1/gems", :method => "POST",
+      "CONTENT_TYPE" => "application/octet-stream", "HTTP_AUTHORIZATION" => "carol-key")
+    env["rack.input"] = body
+
+    status, _, response_body = app.call(env)
+    assert_equal 403, status
+    refute_includes response_body.join, "multifactor"
+  end
+
+  def test_a_yank_from_a_read_only_stack_is_refused
+    push(key: "bob-key")
+
+    delete "/api/v1/gems/yank", {gem_name: "minuscule_test", version: "0.1.0"}, {"HTTP_AUTHORIZATION" => "carol-key"}
+    assert_equal 403, last_response.status
+    assert_equal ["minuscule_test"], @repository.gem_names
+  end
+
+  # The application may read the access the server resolved, for its own
+  # log line
+  def test_the_access_is_left_in_the_env
+    env = Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "carol-key")
+    app.call(env)
+
+    assert_equal "carol", env["paquette.access"].username
+  end
+
+  def test_a_repository_and_an_authenticator_are_one_or_the_other
+    assert_raises(ArgumentError) { Paquette::GemServer.new }
+    assert_raises(ArgumentError) { Paquette::GemServer.new(@repository, authenticator: @authenticator) }
   end
 
   def test_without_an_authenticator_everything_is_open

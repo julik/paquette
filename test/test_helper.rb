@@ -277,27 +277,33 @@ module NpmTarballHelpers
   end
 end
 
-# Rack::Test cannot build a body that disagrees with its own Content-Length,
-# which is exactly the shape of request these tests are about.
-# An authenticator in the shape both servers take: tokens map to
-# identities, identities to TOTP secrets, and `guest:` is what a caller with
-# no credentials is (nil refuses them).
+# An authenticator in the shape both servers take: tokens map to names,
+# names to TOTP secrets and, through `repositories:`, to a stack of their
+# own. `guest:` is the name a caller with no credentials gets (nil refuses
+# them).
 class TestAuthenticator
-  def initialize(tokens: {}, secrets: {}, guest: nil)
+  attr_reader :requests
+
+  def initialize(repository, tokens: {}, secrets: {}, repositories: {}, guest: nil)
+    @repository = repository
     @tokens = tokens
     @secrets = secrets
+    @repositories = repositories
     @guest = guest
+    @requests = []
   end
 
-  def identify(token)
-    token ? @tokens[token] : @guest
-  end
+  def authenticate(token, request)
+    @requests << [token, request]
+    name = token ? @tokens[token] : @guest
+    return nil unless name
 
-  def otp_secret(identity)
-    @secrets[identity]
+    Paquette::Access.new(repository: @repositories.fetch(name, @repository), otp_secret: @secrets[name], username: name.to_s)
   end
 end
 
+# Rack::Test cannot build a body that disagrees with its own Content-Length,
+# which is exactly the shape of request these tests are about.
 module MalformedRequestHelpers
   def malformed_multipart_env(path, body: nil, content_length: nil)
     env = Rack::MockRequest.env_for(path, "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x")

@@ -1,31 +1,13 @@
 require_relative "test_helper"
-require "rotp"
 
 # The protocol-neutral half of authentication: reading a token out of
-# whichever scheme carried it, resolving it once per request, and verifying
-# a one-time code. How each server refuses is tested beside that server.
+# whichever scheme carried it, and resolving it once per request. How each server
+# refuses is tested beside that server.
 class AuthenticationTest < Minitest::Test
   TOKEN = "pqt_test_token_for_auth_checks_abc123z"
 
-  # Counts its calls, so that "resolved once" can be asserted.
-  class CountingAuthenticator
-    attr_reader :calls
-
-    def initialize(&resolver)
-      @resolver = resolver
-      @calls = []
-    end
-
-    def identify(token)
-      @calls << token
-      @resolver.call(token)
-    end
-
-    def otp_secret(_identity) = nil
-  end
-
   def setup
-    @authenticator = CountingAuthenticator.new { |token| (token == TOKEN) ? :acme : nil }
+    @authenticator = TestAuthenticator.new(:repository, tokens: {TOKEN => :acme})
   end
 
   def test_token_in_reads_a_bearer_token
@@ -68,69 +50,64 @@ class AuthenticationTest < Minitest::Test
     assert_equal "\xFF\xE2".b, Paquette::Authentication.token_in(env)
   end
 
-  def test_identify_stores_the_identity_in_the_env
+  def test_access_stores_the_access_in_the_env
     env = env_for(bearer: TOKEN)
+    access = Paquette::Authentication.access(env, @authenticator)
 
-    assert_equal :acme, Paquette::Authentication.identify(env, @authenticator)
-    assert_equal :acme, env["paquette.identity"]
+    assert_equal "acme", access.username
+    assert_same access, env["paquette.access"]
+  end
+
+  # The authenticator gets the request too - the client IP for an audit
+  # trail, say
+  def test_the_authenticator_is_handed_the_request
+    env = env_for(bearer: TOKEN)
+    Paquette::Authentication.access(env, @authenticator)
+
+    _token, request = @authenticator.requests.first
+    assert_kind_of Rack::Request, request
+    assert_same env, request.env
   end
 
   # The application asks to build its gate, the server asks again: one
   # lookup between them.
-  def test_identify_asks_the_authenticator_once_per_request
+  def test_access_asks_the_authenticator_once_per_request
     env = env_for(bearer: TOKEN)
-    2.times { Paquette::Authentication.identify(env, @authenticator) }
+    2.times { Paquette::Authentication.access(env, @authenticator) }
 
-    assert_equal [TOKEN], @authenticator.calls
+    assert_equal [TOKEN], @authenticator.requests.map(&:first)
   end
 
   def test_a_refusal_is_remembered_too
     env = env_for(bearer: "nope")
-    2.times { assert_nil Paquette::Authentication.identify(env, @authenticator) }
+    2.times { assert_nil Paquette::Authentication.access(env, @authenticator) }
 
-    assert_equal ["nope"], @authenticator.calls
+    assert_equal ["nope"], @authenticator.requests.map(&:first)
   end
 
-  # No credentials at all is the authenticator's call: a guest object is
-  # how anonymous callers get in.
+  # No credentials at all is the authenticator's call: an access for a
+  # guest is how anonymous callers get in.
   def test_no_credentials_asks_the_authenticator_with_nil
-    guest_friendly = CountingAuthenticator.new { |token| token ? :member : :guest }
+    guest_friendly = TestAuthenticator.new(:repository, guest: :guest)
 
-    assert_equal :guest, Paquette::Authentication.identify(env_for, guest_friendly)
-    assert_equal [nil], guest_friendly.calls
+    assert_equal "guest", Paquette::Authentication.access(env_for, guest_friendly).username
+    assert_equal [nil], guest_friendly.requests.map(&:first)
   end
 
   # A mangled header must not become an anonymous session, however friendly
   # the authenticator is to guests.
   def test_credentials_with_no_usable_token_are_refused_without_asking
-    guest_friendly = CountingAuthenticator.new { |token| token ? :member : :guest }
+    guest_friendly = TestAuthenticator.new(:repository, guest: :guest)
 
-    assert_nil Paquette::Authentication.identify(env_for(basic: [TOKEN, "hunter2"]), guest_friendly)
-    assert_empty guest_friendly.calls
+    assert_nil Paquette::Authentication.access(env_for(basic: [TOKEN, "hunter2"]), guest_friendly)
+    assert_empty guest_friendly.requests
   end
 
-  def test_a_live_code_verifies
-    secret = ROTP::Base32.random
-    totp = ROTP::TOTP.new(secret)
-
-    assert_equal :authorized, Paquette::Authentication.verify_otp(secret, totp.now)
-    assert_equal :authorized, Paquette::Authentication.verify_otp(secret, totp.at(Time.now - 30))
-  end
-
-  def test_a_code_outside_the_drift_or_wrong_is_rejected
-    secret = ROTP::Base32.random
-    totp = ROTP::TOTP.new(secret)
-
-    assert_equal :rejected, Paquette::Authentication.verify_otp(secret, totp.at(Time.now - 300))
-    assert_equal :rejected, Paquette::Authentication.verify_otp(secret, "000000")
-    assert_equal :rejected, Paquette::Authentication.verify_otp(secret, "\xFF\xE2")
-  end
-
-  def test_an_absent_or_empty_code_is_missing_not_a_wrong_guess
-    secret = ROTP::Base32.random
-
-    assert_equal :missing, Paquette::Authentication.verify_otp(secret, nil)
-    assert_equal :missing, Paquette::Authentication.verify_otp(secret, "")
+  def test_a_repository_that_never_heard_of_writable_is_writable
+    assert Paquette::Authentication.writable?(Object.new)
+    assert Paquette::Authentication.writable?(Paquette::GemServer::DirectoryGemRepository.allocate)
+    refute Paquette::Authentication.writable?(Paquette::GemServer::ReadonlyRepository.new(Object.new))
+    refute Paquette::Authentication.writable?(Paquette::NpmServer::ReadGatedRepository.new(Object.new) { true })
   end
 
   private

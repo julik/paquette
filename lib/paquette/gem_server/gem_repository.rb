@@ -93,6 +93,14 @@ class Paquette::GemServer::GemRepository
     true
   end
 
+  # Asked before a push or yank body is read, so a caller who may not write
+  # is refused without uploading anything
+  #
+  # @return [Boolean]
+  def writable?
+    true
+  end
+
   # The SHA256 of the .gem file this repository would actually serve —
   # under a Personalizer, not the bytes on disk.
   #

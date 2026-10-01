@@ -2,7 +2,8 @@ require_relative "../test_helper"
 require "rotp"
 
 # An NpmServer built once with one authenticator serving every caller.
-# Alice has a TOTP secret, Bob has none. npm sends a Bearer token and the
+# Alice has a TOTP secret, Bob has none, and Carol is a licensee who reads
+# through a gate and may not write. npm sends a Bearer token and the
 # code in `npm-otp`, with the plain `OTP` header as the curl-user fallback,
 # and a refusal must read as an OTP challenge to npm's client (the
 # www-authenticate header and "one-time pass" in the body) or npm reports a
@@ -10,19 +11,17 @@ require "rotp"
 class NpmServerAuthenticationTest < Minitest::Test
   include Rack::Test::Methods
 
-  User = Struct.new(:username)
-
   def setup
     @dir = Dir.mktmpdir("paquette_npm_auth")
     @secret = ROTP::Base32.random
     @totp = ROTP::TOTP.new(@secret)
     @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@dir)
-    alice = User.new("alice")
-    @authenticator = TestAuthenticator.new(
-      tokens: {"alice-token" => alice, "bob-token" => User.new("bob")},
-      secrets: {alice => @secret}
-    )
-    @app = Paquette::NpmServer.new(@repository, authenticator: @authenticator)
+    licensed = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "existing" }
+    @authenticator = TestAuthenticator.new(@repository,
+      tokens: {"alice-token" => :alice, "bob-token" => :bob, "carol-token" => :carol},
+      secrets: {alice: @secret},
+      repositories: {carol: licensed})
+    @app = Paquette::NpmServer.new(authenticator: @authenticator)
     write_npm_package(@dir, name: "existing", version: "1.0.0")
     as("alice-token")
   end
@@ -105,6 +104,43 @@ class NpmServerAuthenticationTest < Minitest::Test
 
     get "/existing/-/existing-1.0.0.tgz"
     assert_equal 200, last_response.status
+  end
+
+  def test_each_caller_is_served_from_the_repository_their_access_names
+    write_npm_package(@dir, name: "unlicensed", version: "1.0.0")
+
+    get "/unlicensed"
+    assert_equal 200, last_response.status
+
+    as("carol-token")
+    get "/unlicensed"
+    assert_equal 404, last_response.status
+    get "/existing"
+    assert_equal 200, last_response.status
+  end
+
+  # Refused outright rather than challenged: no code would make it go through
+  def test_a_publish_to_a_read_only_stack_is_forbidden_not_challenged
+    as("carol-token")
+    publish
+
+    assert_equal 403, last_response.status
+    refute_equal "OTP", last_response.headers["www-authenticate"]
+    refute @repository.package_exists?("new-package", "1.0.0")
+  end
+
+  # npm's env is a copy with the scoped path rewritten; the access has to
+  # land in the one the application holds
+  def test_the_access_is_left_in_the_env_the_application_passed
+    env = Rack::MockRequest.env_for("/existing", "HTTP_AUTHORIZATION" => "Bearer carol-token")
+    app.call(env)
+
+    assert_equal "carol", env["paquette.access"].username
+  end
+
+  def test_a_repository_and_an_authenticator_are_one_or_the_other
+    assert_raises(ArgumentError) { Paquette::NpmServer.new }
+    assert_raises(ArgumentError) { Paquette::NpmServer.new(@repository, authenticator: @authenticator) }
   end
 
   def test_without_an_authenticator_everything_is_open

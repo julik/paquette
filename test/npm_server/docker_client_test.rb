@@ -176,9 +176,9 @@ class DockerNpmClientTest < Minitest::Test
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     repository = @repository
 
-    authenticator = TestAuthenticator.new(tokens: {TOKEN => Struct.new(:username).new("acme")})
+    authenticator = TestAuthenticator.new(repository, tokens: {TOKEN => :acme})
 
-    serve_app(Paquette::NpmServer.new(repository, authenticator: authenticator))
+    serve_app(Paquette::NpmServer.new(authenticator: authenticator))
 
     assert_npm_ok run_npm("npm install widget --loglevel error")
 

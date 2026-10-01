@@ -160,6 +160,11 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     Measurometer.instrument("paquette.npm_read_gate.entitled") { @entitler.call(**criteria) }
   end
 
+  # @return [Boolean]
+  def writable?
+    false
+  end
+
   # @raise [WriteNotAllowed] always
   # @return [void]
   def add_package(*, **)

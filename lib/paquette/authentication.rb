@@ -1,37 +1,31 @@
 require "rack/auth/abstract/request"
-require "rotp"
 require "measurometer"
 
-# Who is calling, and whether a write really is them — asked of one
-# authenticator object that both servers take as `authenticator:`, so the
-# same object serves a rackup file built once at boot and an application
-# that assembles a server per request.
+# Who is calling and what they get, asked of the authenticator a server is
+# built with:
 #
-# An authenticator answers two questions:
+#   authenticate(token, request) # => an access object, or nil to refuse
+#                                #    with a 401. token is nil when the
+#                                #    caller sent none, so returning an
+#                                #    access object is how anonymous
+#                                #    callers are let in
 #
-#   identify(token)      # => an identity, or nil to refuse with a 401.
-#                        #    token is nil when the caller sent none, so
-#                        #    returning a guest object is how anonymous
-#                        #    callers are let in
-#   otp_secret(identity) # => the base32 TOTP secret every write by this
-#                        #    identity must prove, or nil for none
+# The access object answers `repository`, `otp_required?` and
+# `verify_otp(code)` - see Paquette::Access for the stock one. Because the
+# repository comes out of it, one server built at boot can hand a publisher
+# a writable stack and a licensee a gated, read-only one.
 #
-# The identity lives in env["paquette.identity"], resolved at most once per
+# The access lives in env["paquette.access"], resolved at most once per
 # request: whichever of the application and the server asks first stores
 # it, and the other reads it back.
 #
-# What is not shared — which header carries a one-time code, what a refusal
-# looks like on the wire — is each server's own, because the client on the
+# What is not shared - which header carries a one-time code, what a refusal
+# looks like on the wire - is each server's own, because the client on the
 # other end dictates it: an including server defines `otp_code(env)`,
 # `otp_missing` and `otp_rejected`.
 module Paquette::Authentication
   # @return [String]
-  IDENTITY_KEY = "paquette.identity"
-
-  # Allowed clock drift in seconds, both directions — one TOTP period.
-  #
-  # @return [Integer]
-  DEFAULT_OTP_DRIFT = 30
+  ACCESS_KEY = "paquette.access"
 
   # What stands in for a password when the token rides in the username:
   # GitHub documents the first, and some clients refuse an empty password.
@@ -67,86 +61,113 @@ module Paquette::Authentication
     auth.token if auth.provided?
   end
 
-  # The caller's identity, resolved through the authenticator once and
+  # The caller's access, resolved through the authenticator once and
   # remembered in the env. Credentials that carry no usable token are
   # refused without asking: a mangled header must not become an anonymous
   # session.
   #
   # @param env [Hash] the Rack env
-  # @param authenticator [Object] answers `identify(token)`
-  # @return [Object, nil] the identity, or nil when refused
-  def self.identify(env, authenticator)
-    return env[IDENTITY_KEY] if env.key?(IDENTITY_KEY)
+  # @param authenticator [Object] answers `authenticate(token, request)`
+  # @return [Object, nil] the access, or nil when refused
+  def self.access(env, authenticator)
+    return env[ACCESS_KEY] if env.key?(ACCESS_KEY)
 
     auth = Request.new(env)
-    identity = if !auth.provided?
-      call_authenticator(authenticator, nil)
+    access = if !auth.provided?
+      call_authenticator(authenticator, nil, env)
     elsif (token = auth.token)
-      call_authenticator(authenticator, token)
+      call_authenticator(authenticator, token, env)
     end
 
-    Measurometer.increment_counter(identity ? "paquette.authentication.accepted" : "paquette.authentication.rejected")
-    env[IDENTITY_KEY] = identity
+    Measurometer.increment_counter(access ? "paquette.authentication.accepted" : "paquette.authentication.rejected")
+    env[ACCESS_KEY] = access
   end
 
   # The authenticator is the caller's, and it usually goes to a database to
-  # resolve the token — on every request, before any of the work the
+  # resolve the token - on every request, before any of the work the
   # request asked for.
   #
   # @param authenticator [Object]
   # @param token [String, nil]
+  # @param env [Hash]
   # @return [Object, nil]
-  def self.call_authenticator(authenticator, token)
-    Measurometer.instrument("paquette.authentication.identify") { authenticator.identify(token) }
+  def self.call_authenticator(authenticator, token, env)
+    Measurometer.instrument("paquette.authentication.authenticate") do
+      authenticator.authenticate(token, Rack::Request.new(env))
+    end
   end
 
-  # @param secret [String] the base32 TOTP secret
-  # @param code [String, nil] what the client sent
-  # @param drift [Integer] allowed clock drift in seconds, both directions
-  # @return [Symbol] :authorized, :missing or :rejected
-  def self.verify_otp(secret, code, drift: DEFAULT_OTP_DRIFT)
-    # An empty code counts as missing, not as a wrong guess: a shell that
-    # expanded nothing did not guess.
-    return :missing if code.nil? || code.empty?
-    return :rejected unless ROTP::TOTP.new(secret).verify(code, drift_behind: drift, drift_ahead: drift)
-
-    :authorized
+  # A repository predating `writable?` is taken at its word that it is - its
+  # write methods still raise if it is not.
+  #
+  # @param repository [Object]
+  # @return [Boolean]
+  def self.writable?(repository)
+    !repository.respond_to?(:writable?) || repository.writable?
   end
 
   private
 
-  # A 401 when the server has an authenticator and it refused the caller;
-  # nil otherwise.
+  # The access this request is served under: the authenticator's answer, or
+  # without an authenticator the one stack the server was built with, open
+  # to everyone.
   #
   # @param env [Hash] the Rack env
-  # @return [Array, nil] a Rack response triplet
-  def authentication_refusal(env)
-    return nil unless @authenticator
-    return nil if Paquette::Authentication.identify(env, @authenticator)
+  # @return [Object, nil] nil when the authenticator refused the caller
+  def access_for(env)
+    return @open_access unless @authenticator
 
+    Paquette::Authentication.access(env, @authenticator)
+  end
+
+  # @return [Array] a Rack response triplet
+  def unauthorized
     [401, {"Content-Type" => "text/plain", "www-authenticate" => %(Bearer realm="Paquette")}, ["Unauthorized"]]
   end
 
-  # The refusal for a write that did not carry a valid code, or nil to let
-  # it through. Asked before the handler runs, so a push is refused before
-  # its body is read.
+  # The refusal for a write this caller may not make, or nil to let it
+  # through. Asked before the handler runs, so a push is refused before its
+  # body is read.
   #
+  # @param access [Object]
   # @param env [Hash] the Rack env
   # @return [Array, nil] a Rack response triplet
-  # @raise [ArgumentError] when the authenticator answers an empty secret —
-  #   far more often a user row with none set than a decision to skip
-  def otp_refusal(env)
-    return nil unless @authenticator
+  def write_refusal(access, env)
+    unless Paquette::Authentication.writable?(access.repository)
+      Measurometer.increment_counter("paquette.authentication.write_refused")
+      return [403, {"Content-Type" => "text/plain"}, ["Writes are not allowed for this caller"]]
+    end
+    return nil unless access.otp_required?
 
-    secret = @authenticator.otp_secret(env[IDENTITY_KEY])
-    return nil if secret.nil?
-    raise ArgumentError, "otp_secret must be nil or a non-empty String" unless secret.is_a?(String) && !secret.empty?
+    code = otp_code(env)
+    # An empty code counts as missing, not as a wrong guess: a shell that
+    # expanded nothing did not guess
+    result = if code.nil? || code.empty?
+      :missing
+    elsif access.verify_otp(code)
+      :authorized
+    else
+      :rejected
+    end
 
-    result = Paquette::Authentication.verify_otp(secret, otp_code(env), drift: @otp_drift)
     Measurometer.increment_counter("paquette.otp.#{result}")
     case result
     when :missing then otp_missing
     when :rejected then otp_rejected
     end
+  end
+
+  # Builds the default access for a server with no authenticator
+  #
+  # @param repository [Object, nil]
+  # @param authenticator [Object, nil]
+  # @return [void]
+  def setup_access(repository, authenticator)
+    if repository.nil? == authenticator.nil?
+      raise ArgumentError, "Pass either a repository or an authenticator: with an authenticator, the repository comes from the access it returns"
+    end
+
+    @authenticator = authenticator
+    @open_access = repository && Paquette::Access.new(repository: repository)
   end
 end

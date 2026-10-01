@@ -128,9 +128,9 @@ class Paquette::NpmServer
   # @return [String]
   DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
 
-  # @param repository [Paquette::NpmServer::NpmRepository, String] the
-  #   repository stack to serve, or a directory path to wrap in a
-  #   DirectoryNpmRepository
+  # @param repository [Paquette::NpmServer::NpmRepository, String, nil] the
+  #   repository stack to serve everyone from, or a directory path to wrap
+  #   in a DirectoryNpmRepository - leave it out when passing an authenticator
   # @param placeholder_app [#call] the Rack app answering the root path
   # @param max_push_bytes [Integer, nil] the largest request body this
   #   server will read — a publish carries the whole tarball base64-encoded
@@ -138,24 +138,19 @@ class Paquette::NpmServer
   #   to make knowingly
   # @param shared_caching [Boolean] false keeps every response `private` —
   #   see the same option on GemServer
-  # @param authenticator [Object, nil] answers `identify(token)` and
-  #   `otp_secret(identity)` — see Paquette::Authentication. Given one,
-  #   a caller it refuses gets a 401, and a write by an identity with a
-  #   secret must carry a live code in the `npm-otp` header. nil serves everyone
-  # @param otp_drift [Integer] allowed clock drift in seconds, both directions
-  def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true,
-    authenticator: nil, otp_drift: Paquette::Authentication::DEFAULT_OTP_DRIFT)
-    @repository = if repository.is_a?(String)
-      DirectoryNpmRepository.new(repository)
-    else
-      repository
-    end
+  # @param authenticator [Object, nil] answers `authenticate(token, request)`
+  #   with an access, or nil for a 401 - see Paquette::Authentication. A
+  #   write by an access with `otp_required?` must carry a live code in the
+  #   `npm-otp` header
+  # @raise [ArgumentError] unless exactly one of repository and
+  #   authenticator is given
+  def initialize(repository = nil, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil)
+    repository = DirectoryNpmRepository.new(repository) if repository.is_a?(String)
+    setup_access(repository, authenticator)
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
     @shared_caching = shared_caching
-    @authenticator = authenticator
-    @otp_drift = otp_drift
   end
 
   # @param env [Hash] the Rack env
@@ -170,23 +165,26 @@ class Paquette::NpmServer
   # @return [Array] a Rack response triplet
   def dispatch(env)
     Measurometer.instrument("paquette.npm_server.call") do
+      # Before the dup, so the access lands in the env the application holds
+      access = access_for(env)
+      next unauthorized unless access
+
       env = env.dup
       env["PATH_INFO"] = normalize_scoped_path(env["PATH_INFO"].to_s)
-
-      if (refusal = authentication_refusal(env))
-        next refusal
-      end
 
       request = Rack::Request.new(env)
       route = @@routes.match(request)
       next not_found("Not Found") unless route
-      if route.write? && (refusal = otp_refusal(env))
+      if route.write? && (refusal = write_refusal(access, env))
         next refusal
       end
 
-      # Shared across Rack threads: the request lives on a per-request clone.
+      # Shared across Rack threads: the request and the caller's access
+      # live on a per-request clone.
       handler = clone
       handler.instance_variable_set(:@request, request)
+      handler.instance_variable_set(:@access, access)
+      handler.instance_variable_set(:@repository, access.repository)
       @@routes.perform_action(route, handler, request)
     end
   rescue Paquette::Routes::BadRequest => e
@@ -529,8 +527,7 @@ class Paquette::NpmServer
 
   # @return [String]
   def username
-    identity = @request.env[Paquette::Authentication::IDENTITY_KEY]
-    identity.respond_to?(:username) ? identity.username : "paquette"
+    (@access.respond_to?(:username) && @access.username) || "paquette"
   end
 
   # A package document with many versions is the largest thing this server

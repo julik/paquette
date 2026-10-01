@@ -54,10 +54,10 @@ class NpmServerTest < Minitest::Test
     assert_equal "paquette", JSON.parse(last_response.body)["username"]
   end
 
-  def test_whoami_reports_the_authenticated_identity
-    identity = Struct.new(:username).new("julik")
-    get "/-/whoami", {}, {"paquette.identity" => identity}
-    assert_equal "julik", JSON.parse(last_response.body)["username"]
+  def test_whoami_reports_the_authenticated_username
+    authenticated = Paquette::NpmServer.new(authenticator: TestAuthenticator.new(@repository, tokens: {"t" => "julik"}))
+    response = Rack::MockRequest.new(authenticated).get("/-/whoami", "HTTP_AUTHORIZATION" => "Bearer t")
+    assert_equal "julik", JSON.parse(response.body)["username"]
   end
 
   def test_package_metadata

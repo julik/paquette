@@ -14,6 +14,49 @@ module Paquette
     attr_accessor :regexp_timeout
   end
 
+  # What one caller gets: the repository stack they see and write to, and
+  # whether their writes need a one-time code. An authenticator returns one
+  # per request - this one, or any object answering the same three methods.
+  # 
+  # Bring your own when the code needs state Paquette has no place for:
+  # refusing a code that was already used once, or locking out after a few
+  # wrong guesses.
+  class Access
+    DEFAULT_OTP_DRIFT = T.let(30, T.untyped)
+
+    # _@param_ `repository` — a GemRepository or NpmRepository stack
+    # 
+    # _@param_ `otp_secret` — the base32 TOTP secret every write must prove, or nil for none
+    # 
+    # _@param_ `otp_drift` — allowed clock drift in seconds, both directions
+    # 
+    # _@param_ `username`
+    sig do
+      params(
+        repository: Object,
+        otp_secret: T.nilable(String),
+        otp_drift: Integer,
+        username: T.nilable(String)
+      ).void
+    end
+    def initialize(repository:, otp_secret: nil, otp_drift: DEFAULT_OTP_DRIFT, username: nil); end
+
+    sig { returns(T::Boolean) }
+    def otp_required?; end
+
+    # _@param_ `code` — never empty - the server answers a missing code itself
+    sig { params(code: String).returns(T::Boolean) }
+    def verify_otp(code); end
+
+    # _@return_ — the repository stack this caller is served from
+    sig { returns(Object) }
+    attr_reader :repository
+
+    # _@return_ — what `npm whoami` answers
+    sig { returns(T.nilable(String)) }
+    attr_reader :username
+  end
+
   # A small method-and-pattern route table with a per-request matching budget.
   # Both servers dispatch through one of these.
   class Routes
@@ -474,10 +517,11 @@ module Paquette
     sig { params(version: String, platform: T.nilable(String)).returns(String) }
     def self.version_column(version, platform); end
 
-    # Reads, writes and yanks all flow through the repository stack the
-    # caller assembled, typically constructed per request.
+    # Reads, writes and yanks all flow through one repository stack per
+    # request: the one given here, or the one in the access the
+    # authenticator returns for the caller.
     # 
-    # _@param_ `repository` — the repository stack to serve
+    # _@param_ `repository` — the stack to serve everyone from - leave it out when passing an authenticator
     # 
     # _@param_ `placeholder_app` — the Rack app answering the root path
     # 
@@ -485,20 +529,17 @@ module Paquette
     # 
     # _@param_ `shared_caching` — false keeps every response `private`, as if every request carried a credential — set it when you authorize by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
     # 
-    # _@param_ `authenticator` — answers `identify(token)` and `otp_secret(identity)` — see Paquette::Authentication. Given one, a caller it refuses gets a 401, and a write by an identity with a secret must carry a live code in the `OTP` header. nil serves everyone
-    # 
-    # _@param_ `otp_drift` — allowed clock drift in seconds, both directions
+    # _@param_ `authenticator` — answers `authenticate(token, request)` with an access, or nil for a 401 - see Paquette::Authentication. A write by an access with `otp_required?` must carry a live code in the `OTP` header
     sig do
       params(
-        repository: Paquette::GemServer::GemRepository,
+        repository: T.nilable(Paquette::GemServer::GemRepository),
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object),
-        otp_drift: Integer
+        authenticator: T.nilable(Object)
       ).void
     end
-    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, otp_drift: Paquette::Authentication::DEFAULT_OTP_DRIFT); end
+    def initialize(repository = nil, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil); end
 
     # _@param_ `env` — the Rack env
     # 
@@ -794,24 +835,39 @@ module Paquette
     sig { params(message: String).returns(T::Array[T.untyped]) }
     def server_error(message = "Internal Server Error"); end
 
-    # A 401 when the server has an authenticator and it refused the caller;
-    # nil otherwise.
+    # The access this request is served under: the authenticator's answer, or
+    # without an authenticator the one stack the server was built with, open
+    # to everyone.
     # 
     # _@param_ `env` — the Rack env
     # 
-    # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(env); end
+    # _@return_ — nil when the authenticator refused the caller
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(Object)) }
+    def access_for(env); end
 
-    # The refusal for a write that did not carry a valid code, or nil to let
-    # it through. Asked before the handler runs, so a push is refused before
-    # its body is read.
+    # _@return_ — a Rack response triplet
+    sig { returns(T::Array[T.untyped]) }
+    def unauthorized; end
+
+    # The refusal for a write this caller may not make, or nil to let it
+    # through. Asked before the handler runs, so a push is refused before its
+    # body is read.
+    # 
+    # _@param_ `access`
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def otp_refusal(env); end
+    sig { params(access: Object, env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def write_refusal(access, env); end
+
+    # Builds the default access for a server with no authenticator
+    # 
+    # _@param_ `repository`
+    # 
+    # _@param_ `authenticator`
+    sig { params(repository: T.nilable(Object), authenticator: T.nilable(Object)).void }
+    def setup_access(repository, authenticator); end
 
     # The validator for one response. nil (no ETag at all) when the stack
     # refuses to name itself: a wrong ETag on a gated index is worse than
@@ -1470,6 +1526,11 @@ module Paquette
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
 
+      # Asked before a push or yank body is read, so a caller who may not write
+      # is refused without uploading anything
+      sig { returns(T::Boolean) }
+      def writable?; end
+
       # The SHA256 of the .gem file this repository would actually serve —
       # under a Personalizer, not the bytes on disk.
       # 
@@ -1757,6 +1818,9 @@ module Paquette
 
     # Forbids package pushes
     class ReadonlyRepository < SimpleDelegator
+      sig { returns(T::Boolean) }
+      def writable?; end
+
       sig { void }
       def add_gem; end
 
@@ -2154,7 +2218,7 @@ module Paquette
     sig { params(package_name: String, tarball_name: String).returns(T.nilable(String)) }
     def self.version_from_tarball_name(package_name, tarball_name); end
 
-    # _@param_ `repository` — the repository stack to serve, or a directory path to wrap in a DirectoryNpmRepository
+    # _@param_ `repository` — the repository stack to serve everyone from, or a directory path to wrap in a DirectoryNpmRepository - leave it out when passing an authenticator
     # 
     # _@param_ `placeholder_app` — the Rack app answering the root path
     # 
@@ -2162,20 +2226,17 @@ module Paquette
     # 
     # _@param_ `shared_caching` — false keeps every response `private` — see the same option on GemServer
     # 
-    # _@param_ `authenticator` — answers `identify(token)` and `otp_secret(identity)` — see Paquette::Authentication. Given one, a caller it refuses gets a 401, and a write by an identity with a secret must carry a live code in the `npm-otp` header. nil serves everyone
-    # 
-    # _@param_ `otp_drift` — allowed clock drift in seconds, both directions
+    # _@param_ `authenticator` — answers `authenticate(token, request)` with an access, or nil for a 401 - see Paquette::Authentication. A write by an access with `otp_required?` must carry a live code in the `npm-otp` header
     sig do
       params(
-        repository: T.any(Paquette::NpmServer::NpmRepository, String),
+        repository: T.nilable(T.any(Paquette::NpmServer::NpmRepository, String)),
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object),
-        otp_drift: Integer
+        authenticator: T.nilable(Object)
       ).void
     end
-    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, otp_drift: Paquette::Authentication::DEFAULT_OTP_DRIFT); end
+    def initialize(repository = nil, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil); end
 
     # _@param_ `env` — the Rack env
     # 
@@ -2423,24 +2484,39 @@ module Paquette
     sig { params(message: String).returns(T::Array[T.untyped]) }
     def server_error(message = "Internal Server Error"); end
 
-    # A 401 when the server has an authenticator and it refused the caller;
-    # nil otherwise.
+    # The access this request is served under: the authenticator's answer, or
+    # without an authenticator the one stack the server was built with, open
+    # to everyone.
     # 
     # _@param_ `env` — the Rack env
     # 
-    # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(env); end
+    # _@return_ — nil when the authenticator refused the caller
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(Object)) }
+    def access_for(env); end
 
-    # The refusal for a write that did not carry a valid code, or nil to let
-    # it through. Asked before the handler runs, so a push is refused before
-    # its body is read.
+    # _@return_ — a Rack response triplet
+    sig { returns(T::Array[T.untyped]) }
+    def unauthorized; end
+
+    # The refusal for a write this caller may not make, or nil to let it
+    # through. Asked before the handler runs, so a push is refused before its
+    # body is read.
+    # 
+    # _@param_ `access`
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def otp_refusal(env); end
+    sig { params(access: Object, env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def write_refusal(access, env); end
+
+    # Builds the default access for a server with no authenticator
+    # 
+    # _@param_ `repository`
+    # 
+    # _@param_ `authenticator`
+    sig { params(repository: T.nilable(Object), authenticator: T.nilable(Object)).void }
+    def setup_access(repository, authenticator); end
 
     # The validator for one response. nil (no ETag at all) when the stack
     # refuses to name itself: a wrong ETag on a gated index is worse than
@@ -2829,6 +2905,10 @@ module Paquette
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
 
+      # See GemRepository#writable?
+      sig { returns(T::Boolean) }
+      def writable?; end
+
       # _@param_ `binary_data` — the tarball bytes
       # 
       # _@param_ `dist_tags`
@@ -3010,6 +3090,9 @@ module Paquette
       # _@return_ — truthy when entitled
       sig { params(criteria: T::Hash[T.untyped, T.untyped]).returns(Object) }
       def entitled?(**criteria); end
+
+      sig { returns(T::Boolean) }
+      def writable?; end
 
       sig { void }
       def add_package; end
@@ -3367,31 +3450,30 @@ module Paquette
     end
   end
 
-  # Who is calling, and whether a write really is them — asked of one
-  # authenticator object that both servers take as `authenticator:`, so the
-  # same object serves a rackup file built once at boot and an application
-  # that assembles a server per request.
+  # Who is calling and what they get, asked of the authenticator a server is
+  # built with:
   # 
-  # An authenticator answers two questions:
+  #   authenticate(token, request) # => an access object, or nil to refuse
+  #                                #    with a 401. token is nil when the
+  #                                #    caller sent none, so returning an
+  #                                #    access object is how anonymous
+  #                                #    callers are let in
   # 
-  #   identify(token)      # => an identity, or nil to refuse with a 401.
-  #                        #    token is nil when the caller sent none, so
-  #                        #    returning a guest object is how anonymous
-  #                        #    callers are let in
-  #   otp_secret(identity) # => the base32 TOTP secret every write by this
-  #                        #    identity must prove, or nil for none
+  # The access object answers `repository`, `otp_required?` and
+  # `verify_otp(code)` - see Paquette::Access for the stock one. Because the
+  # repository comes out of it, one server built at boot can hand a publisher
+  # a writable stack and a licensee a gated, read-only one.
   # 
-  # The identity lives in env["paquette.identity"], resolved at most once per
+  # The access lives in env["paquette.access"], resolved at most once per
   # request: whichever of the application and the server asks first stores
   # it, and the other reads it back.
   # 
-  # What is not shared — which header carries a one-time code, what a refusal
-  # looks like on the wire — is each server's own, because the client on the
+  # What is not shared - which header carries a one-time code, what a refusal
+  # looks like on the wire - is each server's own, because the client on the
   # other end dictates it: an including server defines `otp_code(env)`,
   # `otp_missing` and `otp_rejected`.
   module Authentication
-    IDENTITY_KEY = T.let("paquette.identity", T.untyped)
-    DEFAULT_OTP_DRIFT = T.let(30, T.untyped)
+    ACCESS_KEY = T.let("paquette.access", T.untyped)
     TOKEN_PASSWORDS = T.let(["", "x-oauth-basic", "x-oauth-token"].freeze, T.untyped)
 
     # The token a request carries, or nil.
@@ -3400,57 +3482,71 @@ module Paquette
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(String)) }
     def self.token_in(env); end
 
-    # The caller's identity, resolved through the authenticator once and
+    # The caller's access, resolved through the authenticator once and
     # remembered in the env. Credentials that carry no usable token are
     # refused without asking: a mangled header must not become an anonymous
     # session.
     # 
     # _@param_ `env` — the Rack env
     # 
-    # _@param_ `authenticator` — answers `identify(token)`
+    # _@param_ `authenticator` — answers `authenticate(token, request)`
     # 
-    # _@return_ — the identity, or nil when refused
+    # _@return_ — the access, or nil when refused
     sig { params(env: T::Hash[T.untyped, T.untyped], authenticator: Object).returns(T.nilable(Object)) }
-    def self.identify(env, authenticator); end
+    def self.access(env, authenticator); end
 
     # The authenticator is the caller's, and it usually goes to a database to
-    # resolve the token — on every request, before any of the work the
+    # resolve the token - on every request, before any of the work the
     # request asked for.
     # 
     # _@param_ `authenticator`
     # 
     # _@param_ `token`
-    sig { params(authenticator: Object, token: T.nilable(String)).returns(T.nilable(Object)) }
-    def self.call_authenticator(authenticator, token); end
+    # 
+    # _@param_ `env`
+    sig { params(authenticator: Object, token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(Object)) }
+    def self.call_authenticator(authenticator, token, env); end
 
-    # _@param_ `secret` — the base32 TOTP secret
+    # A repository predating `writable?` is taken at its word that it is - its
+    # write methods still raise if it is not.
     # 
-    # _@param_ `code` — what the client sent
-    # 
-    # _@param_ `drift` — allowed clock drift in seconds, both directions
-    # 
-    # _@return_ — :authorized, :missing or :rejected
-    sig { params(secret: String, code: T.nilable(String), drift: Integer).returns(Symbol) }
-    def self.verify_otp(secret, code, drift: DEFAULT_OTP_DRIFT); end
+    # _@param_ `repository`
+    sig { params(repository: Object).returns(T::Boolean) }
+    def self.writable?(repository); end
 
-    # A 401 when the server has an authenticator and it refused the caller;
-    # nil otherwise.
+    # The access this request is served under: the authenticator's answer, or
+    # without an authenticator the one stack the server was built with, open
+    # to everyone.
+    # 
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — nil when the authenticator refused the caller
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(Object)) }
+    def access_for(env); end
+
+    # _@return_ — a Rack response triplet
+    sig { returns(T::Array[T.untyped]) }
+    def unauthorized; end
+
+    # The refusal for a write this caller may not make, or nil to let it
+    # through. Asked before the handler runs, so a push is refused before its
+    # body is read.
+    # 
+    # _@param_ `access`
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(env); end
+    sig { params(access: Object, env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def write_refusal(access, env); end
 
-    # The refusal for a write that did not carry a valid code, or nil to let
-    # it through. Asked before the handler runs, so a push is refused before
-    # its body is read.
+    # Builds the default access for a server with no authenticator
     # 
-    # _@param_ `env` — the Rack env
+    # _@param_ `repository`
     # 
-    # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def otp_refusal(env); end
+    # _@param_ `authenticator`
+    sig { params(repository: T.nilable(Object), authenticator: T.nilable(Object)).void }
+    def setup_access(repository, authenticator); end
 
     # Reads the token out of one request, whichever way the client sent it:
     # npm sends Bearer, Bundler sends Basic with the token as the username,

@@ -43,35 +43,35 @@
   /* The wordmark is the heading. It sets its own width against the measure,
      so it stays a mark rather than growing into a banner. */
   .masthead {
-    /* One source of truth for how wide the mark renders: the width property
-       and the optical correction below are both computed from it, so the two
-       cannot drift apart. */
-    --masthead-width: min(100%, 26rem);
+    /* Lengths in rem, kept as bare numbers so the shift below can divide by
+       them: CSS cannot divide one length by another. */
+    --masthead-max: 26;
     /* The ink sits right of the viewBox centre — the trailing flourish of the
        final "e" runs out further than the "P" reaches back — so a box-centred
        mark reads as shifted right. This is the fraction of its own width the
-       mark comes back by. */
+       mark comes back by on a wide screen. */
     --masthead-optical-shift: 0.1;
+    /* The correction only reads as a correction with gutter on both sides of
+       the mark. Below the first viewport width the mark is centred, past the
+       second it gets the full shift, and in between it slides linearly. */
+    --masthead-ramp-from: 30;
+    --masthead-ramp-to: 48;
 
     display: block;
-    width: var(--masthead-width);
+    width: min(100%, var(--masthead-max) * 1rem);
     height: auto;
     /* auto side margins rather than text-align: an inline-block mark would
        sit on the text baseline and carry its descender gap with it. */
     margin: 0 auto clamp(2rem, 5vw, 3rem);
-    /* Derived from the rendered width rather than set in pixels, so the
-       correction scales with the mark — the same at the 26rem cap as on a
-       phone, where the mark is half the size and a fixed nudge would be
-       twice the shift.
-
-       The min() is the floor under it: once the viewport is narrow enough
-       that the mark nearly fills it, the full shift would push the mark off
-       the left edge and put a horizontal scrollbar under the page. There the
-       correction gives up whatever it has to and takes the space that is
-       left. Every width with room for the full shift gets the full shift. */
-    transform: translateX(calc(-1 * min(
-      var(--masthead-width) * var(--masthead-optical-shift),
-      (100vw - var(--masthead-width)) / 2
+    /* The ramp starts above the width where the mark stops growing, so the
+       mark is always at its 26rem cap while it is being shifted, and the
+       shift never eats more than the gutter it has. */
+    transform: translateX(calc(-1 * clamp(
+      0rem,
+      (100vw - var(--masthead-ramp-from) * 1rem)
+        * var(--masthead-max) * var(--masthead-optical-shift)
+        / (var(--masthead-ramp-to) - var(--masthead-ramp-from)),
+      var(--masthead-max) * var(--masthead-optical-shift) * 1rem
     )));
   }
 

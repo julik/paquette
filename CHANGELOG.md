@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Add `Paquette::GemServer::SignIn`, a middleware answering `gem signin` on `POST /api/v1/api_key`. The embedding application checks the username/email and password in a block, mints and stores the key in `issue_key:`, and can demand a one-time password per user with `otp_gate:`; without a block every sign-in is refused
 - Accept a bare `Authorization: <token>` with no scheme in `TokenAuthorization`, which is how `gem push`, `gem yank` and `gem owner` send a stored API key
 
 ## 0.3.1

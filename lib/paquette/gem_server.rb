@@ -17,6 +17,7 @@ class Paquette::GemServer
   autoload :Personalizer, "#{__dir__}/gem_server/personalizer"
   autoload :ReadGatedRepository, "#{__dir__}/gem_server/read_gated_repository"
   autoload :ReadonlyRepository, "#{__dir__}/gem_server/readonly_repository"
+  autoload :SignIn, "#{__dir__}/gem_server/sign_in"
   autoload :SpecValidator, "#{__dir__}/gem_server/spec_validator"
 
   prepend Paquette::RegexpTimeout

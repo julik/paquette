@@ -1075,6 +1075,86 @@ module Paquette
       end
     end
 
+    # Rack middleware answering `gem signin --host`: the client sends the
+    # username/email and password it prompted for as HTTP Basic auth to
+    # `POST /api/v1/api_key`, and stores whatever plain-text key comes back in
+    # its credentials file under that host. `gem push`, `gem yank` and `gem owner`
+    # then send that key as a bare `Authorization` header, which
+    # Paquette::TokenAuthorization accepts.
+    # 
+    # Paquette keeps no accounts and no keys. Checking the credentials, minting
+    # the key and remembering it are the embedding application's, through the
+    # block and the `issue_key:` callable. Every other request passes through to
+    # the wrapped app untouched, so this goes in front of the token check:
+    # 
+    #   use Paquette::GemServer::SignIn, issue_key: ->(user, name:, scopes:, mfa:) { ... } do |email:, password:|
+    #     User.authenticate_by(email: email, password: password)
+    #   end
+    #   use Paquette::TokenAuthorization do |token|
+    #     ApiKey.find_by_plaintext(token)&.user
+    #   end
+    #   run Paquette::GemServer.new(repo)
+    class SignIn
+      include Paquette::RegexpTimeout
+      API_KEY_PATH = T.let("/api/v1/api_key", T.untyped)
+      WEBAUTHN_VERIFICATION_PATH = T.let("/api/v1/webauthn_verification", T.untyped)
+      SCOPES = T.let(%w[
+  index_rubygems
+  push_rubygem
+  yank_rubygem
+  add_owner
+  remove_owner
+  access_webhooks
+  show_dashboard
+  configure_trusted_publishers
+].freeze, T.untyped)
+      MAX_KEY_NAME_BYTES = T.let(255, T.untyped)
+      ACCESS_DENIED = T.let("HTTP Basic: Access denied.\n", T.untyped)
+      REFUSE_EVERYONE = T.let(->(email:, password:) {}, T.untyped)
+
+      # _@param_ `app` — the downstream Rack app
+      # 
+      # _@param_ `issue_key` — receives the identity and `name:` (what the user called the key), `scopes:` (an Array of SCOPES entries) and `mfa:` (whether the user asked for the key to demand an OTP), and returns the plain-text key to hand the client — or nil to refuse. Storing the key so the TokenAuthorization block can find it again is up to it.
+      # 
+      # _@param_ `otp_gate` — receives the identity and returns a Paquette::OtpGate (see GemServer.otp_gate) — or anything answering `verify(env)` the same way — to demand a one-time password from that user, or nil to let them sign in without one
+      # 
+      # _@param_ `realm` — the realm in the Basic auth challenge
+      sig do
+        params(
+          app: T.untyped,
+          issue_key: T.untyped,
+          otp_gate: T.nilable(T.untyped),
+          realm: String,
+          authenticator: T.proc.returns(T.nilable(Object))
+        ).void
+      end
+      def initialize(app, issue_key:, otp_gate: nil, realm: "Paquette", &authenticator); end
+
+      # _@param_ `env` — the Rack env
+      # 
+      # _@return_ — a Rack response triplet
+      sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
+      def call(env); end
+
+      # _@param_ `env`
+      # 
+      # _@return_ — a Rack response triplet
+      sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
+      def sign_in(env); end
+
+      # _@return_ — a Rack response triplet
+      sig { returns(T::Array[T.untyped]) }
+      def access_denied; end
+
+      # _@param_ `status`
+      # 
+      # _@param_ `message`
+      # 
+      # _@return_ — a Rack response triplet
+      sig { params(status: Integer, message: String).returns(T::Array[T.untyped]) }
+      def text(status, message); end
+    end
+
     # Rewrites the contents of a .gem into a new, byte-reproducible .gem —
     # replacing magic comment lines, merging gemspec metadata and injecting files.
     class GemRepacker

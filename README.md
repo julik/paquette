@@ -162,6 +162,47 @@ You can publish gems two ways.
 
 Note that Paquette will use whichever auth you wrap it with - that is to say, in the default dev setup - _none._ I told you it is slightly unhinged.
 
+### Signing in with `gem signin`
+
+`gem signin` asks for a username/email and a password, sends them to `POST /api/v1/api_key` as HTTP Basic auth, and saves the API key it gets back in `~/.gem/credentials` under the host. `gem push`, `gem yank` and `gem owner` then send that key as a bare `Authorization` header, which `Paquette::TokenAuthorization` accepts.
+
+Paquette keeps no accounts and no keys, so your application decides who may sign in and what a key is. Put `Paquette::GemServer::SignIn` in front of your token check:
+
+```ruby
+use Paquette::GemServer::SignIn,
+  # Mint and store a key, return it as a string - or nil to refuse
+  issue_key: ->(user, name:, scopes:, mfa:) {
+    user.api_keys.create!(name: name, scopes: scopes, requires_otp: mfa).plaintext_secret
+  },
+  # Optional: demand a one-time password from users who have one
+  otp_gate: ->(user) {
+    Paquette::GemServer.otp_gate(secret: user.otp_secret, issuer: "Acme gems") if user.otp_secret
+  } do |email:, password:|
+  # Return an identity, or nil to refuse
+  User.authenticate_by(email: email, password: password)
+end
+
+use Paquette::TokenAuthorization do |token|
+  ApiKey.find_by_plaintext_secret(token)&.user
+end
+
+run Paquette::GemServer.new(gem_repo)
+```
+
+- The block gets whatever the user typed at the client's "Username/email" prompt, and the password. Without a block every sign-in is refused, which is the default.
+- `scopes:` holds the scopes the user picked, out of `Paquette::GemServer::SignIn::SCOPES` (`index_rubygems` unless they customised them). Paquette does not enforce them - if a key without `push_rubygem` should not push, wrap the repository in a `ReadonlyRepository` for that identity.
+- `otp_gate:` gets the identity once the password has checked out, and returns a gate or nil. A missing code is answered with the 401 that makes the client prompt for one, a wrong one with `OTP verification failed`. Anything answering `verify(env)` the way `Paquette::OtpGate` does will work, if you verify codes your own way. WebAuthn is not supported - the client's WebAuthn probe is refused, so it falls back to asking for a code.
+- `mfa:` is true when the user asked for the key to demand an OTP on use. Enforcing that on push is up to you.
+- Every other request passes straight through to the app underneath.
+
+Then, on the client:
+
+```bash
+RUBYGEMS_HOST=https://gem.paquette.acme.com gem signin
+```
+
+Set `RUBYGEMS_HOST` rather than relying on `--host` alone. With only `--host`, RubyGems (as of 3.6) still believes it is signing in to rubygems.org and sends the email and password to rubygems.org's profile endpoint first - which fails, and leaks the credentials to a third party. Push with the same URL: the key is stored under that exact string, so `gem push --host https://gem.paquette.acme.com` finds it and `--host https://gem.paquette.acme.com/` does not.
+
 ### Consuming gems provided by a Paquette server
 
 To install gems from Paquette, set it as source in your Gemfile - and provide auth for whichever auth mechanism you wrap it with:
@@ -185,6 +226,7 @@ The RubyGems API in Paquette supports the following endpoints:
 - `GET /quick/Marshal.4.8/{gemname-version}.gemspec.rz` - Marshalled gemspec
 - `GET /gems/{gemname-version.gem}` - Download gem file
 - `POST /api/v1/gems` - Upload gem (basic implementation)
+- `POST /api/v1/api_key` - Sign in and get an API key, with `Paquette::GemServer::SignIn` in front - see [Signing in with `gem signin`](#signing-in-with-gem-signin)
 - `GET /specs.4.8`, `GET /latest_specs.4.8` (and their `.gz` variants) - the legacy Marshal indexes
 - `GET /names`, `GET /versions`, `GET /info/{gemname}` - the compact index
 

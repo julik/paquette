@@ -3768,7 +3768,9 @@ module Paquette
   # either a Bearer header or a Basic auth header with the token as username
   # (the GitHub registry convention) — so machine clients like Bundler and npm,
   # which only speak Basic auth, can authenticate with just a token in their
-  # config. The resolved identity is stored in env["paquette.identity"].
+  # config. A bare `Authorization: <token>` with no scheme is taken too: that
+  # is how `gem push` sends the key `gem signin` stored. The resolved identity
+  # is stored in env["paquette.identity"].
   class TokenAuthorization < Rack::Auth::AbstractHandler
     include Paquette::RegexpTimeout
     BEARER_SENTINEL = T.let("x-oauth-token", T.untyped)

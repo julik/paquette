@@ -45,6 +45,28 @@ class TokenAuthorizationTest < Minitest::Test
     assert_equal VALID_TOKEN, parsed["token"]
   end
 
+  def test_extracts_a_bare_token_sent_without_a_scheme_the_way_gem_push_sends_it
+    env = env_for("/")
+    env["HTTP_AUTHORIZATION"] = VALID_TOKEN
+    status, _, body = @app.call(env)
+    assert_equal 200, status
+    assert_equal VALID_TOKEN, JSON.parse(body_string(body))["token"]
+  end
+
+  def test_rejects_a_bare_token_the_authenticator_does_not_know
+    env = env_for("/")
+    env["HTTP_AUTHORIZATION"] = "rubygems_not_ours"
+    status, _, _ = @app.call(env)
+    assert_equal 401, status
+  end
+
+  def test_rejects_a_blank_authorization_header
+    env = env_for("/")
+    env["HTTP_AUTHORIZATION"] = ""
+    status, _, _ = @app.call(env)
+    assert_equal 401, status
+  end
+
   def test_rejects_basic_auth_with_wrong_password
     status, _, _ = @app.call(env_for("/", basic: [VALID_TOKEN, "wrong_password"]))
     assert_equal 401, status

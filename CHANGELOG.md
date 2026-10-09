@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Accept a bare `Authorization: <token>` with no scheme in `TokenAuthorization`, which is how `gem push`, `gem yank` and `gem owner` send a stored API key
+
 ## 0.3.1
 
 - Give every file in a repacked gem the mode the source gem recorded for it. The modes used to come from the unpacked copy on disk, which carried the 0600 of the Tempfile each `.rb` file is rewritten through, and the serving process's umask for everything else — so the same gem repacked to different bytes on servers with different umasks. A file Paquette injects gets 0644; one that replaces a shipped file keeps that file's mode

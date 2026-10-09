@@ -6,7 +6,9 @@ require "measurometer"
 # either a Bearer header or a Basic auth header with the token as username
 # (the GitHub registry convention) — so machine clients like Bundler and npm,
 # which only speak Basic auth, can authenticate with just a token in their
-# config. The resolved identity is stored in env["paquette.identity"].
+# config. A bare `Authorization: <token>` with no scheme is taken too: that
+# is how `gem push` sends the key `gem signin` stored. The resolved identity
+# is stored in env["paquette.identity"].
 class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
   prepend Paquette::RegexpTimeout
 
@@ -62,6 +64,10 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
     # @return [String, nil] the token, whichever scheme carried it
     def token
       return @token if defined?(@token)
+
+      # `gem push`, `gem yank` and `gem owner` send the key with no scheme at
+      # all, the way rubygems.org takes it
+      return @token = parts.first if parts.length == 1
 
       @token = case scheme
       when "bearer"

@@ -4,19 +4,28 @@ require "measurometer"
 
 # Rack authentication handler that extracts an opaque access token from
 # either a Bearer header or a Basic auth header with the token as username
-# (the GitHub registry convention) — so machine clients like Bundler and npm,
-# which only speak Basic auth, can authenticate with just a token in their
-# config. A bare `Authorization: <token>` with no scheme is taken too: that
-# is how `gem push` sends the key `gem signin` stored. The resolved identity
-# is stored in env["paquette.identity"].
+# and any password (the GitHub registry convention) — so machine clients like
+# Bundler and npm, which only speak Basic auth, can authenticate with just a
+# token in their config. The token is also taken from the Basic password when
+# the username is empty or one of USERNAME_SENTINELS. A bare
+# `Authorization: <token>` with no scheme is taken too: that is how `gem push`
+# sends the key `gem signin` stored. The resolved identity is stored in
+# env["paquette.identity"].
 class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
   prepend Paquette::RegexpTimeout
 
-  # Some HTTP clients refuse to send an empty Basic auth password; GitHub's
-  # convention is this literal in its place.
+  # Some HTTP clients refuse to send an empty Basic auth password, so a
+  # placeholder goes in its place. Any password is accepted next to a token
+  # username, so this is kept for callers who refer to it.
   #
   # @return [String]
   BEARER_SENTINEL = "x-oauth-token"
+
+  # Basic auth usernames that say "the token is in the password". GitHub takes
+  # `x-oauth-basic` and `x-access-token` this way round as well as the other.
+  #
+  # @return [Array<String>]
+  USERNAME_SENTINELS = ["x-oauth-basic", "x-access-token", BEARER_SENTINEL].freeze
 
   # @param app [#call] the downstream Rack app
   # @param realm [String] the authentication realm (used in WWW-Authenticate)
@@ -73,8 +82,12 @@ class Paquette::TokenAuthorization < Rack::Auth::AbstractHandler
       when "bearer"
         params
       when "basic"
+        # The password carries no secret when the token is the username, so it
+        # is not looked at - `TOKEN:x-oauth-basic` is what GitHub's docs teach
         username, password = credentials
-        if password.nil? || password.empty? || password == BEARER_SENTINEL
+        if username.nil? || username.empty? || USERNAME_SENTINELS.include?(username)
+          password unless password.nil? || password.empty?
+        else
           username
         end
       end

@@ -3766,14 +3766,17 @@ module Paquette
 
   # Rack authentication handler that extracts an opaque access token from
   # either a Bearer header or a Basic auth header with the token as username
-  # (the GitHub registry convention) — so machine clients like Bundler and npm,
-  # which only speak Basic auth, can authenticate with just a token in their
-  # config. A bare `Authorization: <token>` with no scheme is taken too: that
-  # is how `gem push` sends the key `gem signin` stored. The resolved identity
-  # is stored in env["paquette.identity"].
+  # and any password (the GitHub registry convention) — so machine clients like
+  # Bundler and npm, which only speak Basic auth, can authenticate with just a
+  # token in their config. The token is also taken from the Basic password when
+  # the username is empty or one of USERNAME_SENTINELS. A bare
+  # `Authorization: <token>` with no scheme is taken too: that is how `gem push`
+  # sends the key `gem signin` stored. The resolved identity is stored in
+  # env["paquette.identity"].
   class TokenAuthorization < Rack::Auth::AbstractHandler
     include Paquette::RegexpTimeout
     BEARER_SENTINEL = T.let("x-oauth-token", T.untyped)
+    USERNAME_SENTINELS = T.let(["x-oauth-basic", "x-access-token", BEARER_SENTINEL].freeze, T.untyped)
 
     # _@param_ `app` — the downstream Rack app
     # 

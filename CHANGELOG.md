@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Take a Basic auth username as the token whatever the password is in `TokenAuthorization`. Only an empty password or `x-oauth-token` used to count, so `TOKEN:x-oauth-basic` - the form GitHub documents - came through without a token
+- Take the token from the Basic auth password when the username is empty, `x-oauth-basic`, `x-access-token` or `x-oauth-token`
 - Accept a bare `Authorization: <token>` with no scheme in `TokenAuthorization`, which is how `gem push`, `gem yank` and `gem owner` send a stored API key
 
 ## 0.3.1

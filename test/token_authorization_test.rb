@@ -67,8 +67,50 @@ class TokenAuthorizationTest < Minitest::Test
     assert_equal 401, status
   end
 
-  def test_rejects_basic_auth_with_wrong_password
-    status, _, _ = @app.call(env_for("/", basic: [VALID_TOKEN, "wrong_password"]))
+  def test_extracts_token_from_basic_auth_with_x_oauth_basic_password
+    status, _, body = @app.call(env_for("/", basic: [VALID_TOKEN, "x-oauth-basic"]))
+    assert_equal 200, status
+    assert_equal VALID_TOKEN, JSON.parse(body_string(body))["token"]
+  end
+
+  def test_extracts_token_from_basic_auth_whatever_the_password
+    status, _, body = @app.call(env_for("/", basic: [VALID_TOKEN, "anything at all"]))
+    assert_equal 200, status
+    assert_equal VALID_TOKEN, JSON.parse(body_string(body))["token"]
+  end
+
+  def test_extracts_token_from_basic_auth_password_with_a_sentinel_username
+    %w[x-oauth-basic x-access-token x-oauth-token].each do |username|
+      status, _, body = @app.call(env_for("/", basic: [username, VALID_TOKEN]))
+      assert_equal 200, status, username
+      assert_equal VALID_TOKEN, JSON.parse(body_string(body))["token"]
+    end
+  end
+
+  def test_extracts_token_from_basic_auth_password_with_an_empty_username
+    status, _, body = @app.call(env_for("/", basic: ["", VALID_TOKEN]))
+    assert_equal 200, status
+    assert_equal VALID_TOKEN, JSON.parse(body_string(body))["token"]
+  end
+
+  def test_does_not_take_the_password_when_the_username_is_not_a_sentinel
+    request = Paquette::TokenAuthorization::Request.new(env_for("/", basic: ["someone", VALID_TOKEN]))
+    assert_equal "someone", request.token
+  end
+
+  def test_rejects_basic_auth_with_a_sentinel_username_and_no_password
+    status, _, _ = @app.call(env_for("/", basic: ["x-oauth-basic", ""]))
+    assert_equal 401, status
+    assert_nil Paquette::TokenAuthorization::Request.new(env_for("/", basic: ["x-oauth-basic", ""])).token
+  end
+
+  def test_rejects_basic_auth_with_both_halves_empty
+    status, _, _ = @app.call(env_for("/", basic: ["", ""]))
+    assert_equal 401, status
+  end
+
+  def test_rejects_a_wrong_token_with_x_oauth_basic_password
+    status, _, _ = @app.call(env_for("/", basic: ["ghp_not_ours", "x-oauth-basic"]))
     assert_equal 401, status
   end
 

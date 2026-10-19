@@ -28,7 +28,7 @@ class NamespaceMountTest < Minitest::Test
     FileUtils.cp_r(FIXTURE_GEMS_DIR, @gems_dir)
 
     repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    gem_server = Paquette::GemServer.new(repository)
+    gem_server = Writable.gem_server(repository)
 
     @app = Rack::Builder.new do
       map(NAMESPACE) { run gem_server }
@@ -133,8 +133,8 @@ class NamespaceMountTest < Minitest::Test
     other = Paquette::GemServer::DirectoryGemRepository.new(other_dir)
     other.add_gem(File.binread(MINUSCULE_FIXTURE))
 
-    acme = Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(@gems_dir))
-    beta = Paquette::GemServer.new(other)
+    acme = Writable.gem_server(Paquette::GemServer::DirectoryGemRepository.new(@gems_dir))
+    beta = Writable.gem_server(other)
     two = Rack::Builder.new do
       map("/@acme") { run acme }
       map("/@beta") { run beta }

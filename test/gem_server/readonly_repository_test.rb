@@ -10,7 +10,7 @@ class ReadonlyRepositoryTest < Minitest::Test
   end
 
   def app
-    Paquette::GemServer.new(@repository)
+    Writable.gem_server(@repository)
   end
 
   def test_add_gem_raises_write_not_allowed

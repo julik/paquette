@@ -47,7 +47,7 @@ class InstrumentationTest < Minitest::Test
 
   def test_gem_metadata_request_is_instrumented_down_to_the_repository
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    Paquette::GemServer.new(repo).call(Rack::MockRequest.env_for("/versions"))
+    Writable.gem_server(repo).call(Rack::MockRequest.env_for("/versions"))
 
     assert_includes @driver.spans, "paquette.gem_server.call"
     assert_includes @driver.spans, "paquette.route.GET /versions"
@@ -118,7 +118,7 @@ class InstrumentationTest < Minitest::Test
   end
 
   def test_npm_metadata_request_is_instrumented_down_to_the_tarball
-    app = Paquette::NpmServer.new(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
+    app = Writable.npm_server(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
     app.call(Rack::MockRequest.env_for("/widgets"))
 
     assert_includes @driver.spans, "paquette.npm_server.call"
@@ -158,7 +158,7 @@ class InstrumentationTest < Minitest::Test
   end
 
   def test_publishing_records_the_size_of_what_was_pushed
-    app = Paquette::NpmServer.new(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
+    app = Writable.npm_server(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
     body = npm_publish_body(name: "gadgets", version: "1.0.0")
     app.call(Rack::MockRequest.env_for("/gadgets",
       :method => "PUT", :input => body, "CONTENT_TYPE" => "application/json"))
@@ -171,7 +171,7 @@ class InstrumentationTest < Minitest::Test
   # Measurometer wraps the block in a lambda per driver, and a `next` or a
   # `return` inside an instrumented block has to keep working across that.
   def test_an_instrumented_block_still_returns_its_own_value
-    app = Paquette::NpmServer.new(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
+    app = Writable.npm_server(Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir))
     status, _headers, body = app.call(Rack::MockRequest.env_for("/no-such-package"))
 
     assert_equal 404, status

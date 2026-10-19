@@ -277,6 +277,65 @@ module NpmTarballHelpers
   end
 end
 
+# An authenticator in the shape both servers take. `readers:` and `writers:`
+# are tokens (a writer reads too, nil among the readers lets anonymous callers
+# in), and a code checks out when it is good for `otp_secret:`. Every question
+# lands in `questions`.
+class TestAuthenticator
+  attr_reader :questions
+
+  def initialize(readers: [], writers: [], otp_secret: nil)
+    @readers = readers
+    @writers = writers
+    @otp_secret = otp_secret
+    @questions = []
+  end
+
+  def read_permitted?(auth_token:)
+    @questions << [:read_permitted?, auth_token]
+    @readers.include?(auth_token) || (!auth_token.nil? && @writers.include?(auth_token))
+  end
+
+  def write_permitted?(auth_token:)
+    @questions << [:write_permitted?, auth_token]
+    !auth_token.nil? && @writers.include?(auth_token)
+  end
+
+  def check_otp!(auth_token:, otp_code:)
+    @questions << [:check_otp!, auth_token, otp_code]
+    Paquette::Totp.verify!(@otp_secret, otp_code)
+  end
+end
+
+# What a server takes when its test writes: any code goes, but there has to
+# be one - send it with `header "OTP", ANY_OTP` or in the env.
+OPEN_AUTHENTICATOR = Paquette::Authentication::Open.new
+ANY_OTP = "123456"
+
+# Servers for tests that write and are not about authentication: an Open
+# authenticator, and a one-time password slipped into every request on the
+# way in - which also covers the real `npm` and `gem` clients behind Puma
+module Writable
+  class WithOtp
+    def initialize(app)
+      @app = app
+    end
+
+    def call(env)
+      env["HTTP_OTP"] ||= ANY_OTP
+      @app.call(env)
+    end
+  end
+
+  def self.gem_server(repository, **options)
+    WithOtp.new(Paquette::GemServer.new(repository, authenticator: OPEN_AUTHENTICATOR, **options))
+  end
+
+  def self.npm_server(repository, **options)
+    WithOtp.new(Paquette::NpmServer.new(repository, authenticator: OPEN_AUTHENTICATOR, **options))
+  end
+end
+
 # Rack::Test cannot build a body that disagrees with its own Content-Length,
 # which is exactly the shape of request these tests are about.
 module MalformedRequestHelpers

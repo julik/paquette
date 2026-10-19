@@ -93,7 +93,7 @@ class CompactIndexRangesTest < Minitest::Test
       FileUtils.mkdir_p(File.join(dir, "zip_kit"))
       FileUtils.cp(File.join(FIXTURE_GEMS_DIR, "zip_kit", "zip_kit-6.2.0.gem"), File.join(dir, "zip_kit"))
       repository = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app = Paquette::GemServer.new(repository)
+      app = Writable.gem_server(repository)
 
       before = body_of(get(app, "/versions"))
 
@@ -196,7 +196,7 @@ class CompactIndexRangesTest < Minitest::Test
   # and is still answered 200 with the whole document rather than a 416.
   def test_ranges_over_the_shortest_document_this_server_serves
     Dir.mktmpdir do |dir|
-      app = Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(dir))
+      app = Writable.gem_server(Paquette::GemServer::DirectoryGemRepository.new(dir))
       marker = "---\n\n"
       assert_equal 5, marker.bytesize, "three dashes and two newlines"
       assert_equal marker, body_of(get(app, "/names")), "an empty corpus still names the format"
@@ -293,7 +293,7 @@ class CompactIndexRangesTest < Minitest::Test
   def test_a_stack_that_cannot_name_itself_still_ranges_and_still_emits_no_etag
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: nil) { |**| true }
-    app = Paquette::GemServer.new(gated)
+    app = Writable.gem_server(gated)
 
     full = get(app, "/versions")
     assert_nil full[1]["ETag"], "a keyless gate must still emit no validator"
@@ -315,7 +315,7 @@ class CompactIndexRangesTest < Minitest::Test
     gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: "alice") do |name:, version: nil|
       name == "minuscule_test"
     end
-    app = Paquette::GemServer.new(gated)
+    app = Writable.gem_server(gated)
 
     full = body_of(get(app, "/versions"))
     refute_includes full, "zip_kit"
@@ -329,7 +329,7 @@ class CompactIndexRangesTest < Minitest::Test
   private
 
   def plain_app
-    Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR))
+    Writable.gem_server(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR))
   end
 
   def get(app, path, env = {})

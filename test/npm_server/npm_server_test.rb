@@ -6,7 +6,7 @@ class NpmServerTest < Minitest::Test
   def setup
     @test_packages_dir = Dir.mktmpdir("paquette_npm_test")
     @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@test_packages_dir)
-    @app = Paquette::NpmServer.new(@repository)
+    @app = Writable.npm_server(@repository)
 
     write_npm_package(@test_packages_dir, name: "test-package", version: "1.0.0")
     write_npm_package(@test_packages_dir, name: "test-package", version: "1.1.0",
@@ -49,15 +49,14 @@ class NpmServerTest < Minitest::Test
   end
 
   def test_whoami_endpoint
-    get "/-/whoami"
+    get "/-/whoami", {}, {"HTTP_AUTHORIZATION" => "Bearer t"}
     assert_equal 200, last_response.status
     assert_equal "paquette", JSON.parse(last_response.body)["username"]
   end
 
-  def test_whoami_reports_the_authenticated_identity
-    identity = Struct.new(:username).new("julik")
-    get "/-/whoami", {}, {"paquette.identity" => identity}
-    assert_equal "julik", JSON.parse(last_response.body)["username"]
+  def test_whoami_without_a_token_is_unauthorized
+    get "/-/whoami"
+    assert_equal 401, last_response.status
   end
 
   def test_package_metadata
@@ -245,7 +244,7 @@ class NpmServerTest < Minitest::Test
   # An announced length over the cap costs nothing: it is refused before a
   # byte of the body is read.
   def test_publish_refuses_an_oversized_declared_length
-    capped = Paquette::NpmServer.new(@repository, max_push_bytes: 64)
+    capped = Writable.npm_server(@repository, max_push_bytes: 64)
     session = Rack::Test::Session.new(Rack::MockSession.new(capped))
 
     session.put "/new-package", npm_publish_body(name: "new-package", version: "1.0.0"),
@@ -258,7 +257,7 @@ class NpmServerTest < Minitest::Test
   # And a length the client lied about does not get a free pass, because
   # the cap is also enforced on the read itself.
   def test_publish_refuses_a_body_larger_than_an_understated_content_length
-    capped = Paquette::NpmServer.new(@repository, max_push_bytes: 64)
+    capped = Writable.npm_server(@repository, max_push_bytes: 64)
 
     env = Rack::MockRequest.env_for("/new-package",
       "REQUEST_METHOD" => "PUT", "CONTENT_TYPE" => "application/json")
@@ -320,7 +319,7 @@ class NpmServerTest < Minitest::Test
 
   def test_writes_are_refused_through_a_read_gated_repository
     gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| true }
-    @app = Paquette::NpmServer.new(gated)
+    @app = Writable.npm_server(gated)
 
     put "/new-package", npm_publish_body(name: "new-package", version: "1.0.0"),
       {"CONTENT_TYPE" => "application/json"}
@@ -331,7 +330,7 @@ class NpmServerTest < Minitest::Test
   end
 
   def test_a_directory_path_still_builds_a_server
-    @app = Paquette::NpmServer.new(@test_packages_dir)
+    @app = Writable.npm_server(@test_packages_dir)
 
     get "/test-package"
     assert_equal 200, last_response.status

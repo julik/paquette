@@ -29,21 +29,26 @@ module Paquette
   # @return [Integer]
   MAX_PUSH_SIZE_BYTES = 50 * 1024 * 1024
 
+  # What an authenticator's `check_otp!` raises for a code that is not good.
+  # The server answers it with the refusal its client knows.
+  class OtpRejected < StandardError; end
+
   # Autoloaded rather than required: an application embedding the gem server
   # should not pay for the npm side. Absolute paths because config.ru and
   # bin/dev reach this file through require_relative, which does not put
   # lib/ on the load path.
+  autoload :AuthToken, "#{__dir__}/paquette/auth_token"
+  autoload :Authentication, "#{__dir__}/paquette/authentication"
   autoload :CacheValidation, "#{__dir__}/paquette/cache_validation"
   autoload :ConditionalGet, "#{__dir__}/paquette/conditional_get"
   autoload :GemServer, "#{__dir__}/paquette/gem_server"
   autoload :IndexPage, "#{__dir__}/paquette/index_page"
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
-  autoload :OtpGate, "#{__dir__}/paquette/otp_gate"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
   autoload :Routes, "#{__dir__}/paquette/routes"
   autoload :SafeUrl, "#{__dir__}/paquette/safe_url"
   autoload :SubdomainRouter, "#{__dir__}/paquette/subdomain_router"
   autoload :Tarball, "#{__dir__}/paquette/tarball"
-  autoload :TokenAuthorization, "#{__dir__}/paquette/token_authorization"
+  autoload :Totp, "#{__dir__}/paquette/totp"
 end

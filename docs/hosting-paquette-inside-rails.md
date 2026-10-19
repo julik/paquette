@@ -10,21 +10,45 @@ The simplest approach is to mount Paquette as a Rack app in your Rails routes:
 # config/routes.rb
 
 gems_dir = Rails.root.join("packages/gems")
-gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
+gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir.to_s)
 
-gem_app = ->(env) {
-  request = Rack::Request.new(env)
-  Current.user = User.find_by(api_key: request.get_header("HTTP_AUTHORIZATION"))
-
-  repo = if Current.user
-    Paquette::GemServer::ReadGatedRepository.new(gems_repo) do |name:, version: nil|
-      Current.user.entitlements.exists?(gem_name: name)
-    end
-  else
-    Paquette::GemServer::ReadGatedRepository.new(gems_repo) { |**| false }
+class GemAuthenticator
+  def read_permitted?(auth_token:)
+    !user_for(auth_token).nil?
   end
 
-  Paquette::GemServer.new(repo).call(env)
+  def write_permitted?(auth_token:)
+    !!user_for(auth_token)&.publisher?
+  end
+
+  def check_otp!(auth_token:, otp_code:)
+    Paquette::Totp.verify!(user_for(auth_token).totp_secret, otp_code)
+  end
+
+  private
+
+  # Asked up to three times per push - remember the answer for the request
+  def user_for(token)
+    return nil unless token
+    return Current.user if Current.user&.api_key == token
+
+    Current.user = User.find_by(api_key: token)
+  end
+end
+
+authenticator = GemAuthenticator.new
+
+gem_app = ->(env) {
+  token = Paquette::AuthToken.from_env(env)
+  user = token && User.find_by(api_key: token)
+  repo = if user&.publisher?
+    gems_repo
+  else
+    Paquette::GemServer::ReadGatedRepository.new(gems_repo, gate_key: user&.cache_key_with_version) do |name:, version: nil|
+      user&.entitlements&.exists?(gem_name: name)
+    end
+  end
+  Paquette::GemServer.new(repo, authenticator: authenticator).call(env)
 }
 
 Rails.application.routes.draw do
@@ -32,7 +56,9 @@ Rails.application.routes.draw do
 end
 ```
 
-Note that the `DirectoryGemRepository` is created once and shared across requests — it just does file I/O and is safe to reuse. The `ReadGatedRepository` wrapper and `GemServer` are built per-request so that user-specific state is captured in plain closures.
+The server reads the token however the client sent it - Bundler puts it in Basic auth, `gem push` sends it bare - and `Paquette::AuthToken.from_env` reads it the same way, so the stack built here and the answers `GemAuthenticator` gives are about the same caller. Every push and yank has to carry a one-time password. See [Authentication](../README.md#authentication).
+
+The `DirectoryGemRepository` and the authenticator are built once and shared across requests: the repository just does file I/O, and the authenticator keeps what it learns about a caller in `Current`. What is per-user - the `ReadGatedRepository` and the closure it holds - is built per request, and so is the server around it, which is cheap.
 
 ## Rails execution context
 
@@ -46,7 +72,7 @@ In short, mounting via `routes.rb` gives you the same execution context as any R
 
 ## Setting up Current
 
-Because the request does not pass through a Rails controller, `CurrentAttributes` will be reset but not populated — controllers typically set `Current` in a `before_action`. You need to set the attributes yourself before building the repository stack, as shown in the example above.
+Because the request does not pass through a Rails controller, `CurrentAttributes` will be reset but not populated — controllers typically set `Current` in a `before_action`. You need to set the attributes yourself - the authenticator is a good place, as shown in the example above.
 
 ## Mounting outside of Rails routes
 

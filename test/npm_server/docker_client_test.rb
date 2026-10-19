@@ -171,19 +171,11 @@ class DockerNpmClientTest < Minitest::Test
     assert_empty @repository.package_names
   end
 
-  # End to end: token -> identity -> entitlement.
+  # End to end: the token npm sends is the one the authenticator gets
   def test_a_token_gated_registry
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
-    repository = @repository
 
-    authorized = Rack::Builder.new do
-      use Paquette::TokenAuthorization, "Paquette" do |token|
-        (token == TOKEN) ? Struct.new(:username).new("acme") : nil
-      end
-      run Paquette::NpmServer.new(repository)
-    end
-
-    serve_app(authorized.to_app)
+    serve_app(Paquette::NpmServer.new(@repository, authenticator: TestAuthenticator.new(readers: [TOKEN])))
 
     assert_npm_ok run_npm("npm install widget --loglevel error")
 
@@ -209,7 +201,7 @@ class DockerNpmClientTest < Minitest::Test
   end
 
   def serve(repository)
-    serve_app(Paquette::NpmServer.new(repository))
+    serve_app(Writable.npm_server(repository))
   end
 
   def serve_app(app)

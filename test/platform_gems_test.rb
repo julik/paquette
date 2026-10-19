@@ -27,7 +27,7 @@ class PlatformGemsTest < Minitest::Test
     write_platform_gem(@gems_dir, name: "nokogiri", version: "1.15.0", dependencies: {"racc" => "~> 1.4"})
 
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    @app = Paquette::GemServer.new(@repository)
+    @app = Writable.gem_server(@repository)
   end
 
   def teardown
@@ -284,7 +284,7 @@ class PlatformGemWritesTest < Minitest::Test
   def setup
     @gems_dir = Dir.mktmpdir("paquette_platform_writes")
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    @app = Paquette::GemServer.new(@repository)
+    @app = Writable.gem_server(@repository)
   end
 
   def teardown
@@ -501,7 +501,7 @@ class HostilePlatformPushTest < Minitest::Test
 
   def setup
     @gems_dir = Dir.mktmpdir("paquette_hostile_platform")
-    @app = Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(@gems_dir))
+    @app = Writable.gem_server(Paquette::GemServer::DirectoryGemRepository.new(@gems_dir))
   end
 
   def teardown
@@ -605,7 +605,7 @@ class PlatformGemWrappersTest < Minitest::Test
       write_platform_gem(@gems_dir, name: "nokogiri", version: "1.16.0", platform: platform)
     end
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    @app = Paquette::GemServer.new(@repository)
+    @app = Writable.gem_server(@repository)
   end
 
   def teardown

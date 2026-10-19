@@ -24,12 +24,12 @@ gems_dir = File.expand_path("../tmp/gems", __dir__)
 
 FileUtils.mkdir_p(gems_dir)
 
-# No ReadGatedRepository, no Personalizer, no TokenAuthorization: a bare
-# repository is readwrite, and the server hands every request straight to it.
+# No ReadGatedRepository, no Personalizer, and an authenticator that lets
+# anyone write as long as they send some one-time password
 repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 
 app = Rack::Builder.new do
-  run Paquette::GemServer.new(repo)
+  run Paquette::GemServer.new(repo, authenticator: Paquette::Authentication::Open.new)
 end.to_app
 
 server = Puma::Server.new(app)
@@ -40,11 +40,11 @@ server.add_tcp_listener(host, port)
 url = "http://#{host}:#{port}"
 
 puts <<~BANNER
-  Paquette gem server — readwrite, no auth
+  Paquette gem server — readwrite, no auth, any OTP
   Gems on disk:  #{gems_dir}
 
-    Push:     gem push --host #{url} pkg/your-gem-0.1.0.gem
-    Yank:     gem yank --host #{url} your-gem -v 0.1.0
+    Push:     gem push --host #{url} --otp 000000 pkg/your-gem-0.1.0.gem
+    Yank:     gem yank --host #{url} --otp 000000 your-gem -v 0.1.0
     Install:  gem install your-gem --source #{url}
     Gemfile:  gem "your-gem", source: "#{url}"
 

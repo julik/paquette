@@ -233,7 +233,7 @@ class CooldownRepositoryTest < Minitest::Test
   # --- Endpoint-level: the index and the download path have to agree ---
 
   def test_served_index_and_downloads_agree
-    @app = Paquette::GemServer.new(cooldown)
+    @app = Writable.gem_server(cooldown)
 
     get "/names"
     assert_equal "---\naged_gem\n", last_response.body
@@ -259,7 +259,7 @@ class CooldownRepositoryTest < Minitest::Test
   end
 
   def test_latest_specs_names_the_latest_served_version
-    @app = Paquette::GemServer.new(cooldown)
+    @app = Writable.gem_server(cooldown)
 
     # A Gem::Version in the middle column, which is what rubygems.org's own
     # legacy index carries and what Gem::SpecFetcher sorts tuples by.
@@ -271,7 +271,7 @@ class CooldownRepositoryTest < Minitest::Test
   end
 
   def test_versions_checksum_describes_the_info_file_that_is_served
-    @app = Paquette::GemServer.new(cooldown)
+    @app = Writable.gem_server(cooldown)
     assert_versions_checksums_match
   end
 
@@ -283,8 +283,8 @@ class CooldownRepositoryTest < Minitest::Test
   def test_a_version_coming_out_of_cooldown_is_not_hidden_behind_a_304
     # Two apps rather than @app reassigned: Rack::Test builds its session
     # around the first app it is handed and keeps it.
-    today = Paquette::GemServer.new(cooldown)
-    next_week = Paquette::GemServer.new(cooldown(at: NOW + WEEK))
+    today = Writable.gem_server(cooldown)
+    next_week = Writable.gem_server(cooldown(at: NOW + WEEK))
 
     {
       "/names" => "brand_new_gem",
@@ -378,7 +378,7 @@ class CooldownRepositoryTest < Minitest::Test
     repository = cooldown(published_at: ->(name:, version:) { NOW - (30 * DAY) })
     assert_nil repository.cache_validator
 
-    @app = Paquette::GemServer.new(repository)
+    @app = Writable.gem_server(repository)
     get "/versions"
     assert_equal 200, last_response.status
     assert_nil last_response.headers["ETag"]
@@ -460,7 +460,7 @@ class CooldownRepositoryTest < Minitest::Test
   def test_conditional_get_across_a_cooling_boundary
     now = NOW
     repository = Paquette::GemServer::CooldownRepository.new(@repository, interval: WEEK, clock: -> { now })
-    @app = Paquette::GemServer.new(repository)
+    @app = Writable.gem_server(repository)
 
     get "/info/aged_gem"
     etag = last_response.headers["ETag"]
@@ -549,7 +549,7 @@ class CooldownRepositoryTest < Minitest::Test
   # story: the names, the info files, what downloads, and the /versions
   # checksums Bundler re-fetches on.
   def assert_stack_is_consistent(repository, expect:)
-    @app = Paquette::GemServer.new(repository)
+    @app = Writable.gem_server(repository)
 
     get "/names"
     # Past the format's "---" marker, which /names carries like every other

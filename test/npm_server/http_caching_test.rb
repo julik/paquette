@@ -142,7 +142,7 @@ class NpmHttpCachingTest < Minitest::Test
   # ------------------------------------------------------------------
 
   def test_whoami_is_never_cacheable
-    response = get(plain_app, "/-/whoami")
+    response = get(plain_app, "/-/whoami", "HTTP_AUTHORIZATION" => "Bearer t")
 
     assert_equal 200, response[0]
     assert_equal "private, no-store", response[1]["Cache-Control"]
@@ -150,7 +150,7 @@ class NpmHttpCachingTest < Minitest::Test
   end
 
   def test_whoami_is_not_cacheable_under_gating_either
-    response = get(gated_app(gate_key: "alice") { |**| true }, "/-/whoami")
+    response = get(gated_app(gate_key: "alice") { |**| true }, "/-/whoami", "HTTP_AUTHORIZATION" => "Bearer t")
 
     assert_equal "private, no-store", response[1]["Cache-Control"]
     refute_includes response[1]["Cache-Control"], "public"
@@ -173,7 +173,7 @@ class NpmHttpCachingTest < Minitest::Test
     personalized = Paquette::NpmServer::Personalizer.new(gated,
       license_key: "L", personalization_key: "one", cache_dir: tmp_cache_dir)
 
-    assert_nil get(Paquette::NpmServer.new(personalized), "/#{PACKAGE}")[1]["ETag"]
+    assert_nil get(Writable.npm_server(personalized), "/#{PACKAGE}")[1]["ETag"]
   end
 
   def test_two_different_gates_produce_different_validators
@@ -435,7 +435,7 @@ class NpmHttpCachingTest < Minitest::Test
   def each_stack
     [
       ["plain", plain_app, true],
-      ["plain, shared_caching: false", Paquette::NpmServer.new(@repository, shared_caching: false), false],
+      ["plain, shared_caching: false", Writable.npm_server(@repository, shared_caching: false), false],
       ["gated with a key", gated_app(gate_key: "alice") { |**| true }, false],
       ["gated without a key", gated_app(gate_key: nil) { |**| true }, false],
       ["personalized", personalized_app(key: "one"), false],
@@ -482,11 +482,11 @@ class NpmHttpCachingTest < Minitest::Test
   end
 
   def plain_app
-    Paquette::NpmServer.new(@repository)
+    Writable.npm_server(@repository)
   end
 
   def gated_app(gate_key:, &entitler)
-    Paquette::NpmServer.new(
+    Writable.npm_server(
       Paquette::NpmServer::ReadGatedRepository.new(@repository, gate_key: gate_key, &entitler)
     )
   end
@@ -496,7 +496,7 @@ class NpmHttpCachingTest < Minitest::Test
       license_key: "LICENSE-#{key}", personalization_key: key,
       files: {"LICENSE.txt" => "Licensed to #{key}\n"}, cache_dir: tmp_cache_dir)
 
-    Paquette::NpmServer.new(personalized)
+    Writable.npm_server(personalized)
   end
 
   def gated_and_personalized_app
@@ -505,7 +505,7 @@ class NpmHttpCachingTest < Minitest::Test
       license_key: "L", personalization_key: "alice",
       files: {"LICENSE.txt" => "Licensed to alice\n"}, cache_dir: tmp_cache_dir)
 
-    Paquette::NpmServer.new(personalized)
+    Writable.npm_server(personalized)
   end
 
   def tmp_cache_dir

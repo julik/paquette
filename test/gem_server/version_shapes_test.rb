@@ -28,7 +28,7 @@ class GemServerVersionShapesTest < Minitest::Test
     @gems_dir = File.join(@tmpdir, "gems")
     FileUtils.mkdir_p(@gems_dir)
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    @app = Paquette::GemServer.new(@repository)
+    @app = Writable.gem_server(@repository)
   end
 
   def teardown

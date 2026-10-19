@@ -14,7 +14,7 @@ class NpmNamespaceMountTest < Minitest::Test
   def setup
     @packages_dir = Dir.mktmpdir("paquette_npm_namespace")
     repository = Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir)
-    npm_server = Paquette::NpmServer.new(repository)
+    npm_server = Writable.npm_server(repository)
 
     write_npm_package(@packages_dir, name: "widgets", version: "1.0.0")
     write_npm_package(@packages_dir, name: "@scope/thing", version: "2.0.0")

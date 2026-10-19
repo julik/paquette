@@ -7,7 +7,7 @@ class NpmRegressionTest < Minitest::Test
   def setup
     @dir = Dir.mktmpdir("paquette_npm_regression")
     @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@dir)
-    @app = Paquette::NpmServer.new(@repository)
+    @app = Writable.npm_server(@repository)
   end
 
   def teardown

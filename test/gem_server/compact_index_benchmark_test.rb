@@ -184,7 +184,7 @@ class CompactIndexBenchmarkTest < Minitest::Test
       files_for: ->(gem_name, _version, gem_path) { agreement_files(gem_name, gem_path) },
       cache_dir: @cache_dir)
 
-    Paquette::GemServer.new(personalized)
+    Writable.gem_server(personalized)
   end
 
   def get(path, env = {})

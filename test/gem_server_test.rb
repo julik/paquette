@@ -7,7 +7,7 @@ class GemServerTest < Minitest::Test
 
   def setup
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    @app = Paquette::GemServer.new(repo)
+    @app = Writable.gem_server(repo)
   end
 
   attr_reader :app
@@ -15,7 +15,7 @@ class GemServerTest < Minitest::Test
   # A writable gem server over `dir`, which is what every push test needs.
   def push_session(dir)
     repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-    Rack::Test::Session.new(Rack::MockSession.new(Paquette::GemServer.new(repo)))
+    Rack::Test::Session.new(Rack::MockSession.new(Writable.gem_server(repo)))
   end
 
   def test_root_endpoint
@@ -243,7 +243,7 @@ class GemServerTest < Minitest::Test
   def test_push_publishes_gem
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       binary = File.binread(MINUSCULE_FIXTURE)
@@ -263,7 +263,7 @@ class GemServerTest < Minitest::Test
   def test_push_rejects_duplicate
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       binary = File.binread(MINUSCULE_FIXTURE)
@@ -280,7 +280,7 @@ class GemServerTest < Minitest::Test
   def test_push_rejects_invalid_payload
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       session.post "/api/v1/gems", "not a real gem", "CONTENT_TYPE" => "application/octet-stream"
@@ -328,7 +328,7 @@ class GemServerTest < Minitest::Test
   def test_push_refuses_an_oversized_declared_length
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app = Paquette::GemServer.new(repo, max_push_bytes: 64)
+      app = Writable.gem_server(repo, max_push_bytes: 64)
       session = Rack::Test::Session.new(Rack::MockSession.new(app))
 
       session.post "/api/v1/gems", File.binread(MINUSCULE_FIXTURE), "CONTENT_TYPE" => "application/octet-stream"
@@ -344,7 +344,7 @@ class GemServerTest < Minitest::Test
   def test_push_refuses_a_body_larger_than_a_understated_content_length
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      server = Paquette::GemServer.new(repo, max_push_bytes: 64)
+      server = Writable.gem_server(repo, max_push_bytes: 64)
       binary = File.binread(MINUSCULE_FIXTURE)
 
       env = Rack::MockRequest.env_for("/api/v1/gems",
@@ -364,7 +364,7 @@ class GemServerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
       size = File.size(MINUSCULE_FIXTURE)
-      app = Paquette::GemServer.new(repo, max_push_bytes: size)
+      app = Writable.gem_server(repo, max_push_bytes: size)
       session = Rack::Test::Session.new(Rack::MockSession.new(app))
 
       session.post "/api/v1/gems", File.binread(MINUSCULE_FIXTURE), "CONTENT_TYPE" => "application/octet-stream"
@@ -395,7 +395,7 @@ class GemServerTest < Minitest::Test
   def test_yank_removes_gem_from_listings
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       binary = File.binread(MINUSCULE_FIXTURE)
@@ -422,7 +422,7 @@ class GemServerTest < Minitest::Test
   def test_yank_nonexistent_returns_404
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       session.delete "/api/v1/gems/yank", {gem_name: "nope", version: "1.0.0"}
@@ -433,7 +433,7 @@ class GemServerTest < Minitest::Test
   def test_yank_missing_params_returns_400
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       session.delete "/api/v1/gems/yank", {gem_name: "foo"}
@@ -444,7 +444,7 @@ class GemServerTest < Minitest::Test
   def test_push_refuses_tombed_gem
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       binary = File.binread(MINUSCULE_FIXTURE)
@@ -466,7 +466,7 @@ class GemServerTest < Minitest::Test
   def test_sidecar_cache_never_surfaces_in_any_listing_endpoint
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      app_with_writable_dir = Paquette::GemServer.new(repo)
+      app_with_writable_dir = Writable.gem_server(repo)
       session = Rack::Test::Session.new(Rack::MockSession.new(app_with_writable_dir))
 
       binary = File.binread(MINUSCULE_FIXTURE)
@@ -503,7 +503,7 @@ class GemServerTest < Minitest::Test
   def test_compact_info_returns_404_for_gated_gem
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }
-    gated_app = Paquette::GemServer.new(gated)
+    gated_app = Writable.gem_server(gated)
     session = Rack::Test::Session.new(Rack::MockSession.new(gated_app))
 
     session.get "/info/zip_kit"
@@ -513,7 +513,7 @@ class GemServerTest < Minitest::Test
   def test_gem_download_returns_404_for_gated_gem
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }
-    gated_app = Paquette::GemServer.new(gated)
+    gated_app = Writable.gem_server(gated)
     session = Rack::Test::Session.new(Rack::MockSession.new(gated_app))
 
     session.get "/gems/zip_kit-6.2.1.gem"
@@ -525,7 +525,7 @@ class GemServerTest < Minitest::Test
     Dir.mktmpdir do |dir|
       repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
       gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| true }
-      read_only_app = Paquette::GemServer.new(gated)
+      read_only_app = Writable.gem_server(gated)
       session = Rack::Test::Session.new(Rack::MockSession.new(read_only_app))
 
       session.post "/api/v1/gems", "anything", "CONTENT_TYPE" => "application/octet-stream"

@@ -15,16 +15,15 @@ gems_dir = File.join(packages_dir, "gems")
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 
-# Uncomment and configure to require token authentication.
-# The block receives the raw token and should return an identity object
-# (stored in env["paquette.identity"]) or nil/false to reject.
-# use Paquette::TokenAuthorization, "Paquette" do |token|
-#   AccessToken.find_by(secret: token)&.owner
-# end
+# Open lets anyone push, as long as they send a one-time password - any will
+# do (`gem push --otp 000000`, `npm publish --otp 000000`). Swap it for an
+# authenticator of your own to require a token, and a real code on every
+# push. See the README's Authentication section.
+authenticator = Paquette::Authentication::Open.new
 
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
-  router.map "gem", to: Paquette::GemServer.new(gems_repo)
-  router.map "npm", to: Paquette::NpmServer.new(npm_repo)
+  router.map "gem", to: Paquette::GemServer.new(gems_repo, authenticator: authenticator)
+  router.map "npm", to: Paquette::NpmServer.new(npm_repo, authenticator: authenticator)
   router.fallback to: ->(*) { [404, {}, ["Need subdomain gem/npm"]] }
 end
 

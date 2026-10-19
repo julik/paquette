@@ -1,8 +1,14 @@
 ## Unreleased
 
-- Take a Basic auth username as the token whatever the password is in `TokenAuthorization`. Only an empty password or `x-oauth-token` used to count, so `TOKEN:x-oauth-basic` - the form GitHub documents - came through without a token
-- Take the token from the Basic auth password when the username is empty, `x-oauth-basic`, `x-access-token` or `x-oauth-token`
-- Accept a bare `Authorization: <token>` with no scheme in `TokenAuthorization`, which is how `gem push`, `gem yank` and `gem owner` send a stored API key
+- Take an `authenticator:` on `GemServer` and `NpmServer`: any object answering `read_permitted?(auth_token:)`, `write_permitted?(auth_token:)` and `check_otp!(auth_token:, otp_code:)`. Every request asks the first, and a refusal is a 401; every write - push, yank, publish, unpublish, dist-tag - also asks the second, a 403 for a token and a 401 without one, and then needs a one-time password. A write without a code gets the prompt `gem` and `npm` know, without asking the authenticator; one with a code goes to `check_otp!`, which raises `Paquette::OtpRejected` to refuse it. All of it happens before the handler, so a refused push is never read
+- Let everyone read and refuse every write on a server built without an authenticator (breaking). `Paquette::Authentication::Open` lets anyone read and write and takes any code - the dev setup, and what `config.ru` and `bin/dev` now run
+- Add `Paquette::AuthToken.from_env(env)`, the token an authenticator gets, read the way `TokenAuthorization` read it: Bearer, the bare key `gem push` sends, and Basic with the token as the username (any password) or the password (behind an empty or placeholder username). A lone `Authorization: Bearer` or `Basic` used to be taken as the token `"Bearer"`, and `Bearer ` as an empty one; neither is a token now, and a header carrying none is a 401 rather than an anonymous request. A blank header is still anonymous
+- Add `Paquette::Totp.verify!(secret, code, drift: 30)`, which raises `Paquette::OtpRejected` for a code that is not good, for an authenticator's `check_otp!`
+- Leave the outcome of authentication in `env["paquette.authentication"]` for the application's own log line
+- Answer `npm whoami` with `paquette` for any accepted token and a 401 without one (breaking). It used to read a username off `env["paquette.identity"]`
+- Keep the request on a per-request copy of `GemServer`, as `NpmServer` already did, so one gem server can serve concurrent requests
+- Remove `Paquette::TokenAuthorization`, `Paquette::OtpGate`, `GemServer.otp_gate`, `NpmServer.otp_gate` and the two `OtpDialect` modules (breaking). The middleware's block becomes `read_permitted?`, and the gate's secret goes into `check_otp!` through `Paquette::Totp`
+- Add `Routes::Route#write?`
 
 ## 0.3.1
 

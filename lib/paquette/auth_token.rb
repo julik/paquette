@@ -45,6 +45,11 @@ module Paquette::AuthToken
     auth.provided? && auth.parts.any? { |part| !part.empty? }
   end
 
+  # Always valid UTF-8: a token in any other bytes is no token, so nothing an
+  # authenticator does with it - a regexp, a lookup, a log line - can raise on
+  # it. Puma hands headers over as binary, and a Basic payload decodes to
+  # whatever bytes the client encoded.
+  #
   # @param env [Hash] the Rack env
   # @return [String, nil] the token, or nil when there is none to be had
   def self.from_env(env)
@@ -61,7 +66,10 @@ module Paquette::AuthToken
       when "basic" then from_basic(auth.params)
       end
     end
-    token unless token.nil? || token.empty?
+    return nil if token.nil? || token.empty?
+
+    token = token.dup.force_encoding(Encoding::UTF_8)
+    token if token.valid_encoding?
   rescue ArgumentError # invalid UTF-8 in the header refuses `downcase`
     nil
   end

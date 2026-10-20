@@ -27,6 +27,41 @@ class NpmReadGatedRepositoryTest < Minitest::Test
     gated { |name:, version: nil| false }
   end
 
+  # The summary fields come from one version, and must be one the caller may
+  # read, or a lapsed licensee reads the README of a release they did not get
+  def test_the_package_s_summary_is_the_newest_entitled_version_s
+    Dir.mktmpdir("paquette_npm_summary") do |dir|
+      write_npm_package(dir, name: "helpers", version: "1.0.0", description: "One",
+        homepage: "https://one.example", files: {"README.md" => "# Helpers 1.0.0\n"})
+      write_npm_package(dir, name: "helpers", version: "1.1.0", description: "Withheld",
+        homepage: "https://withheld.example", keywords: ["withheld"], files: {"README.md" => "# Helpers 1.1.0, withheld\n"})
+      repository = Paquette::NpmServer::DirectoryNpmRepository.new(dir)
+      lapsed = Paquette::NpmServer::ReadGatedRepository.new(repository) { |name:, version: nil| version.nil? || version == "1.0.0" }
+
+      metadata = lapsed.package_metadata("helpers")
+
+      assert_equal ["1.0.0"], metadata["versions"].keys
+      assert_equal "# Helpers 1.0.0\n", metadata["readme"]
+      assert_equal "One", metadata["description"]
+      assert_equal "https://one.example", metadata["homepage"]
+      refute_includes JSON.dump(metadata), "ithheld"
+    end
+  end
+
+  # A repository that predates package_summary gets none at all
+  def test_a_repository_without_a_summary_leaks_none
+    inner = Object.new
+    def inner.package_metadata(_) = {"versions" => {"1.0.0" => {}, "2.0.0" => {}}, "time" => {}, "readme" => "2.0.0 secrets", "description" => "2.0.0"}
+    def inner.versions_for_package(_) = ["1.0.0", "2.0.0"]
+    def inner.dist_tags(_) = {"latest" => "2.0.0"}
+    gate = Paquette::NpmServer::ReadGatedRepository.new(inner) { |name:, version: nil| version.nil? || version == "1.0.0" }
+
+    metadata = gate.package_metadata("helpers")
+
+    assert_nil metadata["readme"]
+    assert_nil metadata["description"]
+  end
+
   def test_package_names_are_filtered
     repo = gated { |name:, version: nil| name == "allowed" }
     assert_equal ["allowed"], repo.package_names

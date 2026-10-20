@@ -20,9 +20,9 @@ module Paquette
   end
 
   # Checks a one-time password against a base32 TOTP secret, for an
-  # authenticator's `check_otp!`. Replay protection and lockout after wrong
-  # guesses need state Paquette has nowhere to keep, so those stay with the
-  # application.
+  # authenticator's `check_otp!`. Paquette has nowhere to keep state, so the
+  # application keeps what refuses a replay - the time step `verify!` returns,
+  # handed back as `after:` next time - and throttles wrong guesses.
   module Totp
     DEFAULT_DRIFT = T.let(30, T.untyped)
 
@@ -31,8 +31,19 @@ module Paquette
     # _@param_ `code`
     # 
     # _@param_ `drift` — allowed clock drift in seconds, both directions
-    sig { params(secret: String, code: String, drift: Integer).void }
-    def self.verify!(secret, code, drift: DEFAULT_DRIFT); end
+    # 
+    # _@param_ `after` — the time step of the last code accepted for this secret: that code, and any older one, is refused
+    # 
+    # _@return_ — the time step the code belongs to, to pass as `after:`
+    sig do
+      params(
+        secret: String,
+        code: String,
+        drift: Integer,
+        after: T.nilable(Integer)
+      ).returns(Integer)
+    end
+    def self.verify!(secret, code, drift: DEFAULT_DRIFT, after: nil); end
   end
 
   # Reading and writing of wheels - zip archives - for the PyPI side, the
@@ -656,6 +667,11 @@ module Paquette
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Boolean) }
     def self.provided?(env); end
 
+    # Always valid UTF-8: a token in any other bytes is no token, so nothing an
+    # authenticator does with it - a regexp, a lookup, a log line - can raise on
+    # it. Puma hands headers over as binary, and a Basic payload decodes to
+    # whatever bytes the client encoded.
+    # 
     # _@param_ `env` — the Rack env
     # 
     # _@return_ — the token, or nil when there is none to be had
@@ -3086,6 +3102,7 @@ module Paquette
 
     # Abstract base class for NPM package repositories; mirrors GemRepository.
     class NpmRepository
+      SUMMARY_FIELDS = T.let(%w[description keywords license author maintainers repository bugs homepage readme].freeze, T.untyped)
       SEGMENT = T.let(/\A[a-z0-9][a-z0-9._-]*\z/, T.untyped)
       VERSION = T.let(/\A[0-9][0-9A-Za-z.+-]{0,63}\z/, T.untyped)
 
@@ -3136,6 +3153,14 @@ module Paquette
       # _@return_ — the packument
       sig { params(package_name: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
       def package_metadata(package_name); end
+
+      # Those fields, as `version` describes them.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      sig { params(package_name: String, version: T.nilable(String)).returns(T::Hash[String, Object]) }
+      def package_summary(package_name, version); end
 
       # _@param_ `package_name`
       sig { params(package_name: String).returns(T::Hash[String, String]) }
@@ -3317,6 +3342,15 @@ module Paquette
       sig { params(package_name: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
       def package_metadata(package_name); end
 
+      # A repository predating package_summary gets no summary at all rather than
+      # the newest release's.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      sig { params(package_name: String, version: String).returns(T::Hash[String, Object]) }
+      def summary_of(package_name, version); end
+
       # Recomputed so created/modified do not leak withheld publication dates.
       # 
       # _@param_ `times`
@@ -3340,6 +3374,7 @@ module Paquette
     #   packages/npm/@acme/widgets/widgets-1.0.0.tgz
     class DirectoryNpmRepository < Paquette::NpmServer::NpmRepository
       DIST_TAGS_FILE = T.let("dist-tags.json", T.untyped)
+      SUMMARY_FIELDS = T.let(%w[description keywords license author maintainers repository bugs homepage readme].freeze, T.untyped)
       SEGMENT = T.let(/\A[a-z0-9][a-z0-9._-]*\z/, T.untyped)
       VERSION = T.let(/\A[0-9][0-9A-Za-z.+-]{0,63}\z/, T.untyped)
 
@@ -3426,6 +3461,14 @@ module Paquette
       # _@param_ `package_name`
       sig { params(package_name: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
       def build_metadata(package_name); end
+
+      # The base summary, plus the README out of that version's tarball.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      sig { params(package_name: String, version: T.nilable(String)).returns(T::Hash[String, Object]) }
+      def package_summary(package_name, version); end
 
       # Hashes are computed from the file, never taken from the publisher.
       # 
@@ -5049,19 +5092,25 @@ module Paquette
   #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # Entries are keyed by the URL, the credential, `Accept` - the PyPI index answers
-  # one URL in HTML or JSON - and `Accept-Encoding`, which only
-  # matters with a compressor inside the cache. The key is not what keeps two
-  # callers apart - the ETag is, since the stored one has to be current for the
-  # caller asking - but it keeps each token from overwriting another's entry, and
-  # a gate_key that wrongly names two customers alike from serving one's body to
-  # the other. Nothing is evicted: there are as many entries as credentials times
-  # index URLs, and the directory can be emptied at any time.
+  # Entries are keyed by the URL, the credential, and whether `Accept` asks for
+  # JSON - the PyPI index answers one URL in HTML or JSON. The key is not what
+  # keeps two callers apart - the ETag is, since the stored one has to be current
+  # for the caller asking - but it keeps each token from overwriting another's
+  # entry, and a gate_key that wrongly names two customers alike from serving one's
+  # body to the other.
+  # 
+  # Only requests with credentials and without a query string are stored, and
+  # the client's own headers go into the key only as that one bit. So a stranger
+  # puts nothing on disk, and a credential at most two entries per index URL it
+  # may read: an anonymous response is the same for everybody and a 304 away
+  # anyway, and a query string or a raw header is anybody's to vary. Nothing is
+  # evicted beyond that, and the directory can be emptied at any time. Keep a
+  # compressor such as Rack::Deflater outside the cache, since the encoding is not
+  # in the key.
   class ResponseCache
     include Paquette::RegexpTimeout
     DEFAULT_MAX_BODY_BYTES = T.let(8 * 1024 * 1024, T.untyped)
     OUTCOME_KEY = T.let("paquette.response_cache", T.untyped)
-    KEYED_HEADERS = T.let(%w[HTTP_AUTHORIZATION HTTP_ACCEPT HTTP_ACCEPT_ENCODING].freeze, T.untyped)
     UNSTORED_HEADERS = T.let(%w[connection keep-alive transfer-encoding date age content-length].freeze, T.untyped)
 
     # _@param_ `app` — the Rack app to cache
@@ -5077,6 +5126,13 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def call(env); end
+
+    # A Range is a slice of a body the server builds anyway, and Bundler sends one
+    # only alongside an If-None-Match the server can answer by itself.
+    # 
+    # _@param_ `env`
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Boolean) }
+    def cacheable_request?(env); end
 
     # The env is the caller's own and is handed on, not copied: an application
     # that leaves notes in it for its log line has to find them afterwards.
@@ -5133,8 +5189,9 @@ module Paquette
     sig { params(env: T::Hash[T.untyped, T.untyped], outcome: String).returns(T::Array[T.untyped]) }
     def record(env, outcome); end
 
-    # The URL whole, host and scheme included: npm package documents carry
-    # absolute tarball URLs built from them.
+    # The URL with its host and scheme: npm package documents carry absolute
+    # tarball URLs built from them. A request with a query string is not stored,
+    # so there is none to leave out.
     # 
     # _@param_ `env`
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(String) }

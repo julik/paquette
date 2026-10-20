@@ -20,9 +20,9 @@ module Paquette
   end
 
   # Checks a one-time password against a base32 TOTP secret, for an
-  # authenticator's `check_otp!`. Replay protection and lockout after wrong
-  # guesses need state Paquette has nowhere to keep, so those stay with the
-  # application.
+  # authenticator's `check_otp!`. Paquette has nowhere to keep state, so the
+  # application keeps what refuses a replay - the time step `verify!` returns,
+  # handed back as `after:` next time - and throttles wrong guesses.
   module Totp
     DEFAULT_DRIFT: Integer
 
@@ -31,7 +31,16 @@ module Paquette
     # _@param_ `code`
     # 
     # _@param_ `drift` — allowed clock drift in seconds, both directions
-    def self.verify!: (String secret, String code, ?drift: Integer) -> void
+    # 
+    # _@param_ `after` — the time step of the last code accepted for this secret: that code, and any older one, is refused
+    # 
+    # _@return_ — the time step the code belongs to, to pass as `after:`
+    def self.verify!: (
+                        String secret,
+                        String code,
+                        ?drift: Integer,
+                        ?after: Integer?
+                      ) -> Integer
   end
 
   # Reading and writing of wheels - zip archives - for the PyPI side, the
@@ -576,6 +585,11 @@ module Paquette
     # _@param_ `env` — the Rack env
     def self.provided?: (::Hash[untyped, untyped] env) -> bool
 
+    # Always valid UTF-8: a token in any other bytes is no token, so nothing an
+    # authenticator does with it - a regexp, a lookup, a log line - can raise on
+    # it. Puma hands headers over as binary, and a Basic payload decodes to
+    # whatever bytes the client encoded.
+    # 
     # _@param_ `env` — the Rack env
     # 
     # _@return_ — the token, or nil when there is none to be had
@@ -2702,6 +2716,7 @@ module Paquette
 
     # Abstract base class for NPM package repositories; mirrors GemRepository.
     class NpmRepository
+      SUMMARY_FIELDS: ::Array[String]
       SEGMENT: Regexp
       VERSION: Regexp
 
@@ -2743,6 +2758,13 @@ module Paquette
       # 
       # _@return_ — the packument
       def package_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # Those fields, as `version` describes them.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_summary: (String package_name, String? version) -> ::Hash[String, Object]
 
       # _@param_ `package_name`
       def dist_tags: (String package_name) -> ::Hash[String, String]
@@ -2892,6 +2914,14 @@ module Paquette
       # _@param_ `package_name`
       def package_metadata: (String package_name) -> ::Hash[untyped, untyped]?
 
+      # A repository predating package_summary gets no summary at all rather than
+      # the newest release's.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def summary_of: (String package_name, String version) -> ::Hash[String, Object]
+
       # Recomputed so created/modified do not leak withheld publication dates.
       # 
       # _@param_ `times`
@@ -2913,6 +2943,7 @@ module Paquette
     #   packages/npm/@acme/widgets/widgets-1.0.0.tgz
     class DirectoryNpmRepository < Paquette::NpmServer::NpmRepository
       DIST_TAGS_FILE: String
+      SUMMARY_FIELDS: ::Array[String]
       SEGMENT: Regexp
       VERSION: Regexp
 
@@ -2984,6 +3015,13 @@ module Paquette
 
       # _@param_ `package_name`
       def build_metadata: (String package_name) -> ::Hash[untyped, untyped]?
+
+      # The base summary, plus the README out of that version's tarball.
+      # 
+      # _@param_ `package_name`
+      # 
+      # _@param_ `version`
+      def package_summary: (String package_name, String? version) -> ::Hash[String, Object]
 
       # Hashes are computed from the file, never taken from the publisher.
       # 
@@ -4387,19 +4425,25 @@ module Paquette
   #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # Entries are keyed by the URL, the credential, `Accept` - the PyPI index answers
-  # one URL in HTML or JSON - and `Accept-Encoding`, which only
-  # matters with a compressor inside the cache. The key is not what keeps two
-  # callers apart - the ETag is, since the stored one has to be current for the
-  # caller asking - but it keeps each token from overwriting another's entry, and
-  # a gate_key that wrongly names two customers alike from serving one's body to
-  # the other. Nothing is evicted: there are as many entries as credentials times
-  # index URLs, and the directory can be emptied at any time.
+  # Entries are keyed by the URL, the credential, and whether `Accept` asks for
+  # JSON - the PyPI index answers one URL in HTML or JSON. The key is not what
+  # keeps two callers apart - the ETag is, since the stored one has to be current
+  # for the caller asking - but it keeps each token from overwriting another's
+  # entry, and a gate_key that wrongly names two customers alike from serving one's
+  # body to the other.
+  # 
+  # Only requests with credentials and without a query string are stored, and
+  # the client's own headers go into the key only as that one bit. So a stranger
+  # puts nothing on disk, and a credential at most two entries per index URL it
+  # may read: an anonymous response is the same for everybody and a 304 away
+  # anyway, and a query string or a raw header is anybody's to vary. Nothing is
+  # evicted beyond that, and the directory can be emptied at any time. Keep a
+  # compressor such as Rack::Deflater outside the cache, since the encoding is not
+  # in the key.
   class ResponseCache
     include Paquette::RegexpTimeout
     DEFAULT_MAX_BODY_BYTES: Integer
     OUTCOME_KEY: String
-    KEYED_HEADERS: ::Array[String]
     UNSTORED_HEADERS: ::Array[String]
 
     # _@param_ `app` — the Rack app to cache
@@ -4413,6 +4457,12 @@ module Paquette
     # 
     # _@return_ — a Rack response triplet
     def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # A Range is a slice of a body the server builds anyway, and Bundler sends one
+    # only alongside an If-None-Match the server can answer by itself.
+    # 
+    # _@param_ `env`
+    def cacheable_request?: (::Hash[untyped, untyped] env) -> bool
 
     # The env is the caller's own and is handed on, not copied: an application
     # that leaves notes in it for its log line has to find them afterwards.
@@ -4463,8 +4513,9 @@ module Paquette
     # _@return_ — a Rack response triplet
     def record: (::Hash[untyped, untyped] env, String outcome) -> ::Array[untyped]
 
-    # The URL whole, host and scheme included: npm package documents carry
-    # absolute tarball URLs built from them.
+    # The URL with its host and scheme: npm package documents carry absolute
+    # tarball URLs built from them. A request with a query string is not stored,
+    # so there is none to leave out.
     # 
     # _@param_ `env`
     def key_for: (::Hash[untyped, untyped] env) -> String

@@ -49,6 +49,7 @@ module Paquette
   autoload :ResponseCache, "#{__dir__}/paquette/response_cache"
   autoload :Routes, "#{__dir__}/paquette/routes"
   autoload :SafeUrl, "#{__dir__}/paquette/safe_url"
+  autoload :Served, "#{__dir__}/paquette/served"
   autoload :SubdomainRouter, "#{__dir__}/paquette/subdomain_router"
   autoload :Tarball, "#{__dir__}/paquette/tarball"
   autoload :Totp, "#{__dir__}/paquette/totp"

@@ -304,6 +304,7 @@ class Paquette::GemServer
     Measurometer.instrument("paquette.gem_server.call") do
       request = Rack::Request.new(env)
       route = @@routes.match(request)
+      Paquette::Served.route(env, route) if route
       refusal = authentication_refusal(route, env)
       next refusal if refusal
       next not_found("Not found") unless route
@@ -311,10 +312,25 @@ class Paquette::GemServer
       # Shared across Rack threads: the request lives on a per-request clone.
       handler = clone
       handler.instance_variable_set(:@request, request)
-      @@routes.perform_action(route, handler, request)
+      response = @@routes.perform_action(route, handler, request)
+      Paquette::Served.package(env, handler.send(:served_package, route.params(request)), response[0])
+      response
     end
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
+  end
+
+  # The gem a request was about, out of the route's own params - or what a
+  # write said it wrote, since a push names its gem only in the body.
+  #
+  # @param params [Hash{String => Object}]
+  # @return [Array(String, String), Array(String), nil]
+  def served_package(params)
+    return @written if @written
+    return [params["gem_name"]] if params["gem_name"]
+    return Paquette::GemServer.split_gem_filename(params["gem_filename"]) if params["gem_filename"]
+
+    Paquette::GemServer.split_gem_spec_name(params["gem_spec_name"]) if params["gem_spec_name"]
   end
 
   # `gem push` sends the code in the `OTP` header.
@@ -447,6 +463,7 @@ class Paquette::GemServer
     spec = Measurometer.instrument("paquette.gem_server.read_push_body") do
       @repository.add_gem(body)
     end
+    @written = [spec.name, spec.version.to_s]
     # full_name rather than name-version: it is the platform build that was
     # registered.
     text_ok("Successfully registered gem: #{spec.full_name}")
@@ -491,6 +508,7 @@ class Paquette::GemServer
     gem_name, version_column = SpecValidator.validate_reference!(gem_name, version, platform)
 
     @repository.yank_gem(gem_name, version_column)
+    @written = [gem_name, version_column]
     text_ok("Successfully yanked gem: #{gem_name}-#{version_column}")
   rescue ReadonlyRepository::WriteNotAllowed => e
     [403, {"Content-Type" => "text/plain"}, [e.message]]

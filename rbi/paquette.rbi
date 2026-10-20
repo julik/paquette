@@ -222,6 +222,41 @@ module Paquette
     end
   end
 
+  # What a request turned out to be about, left in the env for the application's
+  # log line and its monitoring:
+  # 
+  #   env["paquette.served"] # => {route: "GET /info/:gem_name", package: "zip_kit", version: nil}
+  # 
+  # The route is there for every request a route matched, refused ones too. The
+  # package and version only when the server actually served or wrote that
+  # package - a 2xx, or a 304 on a validator the client held - so a scanner
+  # probing for names it made up cannot turn each probe into a new tag value.
+  module Served
+    KEY = T.let("paquette.served", T.untyped)
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@param_ `route`
+    sig { params(env: T::Hash[T.untyped, T.untyped], route: Paquette::Routes::Route).void }
+    def self.route(env, route); end
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@param_ `package` — name and version
+    # 
+    # _@param_ `status` — the response status
+    sig { params(env: T::Hash[T.untyped, T.untyped], package: T.nilable(T.any([String, String], [String])), status: Integer).void }
+    def self.package(env, package, status); end
+
+    # `If-None-Match: *` matches whatever is asked for, existing or not
+    # 
+    # _@param_ `env`
+    # 
+    # _@param_ `status`
+    sig { params(env: T::Hash[T.untyped, T.untyped], status: Integer).returns(T::Boolean) }
+    def self.served?(env, status); end
+  end
+
   # Reading and writing of npm tarballs, hand-rolled rather than built on
   # Gem::Package's TarWriter/TarReader: a repack must come out byte-identical
   # (npm checks dist.integrity), and TarWriter can neither take the entry
@@ -567,6 +602,13 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def dispatch(env); end
+
+    # The gem a request was about, out of the route's own params - or what a
+    # write said it wrote, since a push names its gem only in the body.
+    # 
+    # _@param_ `params`
+    sig { params(params: T::Hash[String, Object]).returns(T.nilable(T.any([String, String], [String]))) }
+    def served_package(params); end
 
     # `gem push` sends the code in the `OTP` header.
     # 
@@ -2261,6 +2303,13 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def dispatch(env); end
+
+    # The package a request was about, out of the route's own params - the
+    # version too when a tarball names one - or what a publish wrote.
+    # 
+    # _@param_ `params`
+    sig { params(params: T::Hash[String, Object]).returns(T.nilable(T.any([String, String], [String]))) }
+    def served_package(params); end
 
     # _@param_ `path`
     sig { params(path: String).returns(String) }

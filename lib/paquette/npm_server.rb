@@ -171,7 +171,8 @@ class Paquette::NpmServer
 
       request = Rack::Request.new(request_env)
       route = @@routes.match(request)
-      # The outcome goes into the env the application holds, not the dup
+      # Outcomes go into the env the application holds, not the dup
+      Paquette::Served.route(env, route) if route
       refusal = authentication_refusal(route, env)
       next refusal if refusal
       next not_found("Not Found") unless route
@@ -179,12 +180,29 @@ class Paquette::NpmServer
       # Shared across Rack threads: the request lives on a per-request clone.
       handler = clone
       handler.instance_variable_set(:@request, request)
-      @@routes.perform_action(route, handler, request)
+      response = @@routes.perform_action(route, handler, request)
+      Paquette::Served.package(env, handler.send(:served_package, route.params(request)), response[0])
+      response
     end
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
   rescue PayloadTooLarge => e
     payload_too_large(e.message)
+  end
+
+  # The package a request was about, out of the route's own params - the
+  # version too when a tarball names one - or what a publish wrote.
+  #
+  # @param params [Hash{String => Object}]
+  # @return [Array(String, String), Array(String), nil]
+  def served_package(params)
+    return @written if @written
+
+    name = params["package_name"]
+    return nil unless name
+
+    version = params["tarball_name"] && version_from_tarball_name(name, params["tarball_name"])
+    version ? [name, version] : [name]
   end
 
   # @param path [String]
@@ -348,6 +366,7 @@ class Paquette::NpmServer
     info = Measurometer.instrument("paquette.npm_server.publish") do
       @repository.add_package(tarball, dist_tags: document["dist-tags"] || {})
     end
+    @written = [info["name"], info["version"]]
     json_ok({success: true, id: info["name"], rev: revision_for(info["name"])}, status: 201)
   rescue ReadGatedRepository::WriteNotAllowed => e
     forbidden(e.message)

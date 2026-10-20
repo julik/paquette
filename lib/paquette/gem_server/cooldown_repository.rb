@@ -3,10 +3,9 @@ require "measurometer"
 
 # Wraps a gem repository and hides every version that was published less
 # than `interval` seconds ago, giving a publisher a window to yank a
-# compromised or broken release before anybody can pick it up. Read-only:
-# a push into a delayed view would land and then immediately vanish from
-# the view that accepted it.
-class Paquette::GemServer::CooldownRepository < Paquette::GemServer::ReadonlyRepository
+# compromised or broken release before anybody can pick it up. A push
+# through it lands, and stays out of this view until it has cooled.
+class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # @param repository [Paquette::GemServer::GemRepository] the repository
   #   to wrap
   # @param interval [Integer, #to_i] the cooldown, in seconds

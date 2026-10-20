@@ -317,18 +317,6 @@ class NpmServerTest < Minitest::Test
     assert_match(/\A2-/, JSON.parse(last_response.body)["_rev"])
   end
 
-  def test_writes_are_refused_through_a_read_gated_repository
-    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| true }
-    @app = Writable.npm_server(gated)
-
-    put "/new-package", npm_publish_body(name: "new-package", version: "1.0.0"),
-      {"CONTENT_TYPE" => "application/json"}
-    assert_equal 403, last_response.status
-
-    delete "/test-package/-rev/1-abc"
-    assert_equal 403, last_response.status
-  end
-
   def test_a_directory_path_still_builds_a_server
     @app = Writable.npm_server(@test_packages_dir)
 

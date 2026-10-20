@@ -2,11 +2,8 @@ require "delegate"
 require "measurometer"
 
 # Filters every read through an entitler block; non-entitled packages do
-# not exist. Writes always raise: a gated caller may not mutate the corpus.
+# not exist. Writes pass through - see the gem-side twin.
 class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
-  # Raised by every write on a gated repository.
-  class WriteNotAllowed < StandardError; end
-
   # @param repository [Paquette::NpmServer::NpmRepository] the repository
   #   to wrap
   # @param gate_key [String, nil] names this gate for HTTP caching — see
@@ -158,24 +155,6 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   # @return [Object] truthy when entitled
   def entitled?(**criteria)
     Measurometer.instrument("paquette.npm_read_gate.entitled") { @entitler.call(**criteria) }
-  end
-
-  # @raise [WriteNotAllowed] always
-  # @return [void]
-  def add_package(*, **)
-    raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
-  end
-
-  # @raise [WriteNotAllowed] always
-  # @return [void]
-  def yank_package(*, **)
-    raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
-  end
-
-  # @raise [WriteNotAllowed] always
-  # @return [void]
-  def write_dist_tag(*, **)
-    raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
   end
 end
 

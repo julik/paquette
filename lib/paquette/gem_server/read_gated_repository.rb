@@ -3,9 +3,9 @@ require "measurometer"
 
 # Wraps a gem repository and filters every read through an entitler block:
 # non-entitled gems disappear from listings, return nil paths, and report
-# as non-existent. Writes always raise — gating reads blocks writes, full
-# stop; a more nuanced policy belongs in its own wrapper.
-class Paquette::GemServer::ReadGatedRepository < Paquette::GemServer::ReadonlyRepository
+# as non-existent. Writes pass through - who may write is the authenticator's
+# to say, and the server asks it before any repository is touched.
+class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
   # @param repository [Paquette::GemServer::GemRepository] the repository
   #   to wrap
   # @param gate_key [String, nil] what this gate is called, for HTTP

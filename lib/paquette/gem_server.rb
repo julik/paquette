@@ -16,7 +16,6 @@ class Paquette::GemServer
   autoload :GemRepository, "#{__dir__}/gem_server/gem_repository"
   autoload :Personalizer, "#{__dir__}/gem_server/personalizer"
   autoload :ReadGatedRepository, "#{__dir__}/gem_server/read_gated_repository"
-  autoload :ReadonlyRepository, "#{__dir__}/gem_server/readonly_repository"
   autoload :SpecValidator, "#{__dir__}/gem_server/spec_validator"
 
   prepend Paquette::RegexpTimeout
@@ -450,8 +449,6 @@ class Paquette::GemServer
     # full_name rather than name-version: it is the platform build that was
     # registered.
     text_ok("Successfully registered gem: #{spec.full_name}")
-  rescue ReadonlyRepository::WriteNotAllowed => e
-    [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemYanked => e
     [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemAlreadyExists => e
@@ -492,8 +489,6 @@ class Paquette::GemServer
 
     @repository.yank_gem(gem_name, version_column)
     text_ok("Successfully yanked gem: #{gem_name}-#{version_column}")
-  rescue ReadonlyRepository::WriteNotAllowed => e
-    [403, {"Content-Type" => "text/plain"}, [e.message]]
   rescue DirectoryGemRepository::GemNotFound => e
     not_found(e.message)
   rescue DirectoryGemRepository::InvalidGem => e

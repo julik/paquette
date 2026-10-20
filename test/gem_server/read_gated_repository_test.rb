@@ -200,19 +200,18 @@ class ReadGatedRepositoryTest < Minitest::Test
     assert_equal "6.2.0", info.first.split(" ")[0]
   end
 
-  def test_add_gem_raises_write_not_allowed
-    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository) { |**| true }
+  # Who may write is the authenticator's to say, not the gate's
+  def test_writes_pass_through
+    Dir.mktmpdir do |dir|
+      writable = Paquette::GemServer::DirectoryGemRepository.new(dir)
+      repository = Paquette::GemServer::ReadGatedRepository.new(writable) { |**| false }
 
-    assert_raises(Paquette::GemServer::ReadGatedRepository::WriteNotAllowed) do
-      repository.add_gem("anything")
-    end
-  end
+      repository.add_gem(File.binread(File.join(FIXTURE_GEMS_DIR, "minuscule_test", "minuscule_test-0.1.0.gem")))
+      assert_equal ["minuscule_test"], writable.gem_names
+      assert_empty repository.gem_names, "the gate still hides what it was not asked to show"
 
-  def test_yank_gem_raises_write_not_allowed
-    repository = Paquette::GemServer::ReadGatedRepository.new(@directory_repository) { |**| true }
-
-    assert_raises(Paquette::GemServer::ReadGatedRepository::WriteNotAllowed) do
-      repository.yank_gem("zip_kit", "6.2.0")
+      repository.yank_gem("minuscule_test", "0.1.0")
+      assert_empty writable.versions_for_gem("minuscule_test")
     end
   end
 

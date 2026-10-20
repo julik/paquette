@@ -195,11 +195,11 @@ class CooldownRepositoryTest < Minitest::Test
     assert_nil @repository.published_at("no_such_gem", "1.0.0")
   end
 
-  def test_writes_are_refused
+  def test_writes_pass_through
     repository = cooldown
 
-    assert_raises(Paquette::GemServer::ReadonlyRepository::WriteNotAllowed) { repository.add_gem("anything") }
-    assert_raises(Paquette::GemServer::ReadonlyRepository::WriteNotAllowed) { repository.yank_gem("aged_gem", "1.0.0") }
+    repository.yank_gem("aged_gem", "1.0.0")
+    refute_includes @repository.versions_for_gem("aged_gem"), "1.0.0"
   end
 
   def test_unfiltered_reads_still_delegate

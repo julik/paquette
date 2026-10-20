@@ -349,8 +349,6 @@ class Paquette::NpmServer
       @repository.add_package(tarball, dist_tags: document["dist-tags"] || {})
     end
     json_ok({success: true, id: info["name"], rev: revision_for(info["name"])}, status: 201)
-  rescue ReadGatedRepository::WriteNotAllowed => e
-    forbidden(e.message)
   rescue DirectoryNpmRepository::PackageYanked => e
     forbidden(e.message)
   rescue DirectoryNpmRepository::PackageAlreadyExists => e
@@ -376,8 +374,6 @@ class Paquette::NpmServer
     end
 
     json_ok({success: true, id: package_name, rev: revision_for(package_name)})
-  rescue ReadGatedRepository::WriteNotAllowed => e
-    forbidden(e.message)
   rescue DirectoryNpmRepository::PackageNotFound => e
     not_found(e.message)
   end
@@ -392,8 +388,6 @@ class Paquette::NpmServer
       versions.each { |version| @repository.yank_package(package_name, version) }
     end
     json_ok({success: true, id: package_name})
-  rescue ReadGatedRepository::WriteNotAllowed => e
-    forbidden(e.message)
   rescue DirectoryNpmRepository::PackageNotFound => e
     not_found(e.message)
   end
@@ -409,8 +403,6 @@ class Paquette::NpmServer
 
     @repository.yank_package(package_name, version) if @repository.package_exists?(package_name, version)
     json_ok({success: true, id: package_name})
-  rescue ReadGatedRepository::WriteNotAllowed => e
-    forbidden(e.message)
   rescue DirectoryNpmRepository::PackageNotFound => e
     not_found(e.message)
   end
@@ -427,8 +419,6 @@ class Paquette::NpmServer
 
     @repository.write_dist_tag(package_name, tag, version)
     json_ok(@repository.dist_tags(package_name))
-  rescue ReadGatedRepository::WriteNotAllowed => e
-    forbidden(e.message)
   rescue DirectoryNpmRepository::InvalidPackage => e
     bad_request(e.message)
   rescue DirectoryNpmRepository::PackageNotFound => e

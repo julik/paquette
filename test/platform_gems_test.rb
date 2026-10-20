@@ -682,17 +682,6 @@ class PlatformGemWrappersTest < Minitest::Test
     assert_nil cooled.gem_file_path("nokogiri", "1.16.0-arm64-darwin")
   end
 
-  # Writes through a readonly view are refused whatever the platform, which
-  # is the whole of what that wrapper promises.
-  def test_a_readonly_view_refuses_a_platform_yank_as_it_refuses_any_other
-    readonly = Paquette::GemServer::ReadonlyRepository.new(@repository)
-
-    assert_raises(Paquette::GemServer::ReadonlyRepository::WriteNotAllowed) do
-      readonly.yank_gem("nokogiri", "1.16.0-java")
-    end
-    assert_path_exists File.join(@gems_dir, "nokogiri", "nokogiri-1.16.0-java.gem")
-  end
-
   # The personalizer opens a gem, rewrites it and hands back a different
   # file. A repacked java build that came back claiming to be a ruby build
   # would be installed on the wrong machine, and the index row it is served

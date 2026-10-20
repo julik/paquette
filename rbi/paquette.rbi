@@ -471,6 +471,29 @@ module Paquette
     def self.http_url(value); end
   end
 
+  # What a push or a publish wrote, handed to a server's `on_publish:` once the
+  # write has landed. `released_at` is the gemspec's date for a gem - see
+  # `require_release_date:` on DirectoryGemRepository for keeping it honest - and
+  # the moment of arrival for an npm package, whose tarball carries no date worth
+  # trusting: `npm pack` stamps every entry with 1985-10-26.
+  # 
+  # @!attribute name
+  #   @return [String]
+  # @!attribute version
+  #   @return [String]
+  # @!attribute released_at
+  #   @return [Time]
+  class Published < Data
+    sig { returns(String) }
+    attr_accessor :name
+
+    sig { returns(String) }
+    attr_accessor :version
+
+    sig { returns(Time) }
+    attr_accessor :released_at
+  end
+
   # Reads the access token out of a request, whichever way the client wrapped it.
   # This is the token an authenticator gets:
   # 
@@ -580,16 +603,19 @@ module Paquette
     # _@param_ `shared_caching` — false keeps every response `private`, as if every request carried a credential — set it when you authorize by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
     # 
     # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # 
+    # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once a push has landed. An exception from it is a 500 for a gem that is already stored
     sig do
       params(
         repository: Paquette::GemServer::GemRepository,
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object)
+        authenticator: T.nilable(Object),
+        on_publish: T.nilable(T.untyped)
       ).void
     end
-    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil); end
+    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil); end
 
     # _@param_ `env` — the Rack env
     # 
@@ -1689,6 +1715,18 @@ module Paquette
       VERSION = T.let(Gem::Version::ANCHORED_VERSION_PATTERN, T.untyped)
       FORBIDDEN_IN_FIELD = T.let(/[\r\n\x00]/, T.untyped)
       MAX_FIELD_BYTES = T.let(2048, T.untyped)
+      PLACEHOLDER_DATE = T.let(Time.at(315_619_200).utc.to_date, T.untyped)
+      RELEASE_DATE_TOLERANCE_DAYS = T.let(3 * 366, T.untyped)
+
+      # Refuses a gem whose date cannot be when it was released: the placeholder,
+      # or years away from today. For a registry that decides anything by the date
+      # a publisher wrote into the gem.
+      # 
+      # _@param_ `spec`
+      # 
+      # _@param_ `today`
+      sig { params(spec: ::Gem::Specification, today: Date).void }
+      def self.validate_release_date!(spec, today: Date.today); end
 
       # One error class deliberately: a client cannot act differently on
       # unreadable versus dishonest.
@@ -1960,8 +1998,10 @@ module Paquette
       SIDECAR_FORMAT_VERSION = T.let(3, T.untyped)
 
       # _@param_ `gems_dir` — the corpus root, created if absent
-      sig { params(gems_dir: String).void }
-      def initialize(gems_dir); end
+      # 
+      # _@param_ `require_release_date` — refuse a push whose gemspec date is the RubyGems placeholder or years from today - see SpecValidator.validate_release_date!
+      sig { params(gems_dir: String, require_release_date: T::Boolean).void }
+      def initialize(gems_dir, require_release_date: false); end
 
       # A digest of what the corpus holds. Paths alone are enough: a push adds
       # one, a yank renames one away to a tomb, and a .gem file at a given path
@@ -2281,16 +2321,19 @@ module Paquette
     # _@param_ `shared_caching` — false keeps every response `private` — see the same option on GemServer
     # 
     # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # 
+    # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once a publish has landed - see the same option on GemServer
     sig do
       params(
         repository: T.any(Paquette::NpmServer::NpmRepository, String),
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object)
+        authenticator: T.nilable(Object),
+        on_publish: T.nilable(T.untyped)
       ).void
     end
-    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil); end
+    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil); end
 
     # _@param_ `env` — the Rack env
     # 

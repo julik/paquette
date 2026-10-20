@@ -117,7 +117,7 @@ gem_server = Paquette::GemServer.new(gem_repo)
 A version that is still cooling does not appear in `/names`, `/versions`, `/info/`, `/specs.4.8`, `/latest_specs.4.8` or `/prerelease_specs.4.8`, and it does not download - it 404s, as if the gem version were not present.
 
 > [!IMPORTANT]
-> By default the publication date is `spec.date`, the date recorded in the gemspec - which is **publisher-controlled and records the build time, not the moment the gem arrived on your server.** A gem built in March and pushed in June is already past a seven-day cooldown when it lands.
+> By default the publication date is `spec.date`, the date recorded in the gemspec - which is **publisher-controlled and records the build time, not the moment the gem arrived on your server.** A gem built in March and pushed in June is already past a seven-day cooldown when it lands. `require_release_date: true` on the repository at least refuses the placeholder - see [After a push](#after-a-push).
 
 The default is `spec.date` because it is a property of the immutable gem bytes.
 
@@ -201,6 +201,20 @@ You can publish gems two ways.
 2. Actually do a `gem push` - from your shell, do `gem push --host http://gem.localhost:9292 --otp 000000 pkg/your-gem-0.1.0.gem`
 
 Note that the default dev setup runs `Paquette::Authentication::Open`, which takes any token and any one-time password - that is to say, _no_ auth. I told you it is slightly unhinged. See [Authentication](#authentication) for tokens and OTP.
+
+### After a push
+
+Both servers take an `on_publish:` callable, called once a push or a publish has landed with a `Paquette::Published` (`name`, `version`, `released_at`) and the `Rack::Request` - to record the release, mail somebody, note the address it came from:
+
+```ruby
+Paquette::GemServer.new(repo, authenticator: authenticator, on_publish: ->(published, request) {
+  Release.create!(name: published.name, version: published.version, released_at: published.released_at, from: request.ip)
+})
+```
+
+`released_at` is the gemspec's date for a gem, and the moment of arrival for an npm package - `npm pack` stamps every tarball entry with 1985-10-26, so there is no better date in one. An exception from the callable is a 500 for a package that is already stored, so rescue what is allowed to fail.
+
+If anything downstream trusts a gem's date - a cooldown, a license window - make the date mean something: `DirectoryGemRepository.new(dir, require_release_date: true)` refuses a push dated with the RubyGems placeholder (1980-01-02, what a reproducible build stamps without `SOURCE_DATE_EPOCH`) or more than about three years from today, before anything is stored.
 
 ### Consuming gems provided by a Paquette server
 

@@ -281,9 +281,13 @@ class Paquette::GemServer
   # @param authenticator [Object, nil] answers `read_permitted?`,
   #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
   #   Without one, everyone reads and nobody writes
+  # @param on_publish [#call, nil] called with a Paquette::Published and the
+  #   Rack::Request once a push has landed. An exception from it is a 500 for
+  #   a gem that is already stored
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil)
     @repository = repository
+    @on_publish = on_publish
     setup_authentication(authenticator)
     @placeholder_app = placeholder_app
     @max_push_bytes = max_push_bytes
@@ -464,6 +468,7 @@ class Paquette::GemServer
       @repository.add_gem(body)
     end
     @written = [spec.name, spec.version.to_s]
+    @on_publish&.call(Paquette::Published.new(name: spec.name, version: spec.version.to_s, released_at: spec.date), @request)
     # full_name rather than name-version: it is the platform build that was
     # registered.
     text_ok("Successfully registered gem: #{spec.full_name}")

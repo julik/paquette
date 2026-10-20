@@ -5,7 +5,9 @@ require "measurometer"
 class Paquette::SubdomainRouter
   prepend Paquette::RegexpTimeout
 
-  # @yield [self] for configuring mappings via {#map} and {#fallback}
+  # - the block: for configuring mappings via #map and #fallback
+  #
+  #: () ?{ (Paquette::SubdomainRouter router) -> void } -> void
   def initialize(&block)
     @mappings = {}
     @fallback = nil
@@ -15,13 +17,12 @@ class Paquette::SubdomainRouter
     end
   end
 
-  # @param env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def call(env)
     request = Rack::Request.new(env)
     host = request.host
 
-    subdomain = extract_subdomain(host)
+    subdomain = extract_subdomain(host.to_s)
 
     if subdomain && @mappings[subdomain]
       app = @mappings[subdomain]
@@ -43,23 +44,25 @@ class Paquette::SubdomainRouter
     end
   end
 
-  # @param subdomain [String]
-  # @param to [Object] a Rack app, or a class that instantiates to one
-  # @return [void]
+  # - `to`: a Rack app, or a class that instantiates to one
+  #
+  #: (String subdomain, to: Paquette::_RackApp) -> void
   def map(subdomain, to:)
     @mappings[subdomain] = to
   end
 
-  # @param to [Object] a Rack app called when no subdomain matches
-  # @return [void]
+  # - `to`: a Rack app called when no subdomain matches
+  #
+  #: (to: Paquette::_RackApp) -> void
   def fallback(to:)
     @fallback = to
   end
 
   private
 
-  # @param host [String]
-  # @return [String, nil] the first host label, only when it is mapped
+  # Returns the first host label, only when it is mapped.
+  #
+  #: (String host) -> String?
   def extract_subdomain(host)
     host = host.split(":").first if host.include?(":")
 

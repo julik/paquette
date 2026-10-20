@@ -6,15 +6,16 @@ require "measurometer"
 # as non-existent. Writes pass through - who may write is the authenticator's
 # to say, and the server asks it before any repository is touched.
 class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
-  # @param repository [Paquette::GemServer::GemRepository] the repository
-  #   to wrap
-  # @param gate_key [String, nil] what this gate is called, for HTTP
-  #   caching: the identity the entitler consults plus everything the
-  #   answers depend on. Left out, the whole stack emits no ETag and
-  #   serves every request in full — the intended fail-closed default,
-  #   because a wrong ETag hands one customer another's entitlements.
-  # @yield [name:, version:] the entitler; returns truthy when the caller
-  #   may see that gem/version
+  # - `repository`: the repository to wrap
+  # - `gate_key`: what this gate is called, for HTTP caching: the identity the
+  #   entitler consults plus everything the answers depend on. Left out, the
+  #   whole stack emits no ETag and serves every request in full — the
+  #   intended fail-closed default, because a wrong ETag hands one customer
+  #   another's entitlements.
+  # - the block: the entitler; returns truthy when the caller may see that
+  #   gem/version
+  #
+  #: (Paquette::GemServer::GemRepository repository, ?gate_key: String?) { (name: String, ?version: String?) -> boolish } -> void
   def initialize(repository, gate_key: nil, &entitler)
     super(repository)
     @entitler = entitler
@@ -23,7 +24,7 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
 
   # nil without a gate_key — derive_validator does the refusing.
   #
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
     Paquette::GemServer::GemRepository.derive_validator(inner, "read-gate", @gate_key)
@@ -32,7 +33,7 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
   # A gate may decide by something Paquette never sees — an IP, a header —
   # so even two anonymous callers can get different views. Never `public`.
   #
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     true
   end
@@ -41,29 +42,26 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
   # inner repository predating this protocol answers nil instead of
   # raising NoMethodError out of Delegator#method_missing.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (String gem_name, String version) -> String?
   def gem_checksum(gem_name, version)
     return nil unless entitled?(name: gem_name, version: version)
 
     Paquette::GemServer::GemRepository.gem_checksum_of(__getobj__, gem_name, version)
   end
 
-  # @return [Array<String>]
+  #: () -> Array[String]
   def gem_names
     super.select { |name| entitled?(name: name) }
   end
 
-  # @return [Array<Array(String, String)>]
+  #: () -> Array[[String, String]]
   def gem_versions
     super.select do |gem_name, version|
       entitled?(name: gem_name, version: version)
     end
   end
 
-  # @param gem_name [String]
-  # @return [Array<String>]
+  #: (String gem_name) -> Array[String]
   def versions_for_gem(gem_name)
     return [] unless entitled?(name: gem_name)
     super.select do |version|
@@ -71,17 +69,14 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
     end
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (String gem_name, String version) -> String?
   def gem_file_path(gem_name, version)
     if entitled?(name: gem_name, version: version)
       super
     end
   end
 
-  # @param gem_name [String]
-  # @return [Array<String>, Object]
+  #: (String gem_name) -> untyped
   def compact_info(gem_name)
     return [] unless entitled?(name: gem_name)
 
@@ -94,9 +89,7 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
     end
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String gem_name, String version) -> bool
   def gem_exists?(gem_name, version)
     if entitled?(name: gem_name, version: version)
       super
@@ -109,8 +102,9 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
   # the corpus — an entitler that reaches for a database on every call is
   # the usual reason a gated index is slower than an ungated one.
   #
-  # @param criteria [Hash]
-  # @return [Object] truthy when entitled
+  # Returns truthy when entitled.
+  #
+  #: (**untyped criteria) -> untyped
   def entitled?(**criteria)
     Measurometer.instrument("paquette.gem_read_gate.entitled") { @entitler.call(**criteria) }
   end

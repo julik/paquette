@@ -5,48 +5,44 @@ require "cgi"
 # get your own root. The blurb is HTML-escaped on the way in: a caller
 # wanting markup is a caller wanting their own index app.
 class Paquette::IndexPage
-  # @return [String]
-  TEMPLATE_PATH = File.join(__dir__, "index_page", "page.html")
-  # @return [String]
-  MASTHEAD_PATH = File.join(__dir__, "index_page", "masthead.svg")
+  TEMPLATE_PATH = "#{__dir__}/index_page/page.html"
+  MASTHEAD_PATH = "#{__dir__}/index_page/masthead.svg"
 
   # An XML declaration is legal in a standalone .svg file and illegal
   # halfway down an HTML document, so it comes off when the art is inlined.
-  #
-  # @return [Regexp]
   XML_DECLARATION = /\A<\?xml[^>]{0,255}\?>\s*/
 
   # Read once per process rather than once per request: the root is what
   # every uptime check hits.
   #
-  # @return [String]
+  #: () -> String
   def self.template
     @template ||= File.read(TEMPLATE_PATH)
   end
 
-  # @return [String] the masthead SVG, prepared for inlining into HTML
+  # Returns the masthead SVG, prepared for inlining into HTML.
+  #
+  #: () -> String
   def self.masthead
     @masthead ||= File.read(MASTHEAD_PATH)
       .sub(XML_DECLARATION, "")
       .sub("<svg ", %(<svg class="masthead" role="img" aria-label="Paquette" ))
   end
 
-  # @return [String]
-  attr_reader :blurb
+  attr_reader :blurb #: String
 
-  # @return [String]
-  attr_reader :title
+  attr_reader :title #: String
 
-  # @param blurb [String] one sentence describing the registry
-  # @param title [String]
+  # - `blurb`: one sentence describing the registry
+  #
+  #: (String blurb, ?title: String) -> void
   def initialize(blurb, title: "Paquette")
     @blurb = blurb.to_s
     @title = title.to_s
     @body = render
   end
 
-  # @param _env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env _env) -> Paquette::rack_response
   def call(_env)
     [200, {"Content-Type" => "text/html; charset=utf-8", "Content-Length" => @body.bytesize.to_s}, [@body]]
   end
@@ -54,7 +50,7 @@ class Paquette::IndexPage
   # The rendered page, built once at construction. Public because it is the
   # useful half for anyone wrapping this in their own Rack response.
   #
-  # @return [String]
+  #: () -> String
   def render
     # Block form throughout: a replacement string would have `\1` and `\\`
     # read out of it as backreferences, and path data is exactly the kind

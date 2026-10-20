@@ -1,0 +1,36 @@
+module ZipKit
+  class FileReader
+    class ReadError < StandardError
+    end
+
+    class UnsupportedFeature < StandardError
+    end
+
+    class MissingEOCD < StandardError
+    end
+
+    class LocalHeaderPending < StandardError
+    end
+
+    def self.read_zip_structure: (io: IO, ?read_local_headers: bool) -> Array[ZipEntry]
+
+    class ZipEntry
+      def filename: () -> String
+      def compressed_size: () -> Integer
+      def uncompressed_size: () -> Integer
+      def compressed_data_offset: () -> Integer
+      def storage_mode: () -> Integer
+      def external_attrs: () -> Integer
+      def dos_date: () -> Integer
+      def dos_time: () -> Integer
+    end
+  end
+
+  class Streamer
+    def self.open: [T] (IO stream, **untyped) { (Streamer) -> T } -> T
+    def add_deflated_entry: (filename: String, ?modification_time: Time, ?compressed_size: Integer, ?uncompressed_size: Integer, ?crc32: Integer, ?unix_permissions: Integer?, ?use_data_descriptor: bool) -> untyped
+    def add_stored_entry: (filename: String, ?modification_time: Time, ?size: Integer, ?crc32: Integer, ?unix_permissions: Integer?, ?use_data_descriptor: bool) -> untyped
+    def <<: (String bytes) -> self
+    def simulate_write: (Integer num_bytes) -> Integer
+  end
+end

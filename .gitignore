@@ -68,6 +68,14 @@ vendor/
 # on every bundle because it pinned the gem's own previous version.
 /Gemfile.lock
 
-# YARD build artifacts; docs regenerate with `rake yard`.
-/.yardoc/
+# rdoc output; `rake docs` rebuilds it.
 /doc/
+
+# Generated from the inline annotations in lib/ by `rake rbs`, which steep,
+# docs and build all run first.
+/sig/
+
+# Dependency signatures for Steep, fetched by `rbs collection install`. Like
+# Gemfile.lock, the lockfile only ever described one machine's bundle.
+/.gem_rbs_collection/
+/rbs_collection.lock.yaml

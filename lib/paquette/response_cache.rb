@@ -40,31 +40,25 @@ class Paquette::ResponseCache
 
   # The largest body worth keeping. Gem and tarball downloads are files already
   # and are never stored; what is left is indexes and package documents.
-  #
-  # @return [Integer]
-  DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
+  DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024 #: Integer
 
   # What happened, for the application's own log line: "hit", "miss" or "bypass".
-  #
-  # @return [String]
   OUTCOME_KEY = "paquette.response_cache"
 
   # Headers that are about one response on the wire rather than the content.
-  #
-  # @return [Array<String>]
-  UNSTORED_HEADERS = %w[connection keep-alive transfer-encoding date age content-length].freeze
+  UNSTORED_HEADERS = %w[connection keep-alive transfer-encoding date age content-length].freeze #: Array[String]
 
-  # @param app [#call] the Rack app to cache
-  # @param directory [String] where entries live, created when missing
-  # @param max_body_bytes [Integer]
+  # - `app`: the Rack app to cache
+  # - `directory`: where entries live, created when missing
+  #
+  #: (Paquette::_RackApp app, directory: String, ?max_body_bytes: Integer) -> void
   def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES)
     @app = app
     @directory = directory.to_s
     @max_body_bytes = max_body_bytes
   end
 
-  # @param env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def call(env)
     return record(env, "bypass") { @app.call(env) } unless cacheable_request?(env)
 
@@ -78,8 +72,7 @@ class Paquette::ResponseCache
   # A Range is a slice of a body the server builds anyway, and Bundler sends one
   # only alongside an If-None-Match the server can answer by itself.
   #
-  # @param env [Hash]
-  # @return [Boolean]
+  #: (Paquette::rack_env env) -> bool
   def cacheable_request?(env)
     env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE") &&
       # Binary: `strip` raises on a header that is not valid UTF-8
@@ -89,10 +82,7 @@ class Paquette::ResponseCache
   # The env is the caller's own and is handed on, not copied: an application
   # that leaves notes in it for its log line has to find them afterwards.
   #
-  # @param env [Hash]
-  # @param key [String]
-  # @param entry [Hash]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env, String key, Hash[untyped, untyped] entry) -> Paquette::rack_response
   def revalidate(env, key, entry)
     client_etags = env["HTTP_IF_NONE_MATCH"]
     env["HTTP_IF_NONE_MATCH"] = entry.fetch("etag")
@@ -123,17 +113,12 @@ class Paquette::ResponseCache
     record(env, "miss") { fetch(env, key) }
   end
 
-  # @param env [Hash]
-  # @param key [String]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env, String key) -> Paquette::rack_response
   def fetch(env, key)
     store_and_answer(env, key, @app.call(env))
   end
 
-  # @param env [Hash]
-  # @param key [String]
-  # @param response [Array] a Rack response triplet
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env, String key, Paquette::rack_response response) -> Paquette::rack_response
   def store_and_answer(env, key, response)
     status, headers, body = response
     headers = Rack::Headers[headers]
@@ -159,10 +144,7 @@ class Paquette::ResponseCache
     end
   end
 
-  # @param status [Integer]
-  # @param headers [Rack::Headers]
-  # @param body [#each]
-  # @return [Boolean]
+  #: (Integer status, Rack::Headers headers, untyped body) -> bool
   def storable?(status, headers, body)
     return false unless status == 200 && headers["etag"]
     return false if headers["set-cookie"] || body.respond_to?(:to_path)
@@ -175,9 +157,9 @@ class Paquette::ResponseCache
 
   # Weak comparison, as RFC 9110 asks of If-None-Match.
   #
-  # @param header [String, nil] the client's If-None-Match
-  # @param etag [String, nil]
-  # @return [Boolean]
+  # - `header`: the client's If-None-Match
+  #
+  #: (String? header, String? etag) -> bool
   def etag_matches?(header, etag)
     return false if header.nil? || etag.nil?
 
@@ -188,9 +170,7 @@ class Paquette::ResponseCache
     end
   end
 
-  # @param env [Hash]
-  # @param outcome [String]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env, String outcome) { () -> Paquette::rack_response } -> Paquette::rack_response
   def record(env, outcome)
     env[OUTCOME_KEY] = outcome
     Measurometer.increment_counter("paquette.response_cache.#{outcome}")
@@ -201,8 +181,7 @@ class Paquette::ResponseCache
   # tarball URLs built from them. A request with a query string is not stored,
   # so there is none to leave out.
   #
-  # @param env [Hash]
-  # @return [String]
+  #: (Paquette::rack_env env) -> String
   def key_for(env)
     request = Rack::Request.new(env)
     digest = Digest::SHA256.new
@@ -214,8 +193,7 @@ class Paquette::ResponseCache
     digest.hexdigest
   end
 
-  # @param key [String]
-  # @return [Hash, nil]
+  #: (String key) -> Hash[untyped, untyped]?
   def read(key)
     entry = JSON.parse(File.read(meta_path(key)))
     entry if entry["etag"].is_a?(String) && entry["headers"].is_a?(Hash) && File.exist?(body_path(key))
@@ -226,10 +204,7 @@ class Paquette::ResponseCache
   # Body first and the metadata last, each renamed into place, so a reader
   # never finds metadata pointing at half a body.
   #
-  # @param key [String]
-  # @param headers [Rack::Headers]
-  # @param chunks [Array<String>]
-  # @return [void]
+  #: (String key, Rack::Headers headers, Array[String] chunks) -> void
   def write(key, headers, chunks)
     FileUtils.mkdir_p(File.dirname(meta_path(key)))
     kept = headers.to_h.except(*UNSTORED_HEADERS)
@@ -237,8 +212,7 @@ class Paquette::ResponseCache
     atomically(meta_path(key)) { |io| io.write(JSON.dump("etag" => headers["etag"], "headers" => kept)) }
   end
 
-  # @param path [String]
-  # @return [void]
+  #: (String path) { (::File io) -> void } -> void
   def atomically(path)
     temporary = "#{path}.#{SecureRandom.hex(8)}.tmp"
     File.open(temporary, "wb") { |io| yield io }
@@ -247,21 +221,23 @@ class Paquette::ResponseCache
     FileUtils.rm_f(temporary) if temporary && File.exist?(temporary)
   end
 
-  # @param key [String]
-  # @return [void]
+  #: (String key) -> void
   def delete(key)
     FileUtils.rm_f([meta_path(key), body_path(key)])
   end
 
-  # @param key [String]
-  # @return [String]
+  #: (String key) -> String
   def meta_path(key)
-    File.join(@directory, key[0, 2], "#{key}.json")
+    File.join(@directory, shard_of(key), "#{key}.json")
   end
 
-  # @param key [String]
-  # @return [String]
+  #: (String key) -> String
   def body_path(key)
-    File.join(@directory, key[0, 2], "#{key}.body")
+    File.join(@directory, shard_of(key), "#{key}.body")
+  end
+
+  #: (String key) -> String
+  def shard_of(key)
+    key[0, 2] #: String
   end
 end

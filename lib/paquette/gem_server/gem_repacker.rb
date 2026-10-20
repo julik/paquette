@@ -17,37 +17,30 @@ class Paquette::GemServer::GemRepacker
   # Bumped whenever the same source gem and the same arguments would repack
   # into different bytes, so a cache keyed on the inputs can include it.
   # 2: file modes come from the source gem rather than the unpacked copy.
-  #
-  # @return [Integer]
   FORMAT_VERSION = 2
 
   # What `gem build` records for a plain file on a umask-022 machine, given
   # to a file the source gem did not have.
-  #
-  # @return [Integer]
   INJECTED_FILE_MODE = 0o100644
 
-  # One-shot convenience for {#initialize} + {#repack}.
+  # One-shot convenience for #initialize + #repack.
   #
-  # @param gem_path [String]
-  # @param gemspec_extras [Hash{String => String}]
-  # @param magic_comment_replacements [Hash{String => String}]
-  # @param files [Hash{String => String}]
-  # @param into [String, nil]
-  # @return [String] the path of the repacked gem
-  def self.repack(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block)
-    new(gem_path, gemspec_extras: gemspec_extras, magic_comment_replacements: magic_comment_replacements, files: files, into: into).repack(&block)
+  # Returns the path of the repacked gem.
+  #
+  #: (String gem_path, ?gemspec_extras: Hash[String, String], ?magic_comment_replacements: Hash[String, String], ?files: Hash[String, String], ?into: String?) -> String
+  def self.repack(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil)
+    new(gem_path, gemspec_extras: gemspec_extras, magic_comment_replacements: magic_comment_replacements, files: files, into: into).repack
   end
 
-  # @param gem_path [String] path of the source .gem
-  # @param gemspec_extras [Hash{String => String}] keys merged into the
-  #   gemspec metadata
-  # @param magic_comment_replacements [Hash{String => String}] whole comment
-  #   lines to replace, marker => replacement
-  # @param files [Hash{String => String}] files to inject, path relative to
-  #   the gem root => content
-  # @param into [String, nil] destination path; without it the gem lands
-  #   in a fresh tmpdir whose cleanup becomes the caller's problem.
+  # - `gem_path`: path of the source .gem
+  # - `gemspec_extras`: keys merged into the gemspec metadata
+  # - `magic_comment_replacements`: whole comment lines to replace, marker =>
+  #   replacement
+  # - `files`: files to inject, path relative to the gem root => content
+  # - `into`: destination path; without it the gem lands in a fresh tmpdir
+  #   whose cleanup becomes the caller's problem.
+  #
+  #: (String gem_path, ?gemspec_extras: Hash[String, String], ?magic_comment_replacements: Hash[String, String], ?files: Hash[String, String], ?into: String?) -> void
   def initialize(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil)
     @gem_path = gem_path
     @gemspec_extras = gemspec_extras
@@ -62,7 +55,9 @@ class Paquette::GemServer::GemRepacker
   # Four subprocess-and-disk stages, each timed separately: a repack that
   # got slow is almost always one of them.
   #
-  # @return [String] the path of the repacked gem
+  # Returns the path of the repacked gem.
+  #
+  #: () -> String
   def repack
     raise ArgumentError, "Gem file not found: #{@gem_path}" unless File.exist?(@gem_path)
 
@@ -83,7 +78,7 @@ class Paquette::GemServer::GemRepacker
   # `gem unpack` in-process: shelling out cost ~0.5s of RubyGems boot per
   # gem. The span keeps its old name; the graphs watching it are older.
   #
-  # @return [void]
+  #: () -> void
   def unpack_gem
     @temp_dir = Dir.mktmpdir("gem_repacker")
     @unpacked_gem_dir = File.join(@temp_dir, "unpacked_gem")
@@ -100,7 +95,7 @@ class Paquette::GemServer::GemRepacker
     raise "Failed to unpack gem: #{@gem_path}. Error: #{e.message}"
   end
 
-  # @return [void]
+  #: () -> void
   def process_ruby_files
     rb_files = Dir.glob(File.join(@gem_dir, "**", "*.rb"))
     Measurometer.add_distribution_value("paquette.gem_repacker.ruby_files", rb_files.length)
@@ -113,13 +108,15 @@ class Paquette::GemServer::GemRepacker
   # are rewritten through a Tempfile created 0600, so the disk says more
   # about the server than about the gem.
   #
-  # @return [Hash{String => Integer}] entry name => mode
+  # Returns entry name => mode.
+  #
+  #: () -> Hash[String, Integer]
   def source_entry_modes
     modes = {}
     File.open(@gem_path, "rb") do |io|
       Gem::Package::TarReader.new(io).each do |entry|
         next unless entry.full_name == "data.tar.gz"
-        Zlib::GzipReader.wrap(entry) do |gz|
+        Zlib::GzipReader.wrap(entry) do |gz| # steep:ignore ArgumentTypeMismatch
           Gem::Package::TarReader.new(gz).each { |file| modes[file.full_name] = file.header.mode }
         end
       end
@@ -131,7 +128,7 @@ class Paquette::GemServer::GemRepacker
   # before it is written, because the one it replaces may have been shipped
   # read-only.
   #
-  # @return [void]
+  #: () -> void
   def inject_files
     @files.each do |file_path, content|
       full_path = File.join(@gem_dir, file_path)
@@ -142,10 +139,10 @@ class Paquette::GemServer::GemRepacker
     end
   end
 
-  # @param file_path [String]
-  # @return [void]
+  #: (String file_path) -> void
   def process_ruby_file(file_path)
     temp_output = Tempfile.new("gem_repacker_output")
+    output_path = temp_output.path #: String
 
     File.open(file_path, "rb") do |input_file|
       temp_output.binmode
@@ -159,15 +156,13 @@ class Paquette::GemServer::GemRepacker
       temp_output.flush
     end
 
-    FileUtils.mv(temp_output.path, file_path)
+    FileUtils.mv(output_path, file_path)
   ensure
     temp_output.close
     temp_output.unlink if File.exist?(temp_output.path)
   end
 
-  # @param input_file [IO]
-  # @param output_file [IO]
-  # @return [void]
+  #: (IO input_file, IO output_file) -> void
   def apply_magic_comment_replacements(input_file, output_file)
     input_file.each_line do |line|
       replacement_found = false
@@ -186,7 +181,9 @@ class Paquette::GemServer::GemRepacker
     end
   end
 
-  # @return [String] the path of the finished gem
+  # Returns the path of the finished gem.
+  #
+  #: () -> String
   def repackage_gem
     original_spec = Gem::Package.new(@gem_path).spec
 
@@ -214,8 +211,7 @@ class Paquette::GemServer::GemRepacker
   # than via a .gemspec on disk: Gem::Specification.load memoizes per file
   # path forever, which leaked one spec per gem served.
   #
-  # @param spec [::Gem::Specification]
-  # @return [::Gem::Specification]
+  #: (::Gem::Specification spec) -> ::Gem::Specification
   def repacked_spec(spec)
     new_spec = spec.dup
 
@@ -233,7 +229,7 @@ class Paquette::GemServer::GemRepacker
     new_spec
   end
 
-  # @return [void]
+  #: () -> void
   def cleanup
     FileUtils.rm_rf(@temp_dir) if @temp_dir && Dir.exist?(@temp_dir)
   end

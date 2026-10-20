@@ -7,11 +7,8 @@ require "rack/body_proxy"
 module Paquette::RegexpTimeout
   # 3.2 gained Regexp.timeout and its error; on 3.1 this stands aside. The
   # placeholder keeps the rescue from naming a constant that may not exist.
-  #
-  # @return [Boolean]
-  SUPPORTED = Regexp.respond_to?(:timeout=)
-  # @return [Class]
-  TimedOut = SUPPORTED ? Regexp::TimeoutError : Class.new(StandardError)
+  SUPPORTED = Regexp.respond_to?(:timeout=) #: bool
+  TimedOut = SUPPORTED ? Regexp::TimeoutError : Class.new(StandardError) #: Class
 
   # Regexp.timeout is process-global, so requests are counted instead of
   # set-and-restored: otherwise one thread lowers the ceiling out from under
@@ -23,7 +20,7 @@ module Paquette::RegexpTimeout
   class << self
     # Arms the process-wide regexp ceiling for one request.
     #
-    # @return [void]
+    #: () -> void
     def acquire
       @lock.synchronize do
         seconds = Paquette.regexp_timeout
@@ -41,7 +38,7 @@ module Paquette::RegexpTimeout
     # Releases one request's hold; the last one out restores the ambient
     # timeout.
     #
-    # @return [void]
+    #: () -> void
     def release
       @lock.synchronize do
         @in_flight -= 1
@@ -55,15 +52,13 @@ module Paquette::RegexpTimeout
 
     # A 400, not a 500: it ran out of time on bytes the client sent.
     #
-    # @param error [Exception]
-    # @return [Array] a Rack response triplet
+    #: (Exception error) -> Paquette::rack_response
     def timed_out(error)
       [400, {"Content-Type" => "text/plain"}, ["Request took too long to parse: #{error.class}"]]
     end
   end
 
-  # @param env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def call(env)
     return super unless SUPPORTED
 
@@ -76,7 +71,7 @@ module Paquette::RegexpTimeout
       # returns an open File and reads it after #call has returned.
       proxied = Rack::BodyProxy.new(body) { Paquette::RegexpTimeout.release }
       handed_off = true
-      [status, headers, proxied]
+      [status, headers, proxied] #: Paquette::rack_response
     rescue TimedOut => e
       Paquette::RegexpTimeout.timed_out(e)
     ensure

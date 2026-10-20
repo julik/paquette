@@ -18,34 +18,28 @@ module Paquette::Tarball
 
   # One member of a tarball: its path inside the archive plus the bytes and
   # metadata to write for it.
-  #
-  # @!attribute name
-  #   @return [String]
-  # @!attribute mode
-  #   @return [Integer]
-  # @!attribute mtime
-  #   @return [Integer]
-  # @!attribute content
-  #   @return [String]
-  Entry = Struct.new(:name, :mode, :mtime, :content, keyword_init: true)
+  Entry = Struct.new(
+    :name, #: String
+    :mode, #: Integer
+    :mtime, #: Integer
+    :content, #: String
+    keyword_init: true
+  )
 
-  # @return [Integer]
   BLOCK_SIZE = 512
 
-  # @return [String]
-  GZIP_MAGIC = [0x1f, 0x8b].pack("C*")
-  # @return [Integer]
+  GZIP_MAGIC = [0x1f, 0x8b].pack("C*") #: String
   GZIP_DEFLATE = 8
-  # @return [Integer]
   GZIP_OS_UNKNOWN = 255
 
   class << self
     # Yields every file entry in the tarball.
     #
-    # @param tarball_path [String]
-    # @yieldparam entry [Entry]
-    # @return [Enumerator<Entry>, nil] an Enumerator when no block is given
-    # @raise [MalformedTarball]
+    # Returns an Enumerator when no block is given.
+    # Raises `MalformedTarball`.
+    #
+    #: (String tarball_path) { (Entry entry) -> void } -> void
+    #: (String tarball_path) -> Enumerator[Entry, void]
     def each_entry(tarball_path)
       return enum_for(:each_entry, tarball_path) unless block_given?
 
@@ -80,8 +74,7 @@ module Paquette::Tarball
       raise MalformedTarball, "Could not read tarball #{tarball_path}: #{e.message}"
     end
 
-    # @param tarball_path [String]
-    # @return [Array<Entry>]
+    #: (String tarball_path) -> Array[Entry]
     def entries(tarball_path)
       Measurometer.instrument("paquette.tarball.entries") do
         each_entry(tarball_path).to_a.tap do |all|
@@ -93,9 +86,10 @@ module Paquette::Tarball
     # Finds the manifest by basename under the root: a `git archive` tarball
     # may not use "package".
     #
-    # @param tarball_path [String]
-    # @return [Hash, nil] the parsed package.json
-    # @raise [MalformedTarball]
+    # Returns the parsed package.json.
+    # Raises `MalformedTarball`.
+    #
+    #: (String tarball_path) -> Hash[String, untyped]?
     def package_json(tarball_path)
       Measurometer.instrument("paquette.tarball.package_json") do
         each_entry(tarball_path) do |entry|
@@ -112,8 +106,11 @@ module Paquette::Tarball
       end
     end
 
-    # @param records [String] the body of a PAX "x" entry
-    # @return [String, nil] the "path" record's value
+    # - `records`: the body of a PAX "x" entry
+    #
+    # Returns the "path" record's value.
+    #
+    #: (String records) -> String?
     def pax_path(records)
       offset = 0
       while offset < records.bytesize
@@ -134,14 +131,14 @@ module Paquette::Tarball
 
     # ASCII-8BIT bytes make JSON.generate raise; scrub rather than 500 the metadata.
     #
-    # @param content [String]
-    # @return [String]
+    #: (String content) -> String
     def as_text(content)
       content.to_s.dup.force_encoding(Encoding::UTF_8).scrub
     end
 
-    # @param tarball_path [String]
-    # @return [String, nil] the first path segment of the first entry
+    # Returns the first path segment of the first entry.
+    #
+    #: (String tarball_path) -> String?
     def root_dir(tarball_path)
       Measurometer.instrument("paquette.tarball.root_dir") do
         each_entry(tarball_path) { |entry| return entry.name.split("/").first }
@@ -152,9 +149,9 @@ module Paquette::Tarball
     # Writes a gzipped tarball. Entries are sorted by name so caller
     # ordering cannot change the bytes.
     #
-    # @param dest_path [String]
-    # @param entries [Array<Entry>]
-    # @return [String] dest_path
+    # Returns dest_path.
+    #
+    #: (String dest_path, Array[Entry] entries) -> String
     def write(dest_path, entries)
       Measurometer.instrument("paquette.tarball.write") do
         tar = +"".b
@@ -176,8 +173,7 @@ module Paquette::Tarball
     # build only, so several Paquettes behind one load balancer must share a
     # zlib.
     #
-    # @param data [String]
-    # @return [String]
+    #: (String data) -> String
     def gzip(data)
       Measurometer.instrument("paquette.tarball.gzip") do
         data = data.b
@@ -193,9 +189,10 @@ module Paquette::Tarball
       end
     end
 
-    # @param tarball_path [String]
-    # @return [Hash{Symbol => String}] :shasum (SHA1 hex) and :integrity
-    #   (SRI sha512)
+    # Returns :shasum (SHA1 hex) and :integrity
+    # (SRI sha512)
+    #
+    #: (String tarball_path) -> Hash[Symbol, String]
     def integrity(tarball_path)
       Measurometer.instrument("paquette.tarball.integrity") do
         {
@@ -209,15 +206,14 @@ module Paquette::Tarball
 
     # uid/gid/uname/gname are zeroed: they describe the packer, not the package.
     #
-    # @param name [String]
-    # @param mode [Integer]
-    # @param mtime [Time]
-    # @param size [Integer]
-    # @param typeflag [String] the ustar type flag ("0" for a file, "x" for a PAX record)
-    # @return [String] one 512-byte ustar header block
+    # - `typeflag`: the ustar type flag ("0" for a file, "x" for a PAX record)
+    #
+    # Returns one 512-byte ustar header block.
+    #
+    #: (String name, Integer mode, (Integer | Time) mtime, Integer size, ?typeflag: String) -> String
     def header_for(name, mode, mtime, size, typeflag: "0")
       # An over-long name is already in a PAX record; this tail is the fallback.
-      prefix, name = split_name(name) || ["", name.to_s.b[-100..]]
+      prefix, name = split_name(name) || ["", name.to_s.b[-100..]] #: [String, String]
 
       header = +"\0".b * BLOCK_SIZE
       write_field(header, 0, 100, name)
@@ -236,12 +232,12 @@ module Paquette::Tarball
       header
     end
 
-    # @param header [String] the 512-byte block being filled in, mutated in place
-    # @param offset [Integer]
-    # @param length [Integer] the size of the field, which the value has to fit in
-    # @param value [String]
-    # @raise [NameTooLong]
-    # @return [void]
+    # - `header`: the 512-byte block being filled in, mutated in place
+    # - `length`: the size of the field, which the value has to fit in
+    #
+    # Raises `NameTooLong`.
+    #
+    #: (String header, Integer offset, Integer length, String value) -> void
     def write_field(header, offset, length, value)
       value = value.to_s.b
       raise NameTooLong, "Field does not fit in #{length} bytes: #{value.inspect}" if value.bytesize > length
@@ -250,8 +246,7 @@ module Paquette::Tarball
 
     # ustar's prefix/name split; nil when no split works (PAX header instead).
     #
-    # @param name [String]
-    # @return [Array(String, String), nil]
+    #: (String name) -> [String, String]?
     def split_name(name)
       name = name.to_s.b
       return ["", name] if name.bytesize <= 100
@@ -263,19 +258,17 @@ module Paquette::Tarball
       split_at = separators.find { |at| at <= 155 && (name.bytesize - at - 1) <= 100 }
       return nil if split_at.nil?
 
-      [name[0, split_at], name[(split_at + 1)..]]
+      [name[0, split_at], name[(split_at + 1)..]] #: [String, String]
     end
 
-    # @param name [String]
-    # @return [Boolean]
+    #: (String name) -> bool
     def ustar_representable?(name)
       !split_name(name).nil?
     end
 
     # Also written, or a package that stored fine would fail once personalized.
     #
-    # @param entry [Entry]
-    # @return [String]
+    #: (Entry entry) -> String
     def pax_header_for(entry)
       record = pax_record("path", entry.name)
       header = header_for(pax_header_name(entry.name), 0o644, entry.mtime, record.bytesize, typeflag: "x")
@@ -284,9 +277,7 @@ module Paquette::Tarball
 
     # "LENGTH key=value\n"; LENGTH counts its own digits, so grow until stable.
     #
-    # @param key [String]
-    # @param value [String]
-    # @return [String]
+    #: (String key, String value) -> String
     def pax_record(key, value)
       body = " #{key}=#{value}\n".b
       digits = body.bytesize.to_s.bytesize
@@ -295,16 +286,14 @@ module Paquette::Tarball
       (body.bytesize + digits).to_s.b + body
     end
 
-    # @param name [String]
-    # @return [String]
+    #: (String name) -> String
     def pax_header_name(name)
-      "PaxHeader/#{File.basename(name.to_s.b)}"[0, 100]
+      "PaxHeader/#{File.basename(name.to_s.b)}"[0, 100] #: String
     end
 
     # Only the executable bit survives; anything else is the packer's umask.
     #
-    # @param mode [Integer]
-    # @return [Integer]
+    #: (Integer mode) -> Integer
     def normalized_mode(mode)
       ((mode.to_i & 0o111) != 0) ? 0o755 : 0o644
     end

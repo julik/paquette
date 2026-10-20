@@ -1,0 +1,42 @@
+# Core RBS covers Gem::Specification and friends but not Gem::Package.
+class Gem::Package
+  class Error < Gem::Exception
+  end
+
+  class TarInvalidError < Error
+  end
+
+  class TarHeader
+    def mode: () -> Integer
+    def mtime: () -> Integer
+    def typeflag: () -> String
+  end
+
+  class TarReader
+    class Entry
+      def header: () -> TarHeader
+      def full_name: () -> String
+      def file?: () -> bool
+      def read: (?Integer? len) -> String?
+    end
+
+    def initialize: (untyped io) -> void
+    def each: () { (Entry entry) -> void } -> void
+  end
+
+  class TarWriter
+    def add_symlink: (String name, String target, Integer mode) -> void
+    def add_file_simple: (String name, Integer mode, Integer size) { (IO io) -> void } -> void
+  end
+
+  @spec: Gem::Specification
+
+  attr_accessor spec: Gem::Specification
+
+  def initialize: (String | IO gem, ?untyped security_policy) -> void
+  def build: (?bool skip_validation, ?bool strict_validation) -> String
+  def extract_files: (String destination_dir, ?String pattern) -> void
+  def add_files: (TarWriter tar) -> void
+  def copy_stream: (IO src, IO dst, ?Integer? size) -> void
+  def say: (*untyped) -> void
+end

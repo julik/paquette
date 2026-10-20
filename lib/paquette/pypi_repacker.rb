@@ -13,43 +13,32 @@ require "measurometer"
 class Paquette::PypiRepacker
   # Bumped whenever the same source file and the same arguments would repack
   # into different bytes, so a cache keyed on the inputs can include it.
-  #
-  # @return [Integer]
   FORMAT_VERSION = 1
 
-  # @return [Array<String>]
-  SOURCE_EXTENSIONS = %w[.py .pyi].freeze
+  SOURCE_EXTENSIONS = %w[.py .pyi].freeze #: Array[String]
 
   # Where the license key goes: next to METADATA in a wheel, where
   # `importlib.metadata.distribution(name).read_text("paquette.json")` finds
   # it, and at the root of an sdist.
-  #
-  # @return [String]
   STAMP_FILE = "paquette.json"
 
-  # @return [Array<String>]
-  RECORD_SIGNATURES = %w[RECORD.jws RECORD.p7s].freeze
+  RECORD_SIGNATURES = %w[RECORD.jws RECORD.p7s].freeze #: Array[String]
 
-  # @param path [String]
-  # @param filename [String] the distribution filename, which says which
-  #   kind of archive this is
-  # @param stamp [Hash, nil] written as paquette.json; nil writes none
-  # @param magic_comment_replacements [Hash{String => String}]
-  # @param files [Hash{String => String}] path relative to the archive root =>
-  #   content - the root of a wheel is site-packages
-  # @param into [String, nil]
-  # @return [String] the path of the repacked file
+  # - `filename`: the distribution filename, which says which kind of archive
+  #   this is
+  # - `stamp`: written as paquette.json; nil writes none
+  # - `files`: path relative to the archive root => content - the root of a
+  #   wheel is site-packages
+  #
+  # Returns the path of the repacked file.
+  #
+  #: (String path, filename: String, ?stamp: Hash[String, untyped]?, ?magic_comment_replacements: Hash[String, String], ?files: Hash[String, String], ?into: String?) -> String
   def self.repack(path, filename:, stamp: nil, magic_comment_replacements: {}, files: {}, into: nil)
     new(path, filename: filename, stamp: stamp, magic_comment_replacements: magic_comment_replacements,
       files: files, into: into).repack
   end
 
-  # @param path [String]
-  # @param filename [String]
-  # @param stamp [Hash, nil]
-  # @param magic_comment_replacements [Hash{String => String}]
-  # @param files [Hash{String => String}]
-  # @param into [String, nil]
+  #: (String path, filename: String, ?stamp: Hash[untyped, untyped]?, ?magic_comment_replacements: Hash[String, String], ?files: Hash[String, String], ?into: String?) -> void
   def initialize(path, filename:, stamp: nil, magic_comment_replacements: {}, files: {}, into: nil)
     # The one-line rule has no sourcemaps to protect here, but it does keep
     # every traceback line number the same as in the source the publisher saw
@@ -62,7 +51,9 @@ class Paquette::PypiRepacker
     @into = into
   end
 
-  # @return [String] the path of the repacked file
+  # Returns the path of the repacked file.
+  #
+  #: () -> String
   def repack
     raise ArgumentError, "Distribution not found: #{@path}" unless File.exist?(@path)
 
@@ -73,14 +64,14 @@ class Paquette::PypiRepacker
 
   private
 
-  # @return [String]
+  #: () -> String
   def destination
     path = @into || File.join(Dir.mktmpdir("pypi_repacked"), @filename)
     FileUtils.mkdir_p(File.dirname(path))
     path
   end
 
-  # @return [String]
+  #: () -> String
   def repack_wheel
     entries = Paquette::Wheel.entries(@path)
     raise ArgumentError, "Wheel is empty: #{@path}" if entries.empty?
@@ -104,10 +95,9 @@ class Paquette::PypiRepacker
     Paquette::Wheel.write(destination, others + [record])
   end
 
-  # @param entries [Array<Paquette::Wheel::Entry>]
-  # @return [String]
+  #: (Array[Paquette::Wheel::Entry] entries) -> String
   def record_name_in(entries)
-    parsed = Paquette::PypiServer::PypiRepository.parse_filename(@filename)
+    parsed = Paquette::PypiServer::PypiRepository.parse_filename(@filename) #: Hash[Symbol, String]
     expected = "#{parsed[:distribution]}-#{parsed[:version]}.dist-info/RECORD"
     return expected if entries.any? { |entry| entry.name == expected }
 
@@ -117,7 +107,7 @@ class Paquette::PypiRepacker
     candidates.first
   end
 
-  # @return [String]
+  #: () -> String
   def repack_sdist
     entries = Paquette::Tarball.entries(@path)
     raise ArgumentError, "sdist is empty: #{@path}" if entries.empty?
@@ -139,9 +129,7 @@ class Paquette::PypiRepacker
 
   # Either kind of entry - both structs answer to the same four fields
   #
-  # @param entry [Paquette::Wheel::Entry, Paquette::Tarball::Entry]
-  # @param relative_path [String]
-  # @return [Paquette::Wheel::Entry, Paquette::Tarball::Entry]
+  #: ((Paquette::Wheel::Entry | Paquette::Tarball::Entry) entry, String relative_path) -> (Paquette::Wheel::Entry | Paquette::Tarball::Entry)
   def rewrite(entry, relative_path)
     return entry unless @magic_comment_replacements.any? && SOURCE_EXTENSIONS.include?(File.extname(relative_path))
 
@@ -151,12 +139,7 @@ class Paquette::PypiRepacker
 
   # An injected file that replaces a shipped one keeps that one's place and mode.
   #
-  # @param entries [Array]
-  # @param injected [Array<Array(String, String)>]
-  # @yieldparam name [String]
-  # @yieldparam mode [Integer]
-  # @yieldparam content [String]
-  # @return [Array]
+  #: (Array[untyped] entries, Array[[String, String]] injected) { (String name, Integer mode, String content) -> untyped } -> Array[untyped]
   def inject(entries, injected)
     by_name = entries.each_with_object({}) { |entry, acc| acc[entry.name] = entry }
     injected.each do |name, content|
@@ -167,10 +150,9 @@ class Paquette::PypiRepacker
 
   # A whole comment line is replaced by a whole comment line, indentation and all
   #
-  # @param content [String]
-  # @param relative_path [String]
-  # @return [String]
-  # @raise [Paquette::NpmRepacker::MarkerNotApplied]
+  # Raises `Paquette::NpmRepacker::MarkerNotApplied`.
+  #
+  #: (String content, String relative_path) -> String
   def apply_magic_comment_replacements(content, relative_path)
     text = content.dup.force_encoding(Encoding::UTF_8)
     return content unless text.valid_encoding?

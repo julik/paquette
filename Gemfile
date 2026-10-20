@@ -5,9 +5,15 @@ gemspec
 gem "puma"
 
 group :docs do
-  gem "yard"
-  # Generates RBI and RBS signature files from the YARD type tags.
-  gem "sord"
+  # 8.1 is the first to render RBS signatures, inline and from sig/.
+  gem "rdoc", ">= 8.1"
+  # GitHub Flavored Markdown for the comments and pages; see rakelib/gfm_markup.rb.
+  gem "commonmarker", "~> 2.10"
+end
+
+group :types do
+  gem "rbs-inline", require: false
+  gem "steep", require: false
 end
 
 group :test do

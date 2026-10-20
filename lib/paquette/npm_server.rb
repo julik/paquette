@@ -22,11 +22,9 @@ class Paquette::NpmServer
 
   # npm sends the scope separator percent-encoded for metadata but plain in
   # tarball URLs; normalizing makes a package name one path segment.
-  #
-  # @return [Regexp]
   SCOPED_PATH = %r{\A(/(?:-/package/)?)(@[^/%]+)/([^/]+)(/.*)?\z}
 
-  @@routes = Paquette::Routes.draw do |r|
+  @@routes = Paquette::Routes.draw do |r| #$ Paquette::NpmServer
     r.get "/" do
       @placeholder_app.call(@request.env)
     end
@@ -87,8 +85,7 @@ class Paquette::NpmServer
   # so a package_name param comes back in one spelling ("@scope/name")
   # whichever way npm sent it. Only the path is read.
   #
-  # @param env [Hash] the Rack env
-  # @return [Paquette::Routes::Recognition, nil]
+  #: (Paquette::rack_env env) -> Paquette::Routes::Recognition?
   def self.route_for(env)
     env = env.merge("PATH_INFO" => normalize_scoped_path(env["PATH_INFO"].to_s))
     @@routes.recognize(Rack::Request.new(env))
@@ -99,8 +96,7 @@ class Paquette::NpmServer
   # npm sends the scope separator percent-encoded for metadata but plain in
   # tarball URLs; normalizing makes a package name one path segment.
   #
-  # @param path [String]
-  # @return [String]
+  #: (String path) -> String
   def self.normalize_scoped_path(path)
     match = SCOPED_PATH.match(path)
     return path unless match
@@ -113,36 +109,33 @@ class Paquette::NpmServer
   # Strips a prefix and a suffix rather than matching: a name interpolated
   # into a regexp raised out of the compile on invalid UTF-8.
   #
-  # @param package_name [String]
-  # @param tarball_name [String]
-  # @return [String, nil]
+  #: (String package_name, String tarball_name) -> String?
   def self.version_from_tarball_name(package_name, tarball_name)
     prefix = "#{File.basename(package_name.to_s)}-"
     name = tarball_name.to_s
     return nil unless name.start_with?(prefix) && name.end_with?(".tgz")
 
-    version = name.delete_suffix(".tgz")[prefix.length..]
+    version = name.delete_suffix(".tgz")[prefix.length..] #: String
     version unless version.empty?
   end
 
-  # @return [String]
   DEFAULT_BLURB = "This server provides npm packages. Point your registry at it and install as usual."
 
-  # @param repository [Paquette::NpmServer::NpmRepository, String] the
-  #   repository stack to serve, or a directory path to wrap in a
-  #   DirectoryNpmRepository
-  # @param placeholder_app [#call] the Rack app answering the root path
-  # @param max_push_bytes [Integer, nil] the largest request body this
-  #   server will read — a publish carries the whole tarball base64-encoded
-  #   in JSON, so this is the push cap; nil removes it, which is a decision
-  #   to make knowingly
-  # @param shared_caching [Boolean] false keeps every response `private` —
-  #   see the same option on GemServer
-  # @param authenticator [Object, nil] answers `read_permitted?`,
-  #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
-  #   Without one, everyone reads and nobody writes
-  # @param on_publish [#call, nil] called with a Paquette::Published and the
-  #   Rack::Request once a publish has landed - see the same option on GemServer
+  # - `repository`: the repository stack to serve, or a directory path to wrap
+  #   in a DirectoryNpmRepository
+  # - `placeholder_app`: the Rack app answering the root path
+  # - `max_push_bytes`: the largest request body this server will read — a
+  #   publish carries the whole tarball base64-encoded in JSON, so this is the
+  #   push cap; nil removes it, which is a decision to make knowingly
+  # - `shared_caching`: false keeps every response `private` — see the same
+  #   option on GemServer
+  # - `authenticator`: answers `read_permitted?`, `write_permitted?` and
+  #   `check_otp!` - see Paquette::Authentication. Without one, everyone reads
+  #   and nobody writes
+  # - `on_publish`: called with a Paquette::Published and the Rack::Request
+  #   once a publish has landed - see the same option on GemServer
+  #
+  #: ((Paquette::NpmServer::NpmRepository | String) repository, ?placeholder_app: Paquette::_RackApp, ?max_push_bytes: Integer?, ?shared_caching: bool, ?authenticator: Paquette::Authentication::_Authenticator?, ?on_publish: (^(Paquette::Published, ::Rack::Request) -> void)?) -> void
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
     max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil)
     @on_publish = on_publish
@@ -157,16 +150,14 @@ class Paquette::NpmServer
     @shared_caching = shared_caching
   end
 
-  # @param env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def call(env)
     with_caching_defaults(dispatch(env))
   end
 
   private
 
-  # @param env [Hash]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def dispatch(env)
     Measurometer.instrument("paquette.npm_server.call") do
       request_env = env.dup
@@ -196,8 +187,7 @@ class Paquette::NpmServer
   # The package a request was about, out of the route's own params - the
   # version too when a tarball names one - or what a publish wrote.
   #
-  # @param params [Hash{String => Object}]
-  # @return [Array(String, String), Array(String), nil]
+  #: (Hash[String, untyped] params) -> ([String, String] | [String])?
   def served_package(params)
     return @written if @written
 
@@ -208,8 +198,7 @@ class Paquette::NpmServer
     version ? [name, version] : [name]
   end
 
-  # @param path [String]
-  # @return [String]
+  #: (String path) -> String
   def normalize_scoped_path(path)
     self.class.normalize_scoped_path(path)
   end
@@ -218,18 +207,17 @@ class Paquette::NpmServer
   # too, for a registry scripted with curl. npm's own wins when both are
   # present.
   #
-  # @param env [Hash] the Rack env
-  # @return [String, nil]
+  #: (Paquette::rack_env env) -> String?
   def otp_code(env)
     env["HTTP_NPM_OTP"] || env["HTTP_OTP"]
   end
 
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def otp_missing
     otp_challenge("This registry requires a one-time password. Retry with the npm-otp header.")
   end
 
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def otp_rejected
     otp_challenge("The one-time password was not accepted. Retry with a fresh code.")
   end
@@ -238,8 +226,7 @@ class Paquette::NpmServer
   # npm versions detect it by one or the other — so npm prompts for a code
   # instead of reporting a failed login.
   #
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (String message) -> Paquette::rack_response
   def otp_challenge(message)
     [401, {"Content-Type" => "text/plain", "www-authenticate" => "OTP"}, [message]]
   end
@@ -249,8 +236,7 @@ class Paquette::NpmServer
   # dist.tarball from it — scheme, unlike host, is not part of an HTTP
   # cache key.
   #
-  # @param package_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name) -> Paquette::rack_response
   def handle_metadata(package_name)
     etag = etag_for("packument", package_name, metadata_base_url)
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -267,8 +253,7 @@ class Paquette::NpmServer
   # place — which the repository fingerprint accounts for by folding in
   # that file's mtime.
   #
-  # @param package_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name) -> Paquette::rack_response
   def handle_dist_tags(package_name)
     etag = etag_for("dist-tags", package_name)
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -279,9 +264,7 @@ class Paquette::NpmServer
     cacheable(json_ok(tags), etag)
   end
 
-  # @param package_name [String]
-  # @param tarball_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name, String tarball_name) -> Paquette::rack_response
   def handle_tarball(package_name, tarball_name)
     version = version_from_tarball_name(package_name, tarball_name)
     return not_found("Invalid package filename") unless version
@@ -311,11 +294,7 @@ class Paquette::NpmServer
   # download ETag can never disagree with the document that sent npm here —
   # npm hard-fails an install when those two disagree.
   #
-  # @param package_name [String]
-  # @param version [String]
-  # @param path [String]
-  # @param stat [::File::Stat]
-  # @return [String]
+  #: (String package_name, String version, String path, ::File::Stat stat) -> String
   def tarball_etag(package_name, version, path, stat)
     integrity = dist_integrity(package_name, version)
     return %("#{integrity}") if integrity
@@ -323,9 +302,7 @@ class Paquette::NpmServer
     %("#{stat.size}-#{stat.mtime.to_i}-#{stat.mtime.nsec}")
   end
 
-  # @param package_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (String package_name, String version) -> String?
   def dist_integrity(package_name, version)
     return nil unless @repository.respond_to?(:dist_for)
 
@@ -341,15 +318,14 @@ class Paquette::NpmServer
   # expression, kept in one place so the validator and the document cannot
   # disagree about what went into the body.
   #
-  # @return [String]
+  #: () -> String
   def metadata_base_url
     @request.base_url + @request.script_name
   end
 
   # Only the `_attachments` tarball is used; the rest is derived from it.
   #
-  # @param package_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name) -> Paquette::rack_response
   def handle_publish(package_name)
     document = parse_json_body
     return bad_request("Request body is not valid JSON") unless document
@@ -363,7 +339,9 @@ class Paquette::NpmServer
     return bad_request("Attachment carries no data") if data.nil?
 
     # unpack1("m"): base64 stopped being a default gem in Ruby 3.4.
-    tarball = Measurometer.instrument("paquette.npm_server.decode_attachment") { data.to_s.unpack1("m") }
+    tarball = Measurometer.instrument("paquette.npm_server.decode_attachment") do
+      data.to_s.unpack1("m") #: String
+    end
     Measurometer.add_distribution_value("paquette.npm_server.publish_bytes", tarball.bytesize)
 
     info = Measurometer.instrument("paquette.npm_server.publish") do
@@ -380,9 +358,7 @@ class Paquette::NpmServer
     bad_request(e.message)
   end
 
-  # @param package_name [String]
-  # @param document [Hash, nil]
-  # @return [Array] a Rack response triplet
+  #: (String package_name, ?Hash[untyped, untyped]? document) -> Paquette::rack_response
   def handle_document_put(package_name, document = nil)
     document ||= parse_json_body
     return bad_request("Request body is not valid JSON") unless document
@@ -401,8 +377,7 @@ class Paquette::NpmServer
     not_found(e.message)
   end
 
-  # @param package_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name) -> Paquette::rack_response
   def handle_unpublish_all(package_name)
     versions = @repository.versions_for_package(package_name)
     return not_found("Package not found") if versions.empty?
@@ -417,9 +392,7 @@ class Paquette::NpmServer
 
   # The preceding document PUT usually removed the version, so missing is success.
   #
-  # @param package_name [String]
-  # @param tarball_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name, String tarball_name) -> Paquette::rack_response
   def handle_unpublish_version(package_name, tarball_name)
     version = version_from_tarball_name(package_name, tarball_name)
     return not_found("Invalid package filename") unless version
@@ -430,9 +403,7 @@ class Paquette::NpmServer
     not_found(e.message)
   end
 
-  # @param package_name [String]
-  # @param tag [String]
-  # @return [Array] a Rack response triplet
+  #: (String package_name, String tag) -> Paquette::rack_response
   def handle_dist_tag_put(package_name, tag)
     # Rack consumed the body if Routes parsed form-encoded params.
     @request.body.rewind if @request.body.respond_to?(:rewind)
@@ -448,15 +419,12 @@ class Paquette::NpmServer
     not_found(e.message)
   end
 
-  # @param package_name [String]
-  # @param tarball_name [String]
-  # @return [String, nil]
+  #: (String package_name, String tarball_name) -> String?
   def version_from_tarball_name(package_name, tarball_name)
     self.class.version_from_tarball_name(package_name, tarball_name)
   end
 
-  # @param metadata [Hash]
-  # @return [Hash]
+  #: (Hash[untyped, untyped] metadata) -> Hash[untyped, untyped]
   def with_absolute_tarballs(metadata)
     Measurometer.instrument("paquette.npm_server.absolutize_tarballs") { absolutize_tarballs(metadata) }
   end
@@ -465,8 +433,7 @@ class Paquette::NpmServer
   # SCRIPT_NAME keeps them correct under a mount: a registry served at
   # /@acme must hand out tarball URLs that still say /@acme.
   #
-  # @param metadata [Hash]
-  # @return [Hash]
+  #: (Hash[untyped, untyped] metadata) -> Hash[untyped, untyped]
   def absolutize_tarballs(metadata)
     base = metadata_base_url
     versions = (metadata["versions"] || {}).each_with_object({}) do |(version, doc), acc|
@@ -483,8 +450,7 @@ class Paquette::NpmServer
 
   # npm's unpublish flow needs a `_rev`; derived, since nothing is locked.
   #
-  # @param package_name [String]
-  # @return [String]
+  #: (String package_name) -> String
   def revision_for(package_name)
     Measurometer.instrument("paquette.npm_server.revision_for") do
       versions = @repository.versions_for_package(package_name)
@@ -497,10 +463,12 @@ class Paquette::NpmServer
   # declared length refuses an announced oversize for free, and the read
   # stops one byte past the cap for the body that declared nothing.
   #
-  # @return [Hash, nil]
-  # @raise [PayloadTooLarge]
+  # Raises `PayloadTooLarge`.
+  #
+  #: () -> Hash[untyped, untyped]?
   def parse_json_body
-    if @max_push_bytes && declared_content_length && declared_content_length > @max_push_bytes
+    declared = declared_content_length
+    if @max_push_bytes && declared && declared > @max_push_bytes
       raise PayloadTooLarge, "Request body exceeds the #{@max_push_bytes} byte limit"
     end
 
@@ -522,7 +490,7 @@ class Paquette::NpmServer
   # nil when the client did not announce one — not an error on its own, it
   # only means the capped read has to do the work.
   #
-  # @return [Integer, nil]
+  #: () -> Integer?
   def declared_content_length
     raw = @request.get_header("CONTENT_LENGTH")
     return nil if raw.nil? || raw.to_s.empty?
@@ -535,7 +503,7 @@ class Paquette::NpmServer
   # The authenticator knows a token, not a name, so every signed-in caller is
   # "paquette" - `npm whoami` only needs to see that the token was taken
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_whoami
     return unauthorized unless Paquette::AuthToken.from_env(@request.env)
 
@@ -545,61 +513,50 @@ class Paquette::NpmServer
   # A package document with many versions is the largest thing this server
   # serializes, and it is serialized on every metadata request.
   #
-  # @param data [Object]
-  # @param status [Integer]
-  # @return [Array] a Rack response triplet
+  #: (untyped data, ?status: Integer) -> Paquette::rack_response
   def json_ok(data, status: 200)
     body = Measurometer.instrument("paquette.npm_server.generate_json") { JSON.pretty_generate(data) }
     [status, {"Content-Type" => "application/json"}, [body]]
   end
 
-  # @param data [String]
-  # @return [Array] a Rack response triplet
+  #: (String data) -> Paquette::rack_response
   def text_ok(data)
     [200, {"Content-Type" => "text/plain"}, [data]]
   end
 
   # npm surfaces the `error` key of a JSON body to the user.
   #
-  # @param status [Integer]
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (Integer status, String message) -> Paquette::rack_response
   def json_error(status, message)
     [status, {"Content-Type" => "application/json"}, [JSON.pretty_generate({error: message})]]
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def not_found(message = "Not Found")
     json_error(404, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def bad_request(message = "Bad Request")
     json_error(400, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def forbidden(message = "Forbidden")
     json_error(403, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def conflict(message = "Conflict")
     json_error(409, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def payload_too_large(message = "Payload Too Large")
     json_error(413, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def server_error(message = "Internal Server Error")
     json_error(500, message)
   end

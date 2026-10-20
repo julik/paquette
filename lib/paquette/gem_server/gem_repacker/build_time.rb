@@ -5,7 +5,6 @@ require "rubygems"
 # ENV["SOURCE_DATE_EPOCH"] for this, which is process-wide and thus unsafe
 # with concurrent repacks; this overrides the reader instead.
 module Paquette::GemServer::GemRepacker::BuildTime
-  # @return [Symbol]
   KEY = :paquette_gem_repacker_source_date_epoch
 
   # Runs the block with the given build timestamp pinned. Fiber-local rather
@@ -13,8 +12,11 @@ module Paquette::GemServer::GemRepacker::BuildTime
   # fiber that started it, so this stays per-request under both a thread pool
   # and a fiber scheduler.
   #
-  # @param time [Time, Integer] the timestamp to stamp into archive entries
-  # @return [Object] the return value of the block
+  # - `time`: the timestamp to stamp into archive entries
+  #
+  # Returns the return value of the block.
+  #
+  #: [T] ((Time | Integer) time) { () -> T } -> T
   def self.with(time)
     previous = Thread.current[KEY]
     Thread.current[KEY] = time.to_i.to_s
@@ -23,7 +25,9 @@ module Paquette::GemServer::GemRepacker::BuildTime
     Thread.current[KEY] = previous
   end
 
-  # @return [String] the pinned epoch, or whatever RubyGems would have used
+  # Returns the pinned epoch, or whatever RubyGems would have used.
+  #
+  #: () -> String
   def source_date_epoch_string
     Thread.current[KEY] || super
   end

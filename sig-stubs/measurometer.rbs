@@ -1,0 +1,5 @@
+module Measurometer
+  def self.instrument: [T] (String block_name) { () -> T } -> T
+  def self.increment_counter: (String counter_path, ?Integer by, **untyped tags) -> void
+  def self.add_distribution_value: (String key_path, Numeric value, **untyped tags) -> void
+end

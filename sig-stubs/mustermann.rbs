@@ -1,0 +1,10 @@
+module Mustermann
+  def self.new: (String pattern, **untyped) -> Pattern
+
+  class Pattern
+    def params: (String string) -> Hash[String, untyped]?
+    def match: (String string) -> MatchData?
+    def ===: (String string) -> bool
+    def to_s: () -> String
+  end
+end

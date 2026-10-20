@@ -12,54 +12,40 @@ module Paquette::Wheel
   # bigger than this module is willing to inflate.
   class MalformedWheel < StandardError; end
 
-  # One member of a wheel.
-  #
-  # @!attribute name
-  #   @return [String]
-  # @!attribute mode
-  #   @return [Integer] unix permission bits
-  # @!attribute mtime
-  #   @return [Time]
-  # @!attribute content
-  #   @return [String]
-  Entry = Struct.new(:name, :mode, :mtime, :content, keyword_init: true)
+  # One member of a wheel. `mode` is the unix permission bits.
+  Entry = Struct.new(
+    :name, #: String
+    :mode, #: Integer
+    :mtime, #: Time
+    :content, #: String
+    keyword_init: true
+  )
 
   # A wheel with more members than this is not one anybody built by hand.
-  #
-  # @return [Integer]
   MAX_ENTRIES = 100_000
 
   # The ceiling on a whole wheel inflated into memory for a repack.
-  #
-  # @return [Integer]
-  MAX_INFLATED_BYTES = 1024 * 1024 * 1024
+  MAX_INFLATED_BYTES = 1024 * 1024 * 1024 #: Integer
 
   # Compressed bytes per inflate step. Deflate tops out near 1:1032, so one
   # step can overshoot a ceiling by four megabytes and no more.
-  #
-  # @return [Integer]
   INFLATE_STEP = 4096
 
   # The earliest moment a DOS timestamp can carry
-  #
-  # @return [Time]
-  DOS_EPOCH = Time.utc(1980, 1, 1)
+  DOS_EPOCH = Time.utc(1980, 1, 1) #: Time
 
   # The ZIP code for deflate
-  #
-  # @return [Integer]
   DEFLATED = 8
-  # @return [Integer]
   STORED = 0
 
   class << self
     # The bytes of one member, or nil when there is no such member.
     #
-    # @param wheel_path [String]
-    # @param name [String]
-    # @param limit [Integer] refuse to inflate past this many bytes
-    # @return [String, nil]
-    # @raise [MalformedWheel]
+    # - `limit`: refuse to inflate past this many bytes
+    #
+    # Raises `MalformedWheel`.
+    #
+    #: (String wheel_path, String name, limit: Integer) -> String?
     def read_entry(wheel_path, name, limit:)
       Measurometer.instrument("paquette.wheel.read_entry") do
         with_structure(wheel_path) do |io, entries|
@@ -71,9 +57,9 @@ module Paquette::Wheel
 
     # The member names, in the order they sit in the central directory.
     #
-    # @param wheel_path [String]
-    # @return [Array<String>]
-    # @raise [MalformedWheel]
+    # Raises `MalformedWheel`.
+    #
+    #: (String wheel_path) -> Array[String]
     def entry_names(wheel_path)
       with_structure(wheel_path) { |_io, entries| entries.map(&:filename) }
     end
@@ -81,9 +67,9 @@ module Paquette::Wheel
     # Every file member, inflated. Directory members are dropped - a wheel
     # does not need them and pip does not look for them.
     #
-    # @param wheel_path [String]
-    # @return [Array<Entry>]
-    # @raise [MalformedWheel]
+    # Raises `MalformedWheel`.
+    #
+    #: (String wheel_path) -> Array[Entry]
     def entries(wheel_path)
       Measurometer.instrument("paquette.wheel.entries") do
         with_structure(wheel_path) do |io, entries|
@@ -102,9 +88,9 @@ module Paquette::Wheel
     # timestamp comes from the entry and nothing is stamped with the clock.
     # Byte-identical per zlib build, as with Paquette::Tarball.
     #
-    # @param dest_path [String]
-    # @param entries [Array<Entry>]
-    # @return [String] dest_path
+    # Returns dest_path.
+    #
+    #: (String dest_path, Array[Entry] entries) -> String
     def write(dest_path, entries)
       Measurometer.instrument("paquette.wheel.write") do
         File.open(dest_path, "wb") do |file|
@@ -126,8 +112,7 @@ module Paquette::Wheel
     # A RECORD line's hash: urlsafe base64 sha256 without the padding,
     # per the binary distribution format.
     #
-    # @param content [String]
-    # @return [String]
+    #: (String content) -> String
     def record_hash(content)
       "sha256=" + [Digest::SHA256.digest(content.to_s.b)].pack("m0").tr("+/", "-_").delete("=")
     end
@@ -135,9 +120,7 @@ module Paquette::Wheel
     # A fresh RECORD for these entries. The signature files the old one may
     # have listed are the caller's to drop: whatever they signed is gone.
     #
-    # @param entries [Array<Entry>]
-    # @param record_name [String]
-    # @return [String]
+    #: (Array[Entry] entries, String record_name) -> String
     def record_for(entries, record_name)
       lines = entries.reject { |entry| entry.name == record_name }.map do |entry|
         [csv_field(entry.name), record_hash(entry.content), entry.content.to_s.bytesize].join(",")
@@ -147,11 +130,10 @@ module Paquette::Wheel
 
     private
 
-    # @param wheel_path [String]
-    # @yieldparam io [::File]
-    # @yieldparam entries [Array<ZipKit::FileReader::ZipEntry>]
-    # @return [Object] what the block returns
-    # @raise [MalformedWheel]
+    # Returns what the block returns.
+    # Raises `MalformedWheel`.
+    #
+    #: (String wheel_path) { (::File io, Array[ZipKit::FileReader::ZipEntry] entries) -> untyped } -> untyped
     def with_structure(wheel_path)
       File.open(wheel_path, "rb") do |io|
         entries = Measurometer.instrument("paquette.wheel.read_structure") do
@@ -166,11 +148,9 @@ module Paquette::Wheel
       raise MalformedWheel, "Could not read #{File.basename(wheel_path)}: #{e.message}"
     end
 
-    # @param io [::File]
-    # @param entry [ZipKit::FileReader::ZipEntry]
-    # @param limit [Integer]
-    # @return [String]
-    # @raise [MalformedWheel]
+    # Raises `MalformedWheel`.
+    #
+    #: (::File io, ZipKit::FileReader::ZipEntry entry, Integer limit) -> String
     def inflate(io, entry, limit)
       if entry.uncompressed_size > limit
         raise MalformedWheel, "#{entry.filename} inflates to more than #{limit} bytes"
@@ -207,8 +187,7 @@ module Paquette::Wheel
       out
     end
 
-    # @param data [String]
-    # @return [String]
+    #: (String data) -> String
     def deflate(data)
       deflater = Zlib::Deflate.new(Zlib::DEFAULT_COMPRESSION, -Zlib::MAX_WBITS)
       deflater.deflate(data, Zlib::FINISH)
@@ -216,24 +195,21 @@ module Paquette::Wheel
       deflater.close
     end
 
-    # @param entry [ZipKit::FileReader::ZipEntry]
-    # @return [Integer]
+    #: (ZipKit::FileReader::ZipEntry entry) -> Integer
     def unix_mode(entry)
       (entry.external_attrs.to_i >> 16) & 0o777
     end
 
     # Only the executable bit survives, as in Paquette::Tarball
     #
-    # @param mode [Integer]
-    # @return [Integer]
+    #: (Integer mode) -> Integer
     def normalized_mode(mode)
       ((mode.to_i & 0o111) != 0) ? 0o755 : 0o644
     end
 
     # The member's own DOS timestamp, so a repack keeps the dates it was built with.
     #
-    # @param entry [ZipKit::FileReader::ZipEntry]
-    # @return [Time]
+    #: (ZipKit::FileReader::ZipEntry entry) -> Time
     def dos_time(entry)
       date = entry.dos_date.to_i
       time = entry.dos_time.to_i
@@ -244,8 +220,7 @@ module Paquette::Wheel
 
     # RECORD is CSV, so a path with a comma or a quote in it gets quoted
     #
-    # @param value [String]
-    # @return [String]
+    #: (String value) -> String
     def csv_field(value)
       return value unless value.include?(",") || value.include?('"') || value.include?("\n")
 

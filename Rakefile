@@ -1,8 +1,8 @@
 require "bundler/gem_tasks"
 require "rake/testtask"
 
-# The default task is defined next to the YARD tasks below: it rebuilds
-# the signature files before running tests when the :docs group is
+# The default task is defined next to the type tasks below: it regenerates
+# the signatures and runs Steep before the tests when the :types group is
 # installed, and degrades to bare tests when it is not.
 
 # Test task configuration. test/conformance is deliberately not in here: it
@@ -32,40 +32,65 @@ end
 # Standard tasks
 require "standard/rake"
 
-# YARD and sord are in the :docs Gemfile group; the doc tasks only exist
-# when that group is installed.
+# The types are written inline in lib/, as rbs-inline `#:` comments. `rake rbs`
+# turns them into sig/generated, which is not committed: it ships with the gem
+# (build generates it first), is what Steep checks lib/ against, and is where
+# rdoc finds the types of attributes.
 begin
-  require "yard"
+  require "rbs/inline"
 
-  YARD::Rake::YardocTask.new(:yard) do |t|
-    t.files = ["lib/**/*.rb"]
-  end
-
-  # The duck-type notices are suppressed on purpose: a handful of parameters
-  # genuinely are duck types (a Rack app, an entitler, an authenticator), and
-  # untyped is the right signature for them. Everything else sord can say —
-  # warn, omit, error — stays on, so a missing or unresolvable type still
-  # shows up in the run.
-  SORD_FLAGS = "--no-sord-comments --exclude-messages duck"
-
-  desc "Generate RBI signatures from YARD tags into rbi/paquette.rbi"
-  task :rbi do
-    mkdir_p "rbi"
-    sh "bundle exec sord #{SORD_FLAGS} rbi/paquette.rbi"
-  end
-
-  desc "Generate RBS signatures from YARD tags into sig/paquette.rbs"
+  desc "Generate sig/generated from the inline RBS annotations in lib/"
   task :rbs do
-    mkdir_p "sig"
-    sh "bundle exec sord #{SORD_FLAGS} sig/paquette.rbs"
+    rm_rf "sig/generated"
+    sh "bundle exec rbs-inline --opt-out --output=sig/generated lib"
   end
 
-  desc "Generate docs and type signatures"
-  task docs: [:yard, :rbi, :rbs]
+  # Signatures for the dependencies, from gem_rbs_collection; fetched once.
+  file ".gem_rbs_collection" do
+    sh "bundle exec rbs collection install"
+  end
 
-  task default: [:rbi, :rbs, :test]
+  desc "Type-check lib/ with Steep"
+  task steep: [:rbs, ".gem_rbs_collection"] do
+    sh "bundle exec steep check"
+  end
+
+  task default: [:steep, :test]
+  Rake::Task["build"].enhance([:rbs])
 rescue LoadError
   task default: :test
+end
+
+# rdoc 8.1 renders the `#:` signatures under each method, and the sig/
+# types under each attribute, so the docs are built from fresh signatures.
+# An older rdoc - the default gem, when the :docs group is not installed -
+# would build them without the types, so it gets no task at all.
+begin
+  require "rdoc/task"
+  raise LoadError, "rdoc #{RDoc::VERSION} does not render RBS" if Gem::Version.new(RDoc::VERSION) < Gem::Version.new("8.1")
+  require_relative "rakelib/gfm_markup"
+
+  RDoc::Task.new(:rdoc) do |rd|
+    rd.rdoc_dir = "doc"
+    rd.title = "Paquette"
+    rd.main = "README.md"
+    # "markdown" is GitHub Flavored Markdown here: see rakelib/gfm_markup.rb.
+    rd.markup = "markdown"
+    rd.generator = "aliki"
+    rd.options << "--template-stylesheets=rakelib/gfm.css"
+    rd.rdoc_files.include("README.md", "CHANGELOG.md", "LICENSE.md", "docs/**/*.md", "lib/**/*.rb")
+  end
+
+  desc "Build the HTML docs into doc/, and open them when run from a terminal"
+  task docs: [*(:rbs if Rake::Task.task_defined?(:rbs)), :rdoc] do
+    index = File.expand_path("doc/index.html")
+    puts "Docs are in #{index}"
+    next unless $stdout.tty?
+
+    opener = RUBY_PLATFORM.include?("darwin") ? "open" : "xdg-open"
+    system(opener, index)
+  end
+rescue LoadError
 end
 
 # Clean task
@@ -78,8 +103,11 @@ end
 desc "Show available tasks"
 task :help do
   puts "Available tasks:"
-  puts "  rake test        - Run all tests (default)"
+  puts "  rake test        - Run all tests (default, after steep when available)"
   puts "  rake test:conformance - Run the RubyGems conformance suite against a live server"
+  puts "  rake rbs         - Generate sig/generated from the inline signatures"
+  puts "  rake steep       - Type-check lib/ with Steep"
+  puts "  rake docs        - Build the HTML docs into doc/ and open them"
   puts "  rake standard    - Check code style with Standard"
   puts "  rake standard:fix - Auto-fix code style issues"
   puts "  rake clean       - Clean up temporary files"

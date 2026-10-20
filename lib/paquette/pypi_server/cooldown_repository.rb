@@ -7,15 +7,16 @@ require "measurometer"
 # cooldown is for. An upload through it lands, and stays out of this view
 # until it has cooled.
 class Paquette::PypiServer::CooldownRepository < SimpleDelegator
-  # @param repository [Paquette::PypiServer::PypiRepository] the repository
-  #   to wrap
-  # @param interval [Integer, #to_i] the cooldown, in seconds
-  # @param published_at [Proc, nil] called with `name:`, `version:` and
-  #   `filename:`, returns a Time or nil for "I do not know". Defaults to the
-  #   repository's own published_at - the file's mtime, for a directory.
-  # @param published_at_validator [Proc, nil] only with `published_at:` - a
-  #   string that changes whenever any answer `published_at:` would give does
-  # @param clock [Proc] returns the current Time
+  # - `repository`: the repository to wrap
+  # - `interval`: the cooldown, in seconds
+  # - `published_at`: called with `name:`, `version:` and `filename:`, returns
+  #   a Time or nil for "I do not know". Defaults to the repository's own
+  #   published_at - the file's mtime, for a directory.
+  # - `published_at_validator`: only with `published_at:` - a string that
+  #   changes whenever any answer `published_at:` would give does
+  # - `clock`: returns the current Time
+  #
+  #: (Paquette::PypiServer::PypiRepository repository, interval: _ToI, ?published_at: Proc?, ?published_at_validator: Proc?, ?clock: Proc) -> void
   def initialize(repository, interval:, published_at: nil, published_at_validator: nil, clock: -> { Time.now })
     if published_at_validator && !published_at
       raise ArgumentError, "published_at_validator: describes a published_at: source, and none was given"
@@ -33,7 +34,7 @@ class Paquette::PypiServer::CooldownRepository < SimpleDelegator
   # Named by how many known publish times have cooled - see the gem side,
   # whose reasoning this is.
   #
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     inner = Paquette::CacheValidation.validator_of(__getobj__)
     return nil if inner.nil?
@@ -47,47 +48,37 @@ class Paquette::PypiServer::CooldownRepository < SimpleDelegator
     Paquette::CacheValidation.derive_validator(inner, "cooldown", [@interval, source_state, cooled].join("\0"))
   end
 
-  # @return [Array<String>]
+  #: () -> Array[String]
   def project_names
     super.select { |project| filenames_for_project(project).any? }
   end
 
-  # @param project [String]
-  # @return [Array<String>]
+  #: (String project) -> Array[String]
   def filenames_for_project(project)
     super.select { |filename| servable?(project, filename) }
   end
 
-  # @param project [String]
-  # @return [Array<String>]
+  #: (String project) -> Array[String]
   def versions_for_project(project)
     filenames_for_project(project).filter_map { |filename| Paquette::PypiServer::PypiRepository.version_from_filename(filename) }.uniq
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [String, nil]
+  #: (String project, String filename) -> String?
   def file_path(project, filename)
     super if servable?(project, filename)
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [Boolean]
+  #: (String project, String filename) -> bool
   def file_exists?(project, filename)
     servable?(project, filename) ? super : false
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [Paquette::PypiServer::PypiRepository::DistributionFile, nil]
+  #: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
   def file_info(project, filename)
     super if servable?(project, filename)
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [String, nil]
+  #: (String project, String filename) -> String?
   def core_metadata(project, filename)
     super if servable?(project, filename)
   end
@@ -95,9 +86,7 @@ class Paquette::PypiServer::CooldownRepository < SimpleDelegator
   # An unknown publication time fails open: this is a delay policy, and
   # authorization is ReadGatedRepository's job.
   #
-  # @param project [String]
-  # @param filename [String]
-  # @return [Boolean]
+  #: (String project, String filename) -> bool
   def servable?(project, filename)
     published = published_time(project, filename)
     return true if published.nil?
@@ -107,15 +96,12 @@ class Paquette::PypiServer::CooldownRepository < SimpleDelegator
 
   private
 
-  # @param published [Time]
-  # @param now [Time]
-  # @return [Boolean]
+  #: (Time published, Time now) -> bool
   def cooled?(published, now)
     (now - published) >= @interval
   end
 
-  # @param key [Array]
-  # @return [Array<Time>]
+  #: (Array[untyped] key) -> Array[Time]
   def publish_times_for(key)
     @publish_times_lock.synchronize do
       memo_key, times = @publish_times
@@ -130,9 +116,7 @@ class Paquette::PypiServer::CooldownRepository < SimpleDelegator
     end
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [Time, nil]
+  #: (String project, String filename) -> Time?
   def published_time(project, filename)
     Measurometer.instrument("paquette.pypi_cooldown.published_at") do
       if @published_at_source

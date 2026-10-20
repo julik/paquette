@@ -2,7 +2,7 @@
 
 ## Tests
 
-Run `bundle exec rake test` and `bundle exec standardrb` before you call a change done.
+Run `bundle exec rake` (Steep, then the tests) and `bundle exec standardrb` before you call a change done.
 
 ### Regexes get a pathological test, not just a happy-path one
 
@@ -20,6 +20,21 @@ Do not build a regexp by interpolating a name into one, even through `Regexp.esc
 Prefer bounded quantifiers (`{1,255}`) over `+` wherever the thing being matched has a real-world maximum. Ruby 3.2 memoizes most backtracking away, but the gemspec still allows 3.1, which does not.
 
 `Paquette::RegexpTimeout` — prepended into every Rack app here, so it is armed on any request that reaches one — is the backstop, not the fix. Keep the patterns linear anyway.
+
+## Types and docs
+
+The signatures live in the code, as rbs-inline annotations, and the comments above them are rdoc in markdown. There are no YARD tags.
+
+- A method gets a `#:` line directly above its `def`, with parameter names: `#: (String name, ?weak: bool) -> String?`. Overloads are one `#:` line each. rdoc reads this line and prints it on the method's page, so keep it on one line however long it gets.
+- An attribute, a constant or a Struct/Data member gets a trailing `#: Type`. A constant whose value is a plain literal needs none. rbs-inline does not see `Foo::Bar = Data.define(...)`, so assign one inside the module.
+- What a parameter is for goes in the prose, as a markdown list (`` - `name`: what it is ``), followed by "Returns ..." and "Raises ..." sentences. Do not restate what the signature already says.
+- `@rbs` annotations that rdoc should not print (`generic`, `skip`) go after a `#--` line, which ends the documentation part of the comment.
+- A Rack response is `Paquette::rack_response`, an env `Paquette::rack_env`, anything callable as a Rack app `Paquette::_RackApp`.
+- Prefer a narrowing local (`upload_path = tmp.path #: String`) over `# steep:ignore`; the ignore is for stdlib signatures that are wrong, such as `Zlib::GzipWriter.wrap` refusing a StringIO.
+
+`rake steep` regenerates `sig/generated` and type-checks `lib/`. It is part of the default `rake` and of CI. `sig/` is not committed: `rake build` generates it before packaging, so the gem ships it. Signatures for dependencies that ship none live in `sig-stubs/`, which is not packaged.
+
+`rake docs` builds the HTML docs into `doc/`. Comments and the .md pages are GitHub Flavored Markdown, rendered by commonmarker (`rakelib/gfm_markup.rb`): tables, task lists, alerts, footnotes and raw HTML all work. A backticked or bare name that rdoc documents still becomes a link to it.
 
 ## Style
 

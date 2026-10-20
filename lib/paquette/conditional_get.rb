@@ -9,8 +9,6 @@ require "digest"
 module Paquette::ConditionalGet
   # A year, the longest max-age RFC 9111 suggests anyone bother emitting,
   # paired with `immutable` so a revalidating client does not even ask.
-  #
-  # @return [Integer]
   IMMUTABLE_MAX_AGE = 31_536_000
 
   private
@@ -19,10 +17,10 @@ module Paquette::ConditionalGet
   # refuses to name itself: a wrong ETag on a gated index is worse than
   # serving every request in full.
   #
-  # @param resource_parts [Array<String>] what distinguishes this endpoint's
-  #   body from another's over the same corpus
-  # @param weak [Boolean]
-  # @return [String, nil]
+  # - `resource_parts`: what distinguishes this endpoint's body from another's
+  #   over the same corpus
+  #
+  #: (*String resource_parts, ?weak: bool) -> String?
   def etag_for(*resource_parts, weak: false)
     Paquette::CacheValidation.etag_for(@repository, *resource_parts, weak: weak)
   end
@@ -30,24 +28,21 @@ module Paquette::ConditionalGet
   # Request headers that carry a credential. A request with either one is
   # never answered `public` — these are the two Rack::Cache itself treats
   # as private by default.
-  #
-  # @return [Array<String>]
-  CREDENTIAL_HEADERS = %w[HTTP_AUTHORIZATION HTTP_COOKIE].freeze
+  CREDENTIAL_HEADERS = %w[HTTP_AUTHORIZATION HTTP_COOKIE].freeze #: Array[String]
 
   # `public` only when the embedder allowed shared caching, the request
   # carried no credential and nothing in the stack varies by caller —
   # getting this wrong serves one caller's view to the next. `no-cache`
   # rather than `no-store` so the 304 stays reachable.
   #
-  # @param max_age [Integer, nil]
-  # @return [Hash{String => String}]
+  #: (?max_age: Integer?) -> Hash[String, String]
   def cache_directives(max_age: nil)
     scope = shareable_response? ? "public" : "private"
     control = max_age ? "#{scope}, max-age=#{max_age}, immutable" : "#{scope}, no-cache"
     {"cache-control" => control, "vary" => vary_header}
   end
 
-  # @return [Boolean]
+  #: () -> bool
   def shareable_response?
     return false unless @shared_caching
     return false if CREDENTIAL_HEADERS.any? { |name| @request.has_header?(name) }
@@ -58,7 +53,7 @@ module Paquette::ConditionalGet
   # Not sufficient on its own — several CDNs ignore Vary on anything but
   # Accept-Encoding; `private` is what actually stands between two callers.
   #
-  # @return [String]
+  #: () -> String
   def vary_header
     "Authorization, Cookie, Accept-Encoding"
   end
@@ -67,8 +62,7 @@ module Paquette::ConditionalGet
   # handler did not label is `private, no-store`: it carries no validator,
   # so nothing could revalidate it.
   #
-  # @param response [Array] a Rack response triplet
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_response response) -> Paquette::rack_response
   def with_caching_defaults(response)
     status, headers, body = response
     # Rack::Headers rather than a plain Hash: handlers here spell names in
@@ -81,8 +75,11 @@ module Paquette::ConditionalGet
     [status, headers, body]
   end
 
-  # @param vary [String, nil] the Vary already on the response
-  # @return [String] that Vary with Authorization merged in
+  # - `vary`: the Vary already on the response
+  #
+  # Returns that Vary with Authorization merged in.
+  #
+  #: (String? vary) -> String
   def vary_with_authorization(vary)
     fields = vary.to_s.split(",").map(&:strip).reject(&:empty?)
     return "*" if fields.include?("*")
@@ -95,9 +92,7 @@ module Paquette::ConditionalGet
   # etag (fail-closed) still gets the directives: the response is then
   # simply uncacheable-without-asking rather than mislabelled.
   #
-  # @param response [Array] a Rack response triplet
-  # @param etag [String, nil]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_response response, String? etag) -> Paquette::rack_response
   def cacheable(response, etag)
     status, headers, body = response
     headers = Rack::Headers[headers].merge!(cache_directives)
@@ -110,9 +105,9 @@ module Paquette::ConditionalGet
   # representation even on a 206 (RFC 9530), or Bundler will not append;
   # `Digest:` is the obsolete RFC 3230 spelling some intermediaries read.
   #
-  # @param response [Array] a Rack response triplet, body already in hand
-  # @param etag [String, nil]
-  # @return [Array] a Rack response triplet
+  # - `response`: body already in hand
+  #
+  #: (Paquette::rack_response response, String? etag) -> Paquette::rack_response
   def cacheable_with_ranges(response, etag)
     status, headers, body = cacheable(response, etag)
     content = +""
@@ -135,9 +130,9 @@ module Paquette::ConditionalGet
   # guessed the tail wrong into a failed install. Called after the
   # conditional check: a matching If-None-Match is a 304, not a 206.
   #
-  # @param size [Integer] the body size in bytes
-  # @param etag [String, nil]
-  # @return [Range, nil]
+  # - `size`: the body size in bytes
+  #
+  #: (Integer size, String? etag) -> Range[Integer]?
   def requested_byte_range(size, etag)
     header = @request.get_header("HTTP_RANGE")
     return nil if header.nil? || size.zero?
@@ -150,8 +145,7 @@ module Paquette::ConditionalGet
   # ours does: a weak validator says nothing about byte offsets, and a date
   # says nothing about a body that is not a file.
   #
-  # @param etag [String, nil]
-  # @return [Boolean]
+  #: (String? etag) -> bool
   def if_range_allows_range?(etag)
     if_range = @request.get_header("HTTP_IF_RANGE")
     return true if if_range.nil?
@@ -161,23 +155,17 @@ module Paquette::ConditionalGet
 
   # The longest Range header worth looking at: a single byte range is two
   # numbers and a dash, anything longer is multi-range or junk.
-  #
-  # @return [Integer]
   MAX_RANGE_HEADER_BYTES = 128
 
   # One offset, bounded, because this string is client-chosen: `\d+` would
   # let a caller hand us a megabyte of digits to convert to an Integer.
-  #
-  # @return [Regexp]
   BYTE_OFFSET = /\A[0-9]{1,19}\z/
 
   # Parses `bytes=first-last`, with either side optionally empty, and
   # nothing else. String operations rather than a pattern over the whole
   # header, per AGENTS.md.
   #
-  # @param header [String]
-  # @param size [Integer]
-  # @return [Range, nil]
+  #: (String header, Integer size) -> Range[Integer]?
   def parse_byte_range(header, size)
     spec = header.to_s.strip
     return nil if spec.bytesize > MAX_RANGE_HEADER_BYTES
@@ -202,9 +190,7 @@ module Paquette::ConditionalGet
   # and `bytes=-0` asks for nothing; neither is satisfiable, so both get the
   # whole body.
   #
-  # @param last [String]
-  # @param size [Integer]
-  # @return [Range, nil]
+  #: (String last, Integer size) -> Range[Integer]?
   def suffix_byte_range(last, size)
     return nil if last.empty?
 
@@ -217,9 +203,9 @@ module Paquette::ConditionalGet
   # A 304 repeats the validator and the directives — a shared cache
   # updates its stored headers from it.
   #
-  # @param etag [String, nil]
-  # @param extra [Hash{String => String}] extra headers
-  # @return [Array] a Rack response triplet
+  # - `extra`: extra headers
+  #
+  #: (String? etag, ?extra: Hash[String, String]) -> Paquette::rack_response
   def not_modified(etag, extra: {})
     headers = Rack::Headers[cache_directives(max_age: extra.key?("Last-Modified") ? IMMUTABLE_MAX_AGE : nil)]
     headers["etag"] = etag if etag
@@ -229,8 +215,7 @@ module Paquette::ConditionalGet
   # A response that must never be stored by anything, for content that is
   # the caller's identity itself.
   #
-  # @param response [Array] a Rack response triplet
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_response response) -> Paquette::rack_response
   def uncacheable(response)
     status, headers, body = response
     [status, Rack::Headers[headers].merge!("cache-control" => "private, no-store", "vary" => vary_header), body]
@@ -239,17 +224,14 @@ module Paquette::ConditionalGet
   # If-None-Match wins over If-Modified-Since when both are present, which
   # is what RFC 9110 requires.
   #
-  # @param etag [String, nil]
-  # @param mtime [Time]
-  # @return [Boolean, nil]
+  #: (String? etag, Time mtime) -> bool?
   def conditional_hit?(etag, mtime)
     return if_none_match_satisfied?(etag) if @request.get_header("HTTP_IF_NONE_MATCH")
 
     if_modified_since_satisfied?(mtime)
   end
 
-  # @param etag [String, nil]
-  # @return [Boolean]
+  #: (String? etag) -> bool
   def if_none_match_satisfied?(etag)
     return false if etag.nil?
 
@@ -266,8 +248,7 @@ module Paquette::ConditionalGet
   # rather than a regexp because the value is client-chosen and arbitrarily
   # long (see AGENTS.md).
   #
-  # @param value [String]
-  # @return [String]
+  #: (String value) -> String
   def opaque_tag(value)
     tag = value.to_s.strip
     tag = tag.delete_prefix("W/")
@@ -277,8 +258,7 @@ module Paquette::ConditionalGet
   # An unparseable date is not a match; second resolution is all an HTTP
   # date has.
   #
-  # @param mtime [Time]
-  # @return [Boolean]
+  #: (Time mtime) -> bool
   def if_modified_since_satisfied?(mtime)
     header = @request.get_header("HTTP_IF_MODIFIED_SINCE")
     return false if header.nil?
@@ -296,7 +276,7 @@ module Paquette::ConditionalGet
   # root: #serving takes an absolute path and never reads @root, and the
   # path is the repository's to decide.
   #
-  # @return [::Rack::Files]
+  #: () -> ::Rack::Files
   def package_file_server
     @package_file_server ||= Rack::Files.new(nil, {}, "application/octet-stream")
   end
@@ -304,10 +284,9 @@ module Paquette::ConditionalGet
   # Serves one immutable artifact off disk — a .gem or .tgz at a given
   # path never changes; yank and unpublish rename away.
   #
-  # @param path [String] absolute path of the file
-  # @param stat [::File::Stat]
-  # @param etag [String, nil]
-  # @return [Array] a Rack response triplet
+  # - `path`: absolute path of the file
+  #
+  #: (String path, ::File::Stat stat, String? etag) -> Paquette::rack_response
   def serve_immutable_file(path, stat, etag)
     last_modified = stat.mtime.httpdate
 
@@ -336,9 +315,7 @@ module Paquette::ConditionalGet
   # ETag and Cache-Control), and If-Range is answered here by dropping the
   # Range header, because Rack::Files does not implement it at all.
   #
-  # @param etag [String, nil]
-  # @param stat [::File::Stat]
-  # @return [::Rack::Request]
+  #: (String? etag, ::File::Stat stat) -> ::Rack::Request
   def rack_files_request(etag, stat)
     env = @request.env.except("HTTP_IF_MODIFIED_SINCE")
 
@@ -354,10 +331,7 @@ module Paquette::ConditionalGet
   # compared strongly — a weak validator says nothing about byte offsets,
   # which is the only thing this comparison is for.
   #
-  # @param if_range [String]
-  # @param etag [String, nil]
-  # @param stat [::File::Stat]
-  # @return [Boolean]
+  #: (String if_range, String? etag, ::File::Stat stat) -> bool
   def if_range_matches?(if_range, etag, stat)
     return false if if_range.start_with?("W/")
     return if_range.strip == etag if etag && if_range.strip.start_with?('"')

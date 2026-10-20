@@ -21,40 +21,30 @@ class Paquette::PypiServer
   # multipart parse if it has to be, which is where the bytes get read.
   class PayloadTooLarge < StandardError; end
 
-  # @return [String]
   JSON_TYPE = "application/vnd.pypi.simple.v1+json"
-  # @return [String]
   HTML_TYPE = "application/vnd.pypi.simple.v1+html"
-  # @return [String]
   TEXT_HTML_TYPE = "text/html"
 
   # The media types PEP 691 names, and the format each one is. "latest"
   # is v1 for as long as v1 is all there is.
-  #
-  # @return [Hash{String => Array(Symbol, String)}]
   MEDIA_TYPES = {
     JSON_TYPE => [:json, JSON_TYPE],
     "application/vnd.pypi.simple.latest+json" => [:json, JSON_TYPE],
     HTML_TYPE => [:html, HTML_TYPE],
     "application/vnd.pypi.simple.latest+html" => [:html, HTML_TYPE],
     TEXT_HTML_TYPE => [:html, "text/html; charset=utf-8"]
-  }.freeze
+  }.freeze #: Hash[String, [Symbol, String]]
 
   # pip sends three media types; anything much longer is not a client
   # negotiating, and is read as no preference at all.
-  #
-  # @return [Integer]
   MAX_ACCEPT_BYTES = 1024
 
-  # @return [String]
   API_VERSION = "1.1"
 
   # The core metadata file of PEP 658 is the distribution's URL plus this
-  #
-  # @return [String]
   METADATA_SUFFIX = ".metadata"
 
-  @@routes = Paquette::Routes.draw do |r|
+  @@routes = Paquette::Routes.draw do |r| #$ Paquette::PypiServer
     r.get "/" do
       @placeholder_app.call(@request.env)
     end
@@ -97,30 +87,29 @@ class Paquette::PypiServer
   # What a request would dispatch to, without dispatching it - the twin of
   # GemServer.route_for. Only the path is read.
   #
-  # @param env [Hash] the Rack env
-  # @return [Paquette::Routes::Recognition, nil]
+  #: (Paquette::rack_env env) -> Paquette::Routes::Recognition?
   def self.route_for(env)
     @@routes.recognize(Rack::Request.new(env))
   rescue Paquette::Routes::BadRequest
     nil
   end
 
-  # @return [String]
   DEFAULT_BLURB = "This server provides Python packages. Point pip at /simple/ and install as usual."
 
-  # @param repository [Paquette::PypiServer::PypiRepository, String] the
-  #   repository stack to serve, or a directory path to wrap in a
-  #   DirectoryPypiRepository
-  # @param placeholder_app [#call] the Rack app answering the root path
-  # @param max_push_bytes [Integer, nil] the largest upload body this server
-  #   will read; nil removes the cap
-  # @param shared_caching [Boolean] false keeps every response `private` -
-  #   see the same option on GemServer
-  # @param authenticator [Object, nil] answers `read_permitted?`,
-  #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
-  #   Without one, everyone reads and nobody writes
-  # @param on_publish [#call, nil] called with a Paquette::Published and the
-  #   Rack::Request once an upload has landed - see the same option on GemServer
+  # - `repository`: the repository stack to serve, or a directory path to wrap
+  #   in a DirectoryPypiRepository
+  # - `placeholder_app`: the Rack app answering the root path
+  # - `max_push_bytes`: the largest upload body this server will read; nil
+  #   removes the cap
+  # - `shared_caching`: false keeps every response `private` - see the same
+  #   option on GemServer
+  # - `authenticator`: answers `read_permitted?`, `write_permitted?` and
+  #   `check_otp!` - see Paquette::Authentication. Without one, everyone reads
+  #   and nobody writes
+  # - `on_publish`: called with a Paquette::Published and the Rack::Request
+  #   once an upload has landed - see the same option on GemServer
+  #
+  #: ((Paquette::PypiServer::PypiRepository | String) repository, ?placeholder_app: Paquette::_RackApp, ?max_push_bytes: Integer?, ?shared_caching: bool, ?authenticator: Paquette::Authentication::_Authenticator?, ?on_publish: (^(Paquette::Published, ::Rack::Request) -> void)?) -> void
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette Python package index"),
     max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil)
     @on_publish = on_publish
@@ -135,16 +124,14 @@ class Paquette::PypiServer
     @shared_caching = shared_caching
   end
 
-  # @param env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def call(env)
     with_caching_defaults(dispatch(env))
   end
 
   private
 
-  # @param env [Hash]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def dispatch(env)
     Measurometer.instrument("paquette.pypi_server.call") do
       request_env = env.dup
@@ -178,8 +165,7 @@ class Paquette::PypiServer
   # or what an upload wrote, since that names its project in the body only.
   # A misspelled project is a redirect, so only the normalized name is ever named.
   #
-  # @param params [Hash{String => Object}]
-  # @return [Array(String, String), Array(String), nil]
+  #: (Hash[String, untyped] params) -> ([String, String] | [String])?
   def served_package(params)
     return @written if @written
 
@@ -195,8 +181,11 @@ class Paquette::PypiServer
   # cap goes under the parser: refused outright when the length says so,
   # and cut off mid-read when it did not say.
   #
-  # @param env [Hash] the request env, changed in place
-  # @return [Array, nil] a refusal
+  # - `env`: the request env, changed in place
+  #
+  # Returns a refusal.
+  #
+  #: (Paquette::rack_env env) -> Paquette::rack_response?
   def cap_request_body(env)
     return nil unless @max_push_bytes
 
@@ -209,18 +198,16 @@ class Paquette::PypiServer
 
   # An input stream that raises once more than `limit` bytes have come out of it.
   class CappedInput
-    # @param io [#read]
-    # @param limit [Integer]
+    #: (untyped io, Integer limit) -> void
     def initialize(io, limit)
       @io = io
       @limit = limit
       @read = 0
     end
 
-    # @param length [Integer, nil]
-    # @param outbuf [String, nil]
-    # @return [String, nil]
-    # @raise [PayloadTooLarge]
+    # Raises `PayloadTooLarge`.
+    #
+    #: (?Integer? length, ?String? outbuf) -> String?
     def read(length = nil, outbuf = nil)
       # One past the cap is enough to know the cap was passed
       length = @limit - @read + 1 if length.nil? || length > @limit - @read + 1
@@ -231,13 +218,13 @@ class Paquette::PypiServer
       chunk
     end
 
-    # @return [void]
+    #: () -> void
     def rewind
       @io.rewind if @io.respond_to?(:rewind)
       @read = 0
     end
 
-    # @return [void]
+    #: () -> void
     def close
       @io.close if @io.respond_to?(:close)
     end
@@ -246,8 +233,7 @@ class Paquette::PypiServer
   # twine has nowhere to put a code but the username - see
   # Paquette::AuthToken::OTP_USERNAME. The `OTP` header is for curl.
   #
-  # @param env [Hash] the Rack env
-  # @return [String, nil]
+  #: (Paquette::rack_env env) -> String?
   def otp_code(env)
     env["HTTP_OTP"] || Paquette::AuthToken.otp_from_env(env)
   end
@@ -255,36 +241,38 @@ class Paquette::PypiServer
   # twine prints only the status line unless run with --verbose, which is
   # where this body shows up
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def otp_missing
     [401, {"Content-Type" => "text/plain"},
       ["This registry requires a one-time password with every upload. Send the current code as the username " \
        "and the token as the password: twine upload -u 123456 -p TOKEN"]]
   end
 
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def otp_rejected
     [401, {"Content-Type" => "text/plain"}, ["The one-time password was not accepted. Retry with a fresh code."]]
   end
 
   # Basic rather than Bearer: Basic is the only scheme pip and twine answer
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def unauthorized
     [401, {"Content-Type" => "text/plain", "www-authenticate" => %(Basic realm="Paquette")}, ["Unauthorized"]]
   end
 
   # The format the page is in decides the body, so a cache has to know it
   #
-  # @return [String]
+  #: () -> String
   def vary_header
     "Authorization, Cookie, Accept-Encoding, Accept"
   end
 
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_index
-    format, content_type = negotiate
-    return not_acceptable unless format
+    negotiated = negotiate
+    return not_acceptable unless negotiated
+
+    format, content_type = negotiated
 
     etag = etag_for("simple-index", content_type)
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -301,15 +289,16 @@ class Paquette::PypiServer
     end
   end
 
-  # @param project [String]
-  # @return [Array] a Rack response triplet
+  #: (String project) -> Paquette::rack_response
   def handle_project(project)
     normalized = Paquette::PypiServer::PypiRepository.normalize_name(project)
     return not_found("Project not found") unless normalized
     return redirect("/simple/#{normalized}/") unless normalized == project
 
-    format, content_type = negotiate
-    return not_acceptable unless format
+    negotiated = negotiate
+    return not_acceptable unless negotiated
+
+    format, content_type = negotiated
 
     etag = etag_for("simple-project", project, content_type)
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -326,16 +315,12 @@ class Paquette::PypiServer
   # Relative URLs, which pip resolves against the page: the page stays the
   # same behind a proxy and under a mount, and so does its ETag.
   #
-  # @param project [String]
-  # @param filename [String]
-  # @return [String]
+  #: (String project, String filename) -> String
   def file_url(project, filename)
     "../../files/#{url_segment(project)}/#{url_segment(filename)}"
   end
 
-  # @param project [String]
-  # @param files [Array<Paquette::PypiServer::PypiRepository::DistributionFile>]
-  # @return [String]
+  #: (String project, Array[Paquette::PypiServer::PypiRepository::DistributionFile] files) -> String
   def project_json(project, files)
     JSON.generate({
       "meta" => {"api-version" => API_VERSION},
@@ -359,9 +344,7 @@ class Paquette::PypiServer
     })
   end
 
-  # @param project [String]
-  # @param files [Array<Paquette::PypiServer::PypiRepository::DistributionFile>]
-  # @return [String]
+  #: (String project, Array[Paquette::PypiServer::PypiRepository::DistributionFile] files) -> String
   def project_html(project, files)
     links = files.map do |file|
       attributes = [%(href="#{h(file_url(project, file.filename))}#sha256=#{h(file.sha256)}")]
@@ -376,9 +359,7 @@ class Paquette::PypiServer
     html_page("Links for #{project}", links)
   end
 
-  # @param title [String]
-  # @param links [Array<String>]
-  # @return [String]
+  #: (String title, Array[String] links) -> String
   def html_page(title, links)
     <<~HTML
       <!DOCTYPE html>
@@ -397,9 +378,7 @@ class Paquette::PypiServer
 
   # Serves a distribution, or with ".metadata" on the end its core metadata
   #
-  # @param project [String]
-  # @param filename [String]
-  # @return [Array] a Rack response triplet
+  #: (String project, String filename) -> Paquette::rack_response
   def handle_file(project, filename)
     return handle_core_metadata(project, filename.delete_suffix(METADATA_SUFFIX)) if filename.end_with?(METADATA_SUFFIX)
 
@@ -419,9 +398,7 @@ class Paquette::PypiServer
     serve_immutable_file(path, stat, %("sha256-#{info.sha256}"))
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [Array] a Rack response triplet
+  #: (String project, String filename) -> Paquette::rack_response
   def handle_core_metadata(project, filename)
     info = @repository.file_info(project, filename)
     return not_found("Metadata not found") unless info&.core_metadata_sha256
@@ -441,8 +418,7 @@ class Paquette::PypiServer
   # believed: the file is read for its name and metadata. A digest it sent
   # is checked, so a body mangled in transit is refused rather than stored.
   #
-  # @param params [Hash{Symbol => Object}]
-  # @return [Array] a Rack response triplet
+  #: (Hash[Symbol, untyped] params) -> Paquette::rack_response
   def handle_upload(params)
     return bad_request("Unsupported :action") unless params[:":action"] == "file_upload"
 
@@ -463,7 +439,7 @@ class Paquette::PypiServer
     end
 
     info = Measurometer.instrument("paquette.pypi_server.upload") { @repository.add_file(tempfile.path, filename) }
-    project = Paquette::PypiServer::PypiRepository.normalize_name(parsed[:distribution])
+    project = Paquette::PypiServer::PypiRepository.normalize_name(parsed[:distribution]) #: String
     @written = [project, info.version]
     # A wheel carries no date worth trusting either, so this is the moment of arrival
     @on_publish&.call(Paquette::Published.new(name: project, version: info.version, released_at: info.upload_time || Time.now), @request)
@@ -479,7 +455,9 @@ class Paquette::PypiServer
   # answer with. A `?format=` query parameter wins, per PEP 691. No Accept
   # at all is HTML, which is what a client from before PEP 691 expects.
   #
-  # @return [Array(Symbol, String), nil] nil when nothing on offer is acceptable
+  # Returns nil when nothing on offer is acceptable.
+  #
+  #: () -> [Symbol, String]?
   def negotiate
     # PEP 691 writes its example with a bare "+", which a query string
     # decodes to a space - and no media type has a space in it
@@ -489,7 +467,7 @@ class Paquette::PypiServer
     accept = @request.get_header("HTTP_ACCEPT").to_s
     return MEDIA_TYPES[TEXT_HTML_TYPE] if accept.strip.empty? || accept.bytesize > MAX_ACCEPT_BYTES
 
-    best = nil
+    best = nil #: [Float, Integer, [Symbol, String]]?
     accept.split(",").each_with_index do |range, position|
       media_type, *parameters = range.split(";").map(&:strip)
       quality = 1.0
@@ -504,70 +482,60 @@ class Paquette::PypiServer
       next unless candidate
 
       # Higher q wins, and on a tie whatever the client listed first
-      best = [quality, -position, candidate] if best.nil? || (quality <=> best[0]).positive?
+      best = [quality, -position, candidate] if best.nil? || quality > best[0]
     end
     best&.last
   end
 
   # Relative to the mount, so a registry served at /@acme redirects within it
   #
-  # @param path [String]
-  # @return [Array] a Rack response triplet
+  #: (String path) -> Paquette::rack_response
   def redirect(path)
     location = @request.script_name + path
     [301, {"Content-Type" => "text/plain", "Location" => location}, ["Moved to #{location}"]]
   end
 
-  # @param string [String]
-  # @return [String]
+  #: (String string) -> String
   def url_segment(string)
     ERB::Util.url_encode(string.to_s)
   end
 
-  # @param string [String]
-  # @return [String]
+  #: (String string) -> String
   def h(string)
     CGI.escapeHTML(string.to_s)
   end
 
-  # @param data [String]
-  # @return [Array] a Rack response triplet
+  #: (String data) -> Paquette::rack_response
   def text_ok(data)
     [200, {"Content-Type" => "text/plain"}, [data]]
   end
 
-  # @param status [Integer]
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (Integer status, String message) -> Paquette::rack_response
   def text_error(status, message)
     [status, {"Content-Type" => "text/plain"}, [message]]
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def not_found(message = "Not Found")
     text_error(404, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def bad_request(message = "Bad Request")
     text_error(400, message)
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def conflict(message = "Conflict")
     text_error(409, message)
   end
 
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def not_acceptable
     text_error(406, "This index serves #{MEDIA_TYPES.keys.join(", ")}")
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def payload_too_large(message = "Payload Too Large")
     text_error(413, message)
   end

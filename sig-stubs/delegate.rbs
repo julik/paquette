@@ -1,0 +1,5 @@
+# Ruby's Delegator carries a copy of Kernel; the collection's signature
+# leaves it out, so `raise` and `rand` inside a SimpleDelegator look missing.
+class Delegator
+  include Kernel
+end

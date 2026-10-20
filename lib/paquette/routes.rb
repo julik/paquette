@@ -17,24 +17,21 @@ class Paquette::Routes
 
   # One route: an HTTP method, a Mustermann pattern and a handler block.
   class Route
-    # @return [String]
-    attr_reader :method
+    attr_reader :method #: String
 
-    # @return [::Mustermann::Pattern]
-    attr_reader :pattern
+    attr_reader :pattern #: ::Mustermann::Pattern
 
-    # @return [Proc]
-    attr_reader :block
+    attr_reader :block #: Proc
 
     # The pattern as written, not as matched — interpolating the matched
     # path would open a new metric per gem name in the corpus.
-    #
-    # @return [String]
-    attr_reader :metric_name
+    attr_reader :metric_name #: String
 
-    # @param method [String] the HTTP method, uppercase
-    # @param pattern [String] a Mustermann pattern string
-    # @param block [Proc] the handler
+    # - `method`: the HTTP method, uppercase
+    # - `pattern`: a Mustermann pattern string
+    # - `block`: the handler
+    #
+    #: (String method, String pattern, Proc block) -> void
     def initialize(method, pattern, block)
       @method = method
       @pattern = Mustermann.new(pattern)
@@ -45,13 +42,12 @@ class Paquette::Routes
     # Anything that is not a read changes the corpus, and is what a server
     # asks a one-time password for.
     #
-    # @return [Boolean]
+    #: () -> bool
     def write?
       @method != "GET" && @method != "HEAD"
     end
 
-    # @param request [::Rack::Request]
-    # @return [Boolean]
+    #: (::Rack::Request request) -> boolish
     def match?(request)
       @method == request.request_method && @pattern.match(path_of(request))
     end
@@ -60,8 +56,7 @@ class Paquette::Routes
     # PATH_INFO — which is not a path, it is the root of the mount, where
     # the index page lives.
     #
-    # @param request [::Rack::Request]
-    # @return [String]
+    #: (::Rack::Request request) -> String
     def path_of(request)
       path = request.path_info
       path.empty? ? "/" : path
@@ -71,27 +66,28 @@ class Paquette::Routes
     # on which every regexp a handler runs raises instead of failing to
     # match. Refused at the door.
     #
-    # @param request [::Rack::Request]
-    # @return [Hash{String => Object}] the pattern's captures
-    # @raise [MalformedRequest]
+    # Returns the pattern's captures.
+    # Raises `MalformedRequest`.
+    #
+    #: (::Rack::Request request) -> Hash[String, untyped]
     def params(request)
-      @pattern.params(path_of(request)).each_value do |value|
-        Array(value).each do |segment|
+      params = @pattern.params(path_of(request)) #: Hash[String, untyped]
+      params.each_value do |value|
+        segments = Array(value) #: Array[untyped]
+        segments.each do |segment|
           raise MalformedRequest, "Path segment is not valid UTF-8" unless segment.to_s.valid_encoding?
         end
       end
     end
 
-    # @param server [Object] the server instance the block runs against
-    # @param request [::Rack::Request]
-    # @return [Array] a Rack response triplet
+    # - `server`: the server instance the block runs against
+    #
+    #: (untyped server, ::Rack::Request request) -> Paquette::rack_response
     def perform_action(server, request)
       Measurometer.instrument("paquette.route.#{@metric_name}") { call_block(server, request) }
     end
 
-    # @param server [Object]
-    # @param request [::Rack::Request]
-    # @return [Array] a Rack response triplet
+    #: (untyped server, ::Rack::Request request) -> Paquette::rack_response
     def call_block(server, request)
       route_params = params(request)
       query_params = query_params(request)
@@ -104,9 +100,9 @@ class Paquette::Routes
     # client's fault, not a 500. The bare EOFError is the multipart
     # parser's, untagged, for a body shorter than its Content-Length.
     #
-    # @param request [::Rack::Request]
-    # @return [Hash{String => Object}]
-    # @raise [MalformedRequest]
+    # Raises `MalformedRequest`.
+    #
+    #: (::Rack::Request request) -> Hash[String, untyped]
     def query_params(request)
       request.params
     rescue Rack::BadRequest, EOFError => e
@@ -116,8 +112,7 @@ class Paquette::Routes
     # The block only gets the keywords it declares: a client's stray query
     # parameter (npm sends ?write=true) must not crash it with ArgumentError.
     #
-    # @param params [Hash{Symbol => Object}]
-    # @return [Hash{Symbol => Object}]
+    #: (Hash[Symbol, untyped] params) -> Hash[Symbol, untyped]
     def acceptable(params)
       parameters = @block.parameters
       return params if parameters.any? { |type, _| type == :keyrest }
@@ -127,39 +122,37 @@ class Paquette::Routes
     end
   end
 
-  # The DSL object yielded by {Routes.draw}.
+  # The DSL object yielded by Routes.draw. `S` is the server class whose
+  # instances the handler blocks run on.
+  #--
+  # @rbs generic S
   class RouteBuilder
-    # @param routes [Array<Route>]
+    #: (Array[Route] routes) -> void
     def initialize(routes)
       @routes = routes
     end
 
-    # @param pattern [String]
-    # @return [void]
+    #: (String pattern) { (**untyped) [self: S] -> untyped } -> void
     def get(pattern, &block)
       @routes << Route.new("GET", pattern, block)
     end
 
-    # @param pattern [String]
-    # @return [void]
+    #: (String pattern) { (**untyped) [self: S] -> untyped } -> void
     def post(pattern, &block)
       @routes << Route.new("POST", pattern, block)
     end
 
-    # @param pattern [String]
-    # @return [void]
+    #: (String pattern) { (**untyped) [self: S] -> untyped } -> void
     def put(pattern, &block)
       @routes << Route.new("PUT", pattern, block)
     end
 
-    # @param pattern [String]
-    # @return [void]
+    #: (String pattern) { (**untyped) [self: S] -> untyped } -> void
     def delete(pattern, &block)
       @routes << Route.new("DELETE", pattern, block)
     end
 
-    # @param pattern [String]
-    # @return [void]
+    #: (String pattern) { (**untyped) [self: S] -> untyped } -> void
     def patch(pattern, &block)
       @routes << Route.new("PATCH", pattern, block)
     end
@@ -167,13 +160,13 @@ class Paquette::Routes
 
   # Regexp.timeout bounds one match; nothing bounds a table of them, so
   # the clock is checked between candidates.
-  #
-  # @return [Float]
   DEFAULT_MATCH_BUDGET = 0.1
 
-  # @param match_budget [Float] seconds allowed for matching the whole table
-  # @yield [builder] the {RouteBuilder} to declare routes on
-  # @return [Routes]
+  # - `match_budget`: seconds allowed for matching the whole table
+  # - the block: the RouteBuilder to declare routes on; name the server
+  #   class with `#$` so Steep checks the handlers against it
+  #
+  #: [S] (?match_budget: Float) { (RouteBuilder[S] builder) -> void } -> Paquette::Routes
   def self.draw(match_budget: DEFAULT_MATCH_BUDGET, &block)
     routes = []
     builder = RouteBuilder.new(routes)
@@ -182,20 +175,17 @@ class Paquette::Routes
   end
 
   # For the linear_time? test; the request path does not need it.
-  #
-  # @return [Array<Route>]
-  attr_reader :routes
+  attr_reader :routes #: Array[Route]
 
-  # @param routes [Array<Route>]
-  # @param match_budget [Float]
+  #: (Array[Route] routes, ?match_budget: Float) -> void
   def initialize(routes, match_budget: DEFAULT_MATCH_BUDGET)
     @routes = routes
     @match_budget = match_budget
   end
 
-  # @param request [::Rack::Request]
-  # @return [Route, nil]
-  # @raise [MatchBudgetExceeded]
+  # Raises `MatchBudgetExceeded`.
+  #
+  #: (::Rack::Request request) -> Route?
   def match(request)
     Measurometer.instrument("paquette.routes.match") do
       deadline = now + @match_budget
@@ -207,29 +197,25 @@ class Paquette::Routes
     end
   end
 
-  # @param route [Route]
-  # @param server [Object]
-  # @param request [::Rack::Request]
-  # @return [Array] a Rack response triplet
+  #: (Route route, untyped server, ::Rack::Request request) -> Paquette::rack_response
   def perform_action(route, server, request)
     route.perform_action(server, request)
   end
 
   # What a request would dispatch to, named. `name` is the route's
   # metric_name; `params` is what the pattern extracted, symbol-keyed.
-  #
-  # @!attribute name
-  #   @return [String]
-  # @!attribute params
-  #   @return [Hash{Symbol => Object}]
-  Recognition = Data.define(:name, :params)
+  Recognition = Data.define(
+    :name, #: String
+    :params #: Hash[Symbol, untyped]
+  )
 
   # Recognize without performing: only the path is read, never the query
   # parser. A matched path whose segments fail the UTF-8 check still gets
   # its name, with empty params.
   #
-  # @param request [::Rack::Request]
-  # @return [Recognition, nil] nil for a request no route wants
+  # Returns nil for a request no route wants.
+  #
+  #: (::Rack::Request request) -> Recognition?
   def recognize(request)
     route = match(request)
     return nil unless route
@@ -244,7 +230,7 @@ class Paquette::Routes
 
   private
 
-  # @return [Float]
+  #: () -> Float
   def now
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end

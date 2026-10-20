@@ -6,18 +6,18 @@ require "measurometer"
 # compromised or broken release before anybody can pick it up. A push
 # through it lands, and stays out of this view until it has cooled.
 class Paquette::GemServer::CooldownRepository < SimpleDelegator
-  # @param repository [Paquette::GemServer::GemRepository] the repository
-  #   to wrap
-  # @param interval [Integer, #to_i] the cooldown, in seconds
-  # @param published_at [Proc, nil] called with `name:` and `version:`,
-  #   returns a Time — or nil for "I do not know". Defaults to the
-  #   repository's own published_at (the gemspec date).
-  # @param published_at_validator [Proc, nil] only with `published_at:`: a
-  #   zero-argument callable returning a string that changes whenever any
-  #   answer `published_at:` would give changes, or nil for "I cannot say".
-  #   Without one, a view over a custom source emits no validator.
-  # @param clock [Proc] returns the current Time; here so tests do not
-  #   have to sleep
+  # - `repository`: the repository to wrap
+  # - `interval`: the cooldown, in seconds
+  # - `published_at`: called with `name:` and `version:`, returns a Time — or
+  #   nil for "I do not know". Defaults to the repository's own published_at
+  #   (the gemspec date).
+  # - `published_at_validator`: only with `published_at:`: a zero-argument
+  #   callable returning a string that changes whenever any answer
+  #   `published_at:` would give changes, or nil for "I cannot say". Without
+  #   one, a view over a custom source emits no validator.
+  # - `clock`: returns the current Time; here so tests do not have to sleep
+  #
+  #: (Paquette::GemServer::GemRepository repository, interval: _ToI, ?published_at: Proc?, ?published_at_validator: Proc?, ?clock: Proc) -> void
   def initialize(repository, interval:, published_at: nil, published_at_validator: nil, clock: -> { Time.now })
     if published_at_validator && !published_at
       raise ArgumentError, "published_at_validator: describes a published_at: source, and none was given"
@@ -40,7 +40,7 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # validator and the interval; the sorted publish times are memoized
   # under the inner validator, fail-closed as everywhere else.
   #
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
     return nil if inner.nil?
@@ -61,18 +61,17 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # A gem with no servable version disappears from /names altogether —
   # Bundler treats a listed name as resolvable.
   #
-  # @return [Array<String>]
+  #: () -> Array[String]
   def gem_names
     super.select { |gem_name| versions_for_gem(gem_name).any? }
   end
 
-  # @return [Array<Array(String, String)>]
+  #: () -> Array[[String, String]]
   def gem_versions
     super.select { |gem_name, version| servable?(gem_name, version) }
   end
 
-  # @param gem_name [String]
-  # @return [Array<String>]
+  #: (String gem_name) -> Array[String]
   def versions_for_gem(gem_name)
     super.select { |version| servable?(gem_name, version) }
   end
@@ -80,8 +79,7 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # /specs.4.8 and /latest_specs.4.8 are built out of gem_versions, so they
   # follow from the filter above without this class touching them.
 
-  # @param gem_name [String]
-  # @return [Array<String>, Object]
+  #: (String gem_name) -> untyped
   def compact_info(gem_name)
     all_info = super
     return all_info unless all_info.is_a?(Array)
@@ -95,16 +93,12 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
 
   # The download path has to agree with the index: a cooling version 404s.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (String gem_name, String version) -> String?
   def gem_file_path(gem_name, version)
     super if servable?(gem_name, version)
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String gem_name, String version) -> bool
   def gem_exists?(gem_name, version)
     if servable?(gem_name, version)
       super
@@ -124,9 +118,7 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # ReadGatedRepository's job — and failing closed would break `bundle
   # install` over a missing timestamp.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String gem_name, String version) -> bool
   def servable?(gem_name, version)
     published = published_time(gem_name, version)
     return true if published.nil?
@@ -139,9 +131,7 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # The one comparison both servable? and cache_validator make, so the two
   # cannot disagree about which side of the boundary a version is on.
   #
-  # @param published [Time]
-  # @param now [Time]
-  # @return [Boolean]
+  #: (Time published, Time now) -> bool
   def cooled?(published, now)
     (now - published) >= @interval
   end
@@ -149,8 +139,7 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # The known publish times of every version the inner repository lists,
   # sorted; rebuilt only when `key` changes, under the lock.
   #
-  # @param key [Array]
-  # @return [Array<Time>]
+  #: (Array[untyped] key) -> Array[Time]
   def publish_times_for(key)
     @publish_times_lock.synchronize do
       memo_key, times = @publish_times
@@ -167,9 +156,7 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # whole corpus into cooldown on any rsync or restore. Its weakness — it
   # records the publisher's build time — is what `published_at:` is for.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Time, nil]
+  #: (String gem_name, String version) -> Time?
   def published_time(gem_name, version)
     Measurometer.instrument("paquette.gem_cooldown.published_at") do
       if @published_at_source

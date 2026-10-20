@@ -21,10 +21,12 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # Raised on a push of a tombed name+version+platform.
   class GemYanked < StandardError; end
 
-  # @param gems_dir [String] the corpus root, created if absent
-  # @param require_release_date [Boolean] refuse a push whose gemspec date is
-  #   the RubyGems placeholder or years from today - see
+  # - `gems_dir`: the corpus root, created if absent
+  # - `require_release_date`: refuse a push whose gemspec date is the RubyGems
+  #   placeholder or years from today - see
   #   SpecValidator.validate_release_date!
+  #
+  #: (String gems_dir, ?require_release_date: bool) -> void
   def initialize(gems_dir, require_release_date: false)
     @gems_dir = gems_dir
     @require_release_date = require_release_date
@@ -35,7 +37,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # one, a yank renames one away to a tomb, and a .gem file at a given path
   # never changes its bytes.
   #
-  # @return [String]
+  #: () -> String
   def fingerprint
     Measurometer.instrument("paquette.gem_repository.fingerprint") do
       d = Digest::SHA256.new
@@ -44,7 +46,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
   end
 
-  # @return [String]
+  #: () -> String
   def cache_validator
     fingerprint
   end
@@ -52,7 +54,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # A directory of gems is the same directory for everybody; the wrappers
   # above are what make a response caller-specific.
   #
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     false
   end
@@ -62,9 +64,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # read-or-derive path compact_info uses, which makes the ETag and the
   # published checksum the same number by construction.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (String gem_name, String version) -> String?
   def gem_checksum(gem_name, version)
     gem_file = gem_file_path(gem_name, version)
 
@@ -81,15 +81,17 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # Persists a .gem file from an uploaded payload. No size cap on purpose:
   # that is the server's rule, enforced by the body it hands over.
   #
-  # @param gem_payload [IO, String] an IO to stream from (the form the
-  #   server uses — a 50MB push should not become a 50MB Ruby String) or
-  #   raw bytes
-  # @return [::Gem::Specification] the parsed spec
-  # @raise [InvalidGem] when the payload cannot be opened as a gem or its
-  #   spec claims something a server should not act on
-  # @raise [GemYanked] for a tombed name+version+platform
-  # @raise [GemAlreadyExists] when that name, version *and* platform is
-  #   already on disk — "a-0.2.0-java" and "a-0.2.0" are two artifacts
+  # - `gem_payload`: an IO to stream from (the form the server uses — a 50MB
+  #   push should not become a 50MB Ruby String) or raw bytes
+  #
+  # Returns the parsed spec.
+  # Raises `InvalidGem` when the payload cannot be opened as a gem or its
+  # spec claims something a server should not act on.
+  # Raises `GemYanked` for a tombed name+version+platform.
+  # Raises `GemAlreadyExists` when that name, version *and* platform is
+  # already on disk — "a-0.2.0-java" and "a-0.2.0" are two artifacts.
+  #
+  #: ((IO | String) gem_payload) -> ::Gem::Specification
   def add_gem(gem_payload)
     raise InvalidGem, "Empty gem payload" if gem_payload.nil?
 
@@ -97,6 +99,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     io.rewind if io.respond_to?(:rewind)
 
     tmp = Tempfile.new(["paquette_push", ".gem"])
+    upload_path = tmp.path #: String
     tmp.binmode
 
     copied = Measurometer.instrument("paquette.gem_repository.write_upload") do
@@ -108,7 +111,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     raise InvalidGem, "Empty gem payload" if copied.zero?
 
     spec = begin
-      Measurometer.instrument("paquette.gem_repository.read_uploaded_spec") { read_uploaded_spec(tmp.path) }
+      Measurometer.instrument("paquette.gem_repository.read_uploaded_spec") { read_uploaded_spec(upload_path) }
     rescue Gem::Package::Error, StandardError => e
       raise InvalidGem, "Could not read gem: #{e.message}"
     end
@@ -134,7 +137,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
 
     FileUtils.mkdir_p(File.dirname(destination))
-    FileUtils.mv(tmp.path, destination)
+    FileUtils.mv(upload_path, destination)
 
     spec
   ensure
@@ -144,9 +147,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
 
   # Serializes the alias flip below. Two concurrent pushes must not have
   # one of them restore the flag while the other is still inside Psych.
-  #
-  # @return [Mutex]
-  YAML_ALIAS_MUTEX = Mutex.new
+  YAML_ALIAS_MUTEX = Mutex.new #: Thread::Mutex
 
   # Reads the spec out of an uploaded .gem with YAML alias expansion off:
   # aliases are the billion-laughs DoS, and no real gemspec carries one.
@@ -154,8 +155,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # so it is flipped around our own parse and put back, under a mutex,
   # never permanently at require time.
   #
-  # @param gem_path [String]
-  # @return [::Gem::Specification]
+  #: (String gem_path) -> ::Gem::Specification
   def read_uploaded_spec(gem_path)
     # Gem::SafeYAML is only defined once RubyGems has pulled Psych in,
     # which Gem::Package does lazily.
@@ -177,8 +177,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # corpus. The trailing separator stops a sibling directory whose name
   # merely starts the same way — "/srv/gems-evil" against "/srv/gems".
   #
-  # @param path [String]
-  # @return [Boolean]
+  #: (String path) -> bool
   def within_gems_dir?(path)
     root = File.expand_path(@gems_dir) + File::SEPARATOR
     File.expand_path(path).start_with?(root)
@@ -187,10 +186,11 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # Yanks a gem by renaming its .gem file to a per-artifact .gem.tomb:
   # yanking "a-0.2.0-java" leaves "a-0.2.0" downloadable.
   #
-  # @param gem_name [String]
-  # @param version [String] a version column
-  # @return [nil]
-  # @raise [GemNotFound] when never present or already yanked
+  # - `version`: a version column
+  #
+  # Raises `GemNotFound` when never present or already yanked.
+  #
+  #: (String gem_name, String version) -> nil
   def yank_gem(gem_name, version)
     gem_path = gem_file_path(gem_name, version)
     # Nothing upstream is obliged to have validated anything, and a yank
@@ -208,16 +208,12 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     nil
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String]
+  #: (String gem_name, String version) -> String
   def tomb_file_path(gem_name, version)
     gem_file_path(gem_name, version) + ".tomb"
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String gem_name, String version) -> bool
   def tomb_exists?(gem_name, version)
     File.exist?(tomb_file_path(gem_name, version))
   end
@@ -226,7 +222,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # leaves the directory behind, and listing it would make /names announce
   # a gem whose /info/ answers 404.
   #
-  # @return [Array<String>]
+  #: () -> Array[String]
   def gem_names
     Measurometer.instrument("paquette.gem_repository.gem_names") do
       Dir.glob(File.join(@gems_dir, "*")).select { |path| File.directory?(path) }.filter_map do |package_path|
@@ -239,7 +235,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # A directory listing per gem in the corpus; every whole-index endpoint
   # starts here.
   #
-  # @return [Array<Array(String, String)>]
+  #: () -> Array[[String, String]]
   def gem_versions
     Measurometer.instrument("paquette.gem_repository.gem_versions") do
       versions = []
@@ -253,8 +249,9 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     end
   end
 
-  # @param gem_name [String]
-  # @return [Array<String>] version columns
+  # Returns version columns.
+  #
+  #: (String gem_name) -> Array[String]
   def versions_for_gem(gem_name)
     gem_dir = File.join(@gems_dir, gem_name)
     return [] unless Dir.exist?(gem_dir)
@@ -272,16 +269,12 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # `version` is a version column, so this is byte for byte the filename
   # Gem::Specification#file_name would have produced.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String]
+  #: (String gem_name, String version) -> String
   def gem_file_path(gem_name, version)
     File.join(@gems_dir, gem_name, "#{gem_name}-#{version}.gem")
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String gem_name, String version) -> bool
   def gem_exists?(gem_name, version)
     File.exist?(gem_file_path(gem_name, version))
   end
@@ -290,9 +283,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # parse — the single most expensive thing this repository does per gem,
   # and what the sidecar cache exists to avoid.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [::Gem::Specification, nil]
+  #: (String gem_name, String version) -> ::Gem::Specification?
   def gem_spec(gem_name, version)
     gem_file = gem_file_path(gem_name, version)
     return nil unless File.exist?(gem_file)
@@ -305,9 +296,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # The publication date out of the sidecar when one is there, and out of
   # the gem itself when it is not — same answer either way.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Time, nil]
+  #: (String gem_name, String version) -> Time?
   def published_at(gem_name, version)
     gem_file = gem_file_path(gem_name, version)
 
@@ -323,9 +312,9 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     gem_spec(gem_name, version)&.date
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Array<Hash{Symbol => String}>] runtime dependencies only
+  # Returns runtime dependencies only.
+  #
+  #: (String gem_name, String version) -> Array[Hash[Symbol, String]]
   def gem_dependencies(gem_name, version)
     spec = gem_spec(gem_name, version)
     return [] unless spec
@@ -341,12 +330,11 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
 
   # Where the derived-metadata sidecars live. The leading dot keeps it out
   # of every glob in this class: Dir.glob skips dotfiles unless asked.
-  #
-  # @return [String]
   CACHE_DIR_BASENAME = ".paquette-cache"
 
-  # @param gem_name [String]
-  # @return [Array<String>] one compact index line per version
+  # Returns one compact index line per version.
+  #
+  #: (String gem_name) -> Array[String]
   def compact_info(gem_name)
     versions = versions_for_gem(gem_name)
     return [] if versions.empty?
@@ -384,9 +372,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # derives from one is derived once and kept in a JSON file next to it —
   # without this, /versions paid a tar walk and YAML parse per version.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String]
+  #: (String gem_name, String version) -> String
   def sidecar_path(gem_name, version)
     File.join(@gems_dir, gem_name, CACHE_DIR_BASENAME, "#{gem_name}-#{version}.json")
   end
@@ -394,10 +380,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # The cached fields, or nil for anything short of a usable entry — nil
   # just means the gem gets parsed again.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @param stat [::File::Stat]
-  # @return [Hash{String => Object}, nil]
+  #: (String gem_name, String version, ::File::Stat stat) -> Hash[String, untyped]?
   def read_sidecar(gem_name, version, stat)
     fields = JSON.parse(File.read(sidecar_path(gem_name, version)))
     return nil unless fields.is_a?(Hash)
@@ -416,26 +399,16 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # Bump this whenever compact_info_fields gains, drops or changes the
   # meaning of a key: a warm cache would otherwise quietly serve
   # yesterday's line forever.
-  #
-  # @return [Integer]
   SIDECAR_FORMAT_VERSION = 3
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @param gem_file [String]
-  # @param stat [::File::Stat]
-  # @return [Hash{String => Object}, nil]
+  #: (String gem_name, String version, String gem_file, ::File::Stat stat) -> Hash[String, untyped]?
   def derive_sidecar(gem_name, version, gem_file, stat)
     Measurometer.instrument("paquette.gem_repository.derive_sidecar") do
       derive_sidecar_fields(gem_name, version, gem_file, stat)
     end
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @param gem_file [String]
-  # @param stat [::File::Stat]
-  # @return [Hash{String => Object}, nil]
+  #: (String gem_name, String version, String gem_file, ::File::Stat stat) -> Hash[String, untyped]?
   def derive_sidecar_fields(gem_name, version, gem_file, stat)
     spec = gem_spec(gem_name, version)
     return nil unless spec
@@ -458,22 +431,20 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # since two racing writers derived the same bytes. The cache is an
   # optimization — on a read-only directory the rescue eats every write.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @param fields [Hash{String => Object}]
-  # @return [nil]
+  #: (String gem_name, String version, Hash[String, untyped] fields) -> nil
   def write_sidecar(gem_name, version, fields)
     # Declared out here so the rescue below can still see it.
-    tmp_path = nil
+    tmp_path = nil #: String?
 
     Measurometer.instrument("paquette.gem_repository.write_sidecar") do
       final_path = sidecar_path(gem_name, version)
       cache_dir = File.dirname(final_path)
       FileUtils.mkdir_p(cache_dir)
 
-      tmp_path = File.join(cache_dir, ".#{gem_name}-#{version}.#{Process.pid}.#{rand(2**32).to_s(16)}.tmp")
-      File.write(tmp_path, JSON.pretty_generate(fields))
-      File.rename(tmp_path, final_path)
+      staged = File.join(cache_dir, ".#{gem_name}-#{version}.#{Process.pid}.#{rand(2**32).to_s(16)}.tmp")
+      tmp_path = staged
+      File.write(staged, JSON.pretty_generate(fields))
+      File.rename(staged, final_path)
     end
     nil
   rescue SystemCallError
@@ -484,8 +455,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   # An integer rather than a Float on purpose: the guard is an
   # exact-equality check, and integers survive a trip through JSON.
   #
-  # @param stat [::File::Stat]
-  # @return [Integer]
+  #: (::File::Stat stat) -> Integer
   def mtime_ns(stat)
     mtime = stat.mtime
     (mtime.to_i * 1_000_000_000) + mtime.nsec

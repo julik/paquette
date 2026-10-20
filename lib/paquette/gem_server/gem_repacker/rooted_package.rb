@@ -11,16 +11,17 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
   # Validation is deliberately skipped, and not to save time: it resolves
   # spec.files against the working directory and *prunes* to what it finds —
   # run from the wrong directory it quietly builds a gem with no files in
-  # it. The caller prunes against +root+ instead.
+  # it. The caller prunes against `root` instead.
   #
-  # @param spec [::Gem::Specification]
-  # @param root [String] the directory spec.files are relative to
-  # @param file_name [String] where the finished gem is written
-  # @param build_time [Time] the timestamp stamped into the archive — see
-  #   BuildTime for why this is a block around the build, not an argument
-  # @param modes [Hash{String => Integer}] the tar mode of every file in
-  #   spec.files
-  # @return [String] file_name
+  # - `root`: the directory spec.files are relative to
+  # - `file_name`: where the finished gem is written
+  # - `build_time`: the timestamp stamped into the archive — see BuildTime for
+  #   why this is a block around the build, not an argument
+  # - `modes`: the tar mode of every file in spec.files
+  #
+  # Returns file_name.
+  #
+  #: (::Gem::Specification spec, String root, String file_name, build_time: Time, modes: Hash[String, Integer]) -> String
   def self.build(spec, root, file_name, build_time:, modes:)
     Paquette::GemServer::GemRepacker::BuildTime.with(build_time) do
       package = new(file_name, nil)
@@ -33,18 +34,15 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
     file_name
   end
 
-  # @return [String]
-  attr_accessor :root
+  attr_accessor :root #: String
 
-  # @return [Hash{String => Integer}]
-  attr_accessor :modes
+  attr_accessor :modes #: Hash[String, Integer]
 
   # The RubyGems original with @root joined onto every path it looks at, and
   # each mode taken from @modes rather than from the file's stat. The names
   # written into the tar stay relative, which is what a .gem holds.
   #
-  # @param tar [::Gem::Package::TarWriter]
-  # @return [void]
+  #: (::Gem::Package::TarWriter tar) -> void
   def add_files(tar)
     @spec.files.each do |file|
       source = File.join(@root, file)
@@ -67,7 +65,7 @@ class Paquette::GemServer::GemRepacker::RootedPackage < Gem::Package
   # Gem::Package#build reports on stdout, which is what a person running
   # `gem build` asked for and not what a request asked for.
   #
-  # @return [void]
+  #: (*untyped) -> void
   def say(*)
   end
 end

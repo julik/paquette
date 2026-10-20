@@ -12,22 +12,21 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # tarball and `personalization_key:`, and nil is a fact about the
   # package, never about the licensee.
   #
-  # @param repository [Paquette::NpmServer::NpmRepository] the repository
-  #   to wrap
-  # @param license_key [String]
-  # @param magic_comment_replacements [Hash{String => String}] checked here
-  #   as well as in the repacker, so a bad pair is refused where the stack
-  #   is built rather than on the first customer download
-  # @param files [Hash{String => String}] files injected into every tarball
-  # @param package_json_extras [Hash, nil] merged into package.json;
-  #   defaults to a "paquette" key carrying the license key
-  # @param files_for [Proc, nil] per-package files, called with
-  #   (package_name, version, original_path); nil return means the package
-  #   is served byte for byte
-  # @param personalization_key [String, nil] everything the personalized
-  #   bytes depend on beyond the tarball itself
-  # @param cache_dir [String, nil] where personalized tarballs and opt-out
-  #   markers are kept; the system temp directory is only a default
+  # - `repository`: the repository to wrap
+  # - `magic_comment_replacements`: checked here as well as in the repacker,
+  #   so a bad pair is refused where the stack is built rather than on the
+  #   first customer download
+  # - `files`: files injected into every tarball
+  # - `package_json_extras`: merged into package.json; defaults to a
+  #   "paquette" key carrying the license key
+  # - `files_for`: per-package files, called with (package_name, version,
+  #   original_path); nil return means the package is served byte for byte
+  # - `personalization_key`: everything the personalized bytes depend on
+  #   beyond the tarball itself
+  # - `cache_dir`: where personalized tarballs and opt-out markers are kept;
+  #   the system temp directory is only a default
+  #
+  #: (Paquette::NpmServer::NpmRepository repository, license_key: String, ?magic_comment_replacements: Hash[String, String], ?files: Hash[String, String], ?package_json_extras: Hash[String, untyped]?, ?files_for: Proc?, ?personalization_key: String?, ?cache_dir: String?) -> void
   def initialize(repository, license_key:, magic_comment_replacements: {}, files: {},
     package_json_extras: nil, files_for: nil, personalization_key: nil, cache_dir: nil)
     Paquette::NpmRepacker.check_replacements!(magic_comment_replacements)
@@ -46,7 +45,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # itself. The key is the same digest that names the cached tarballs on
   # disk, so the validator is exactly as strong as that cache.
   #
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     inner = Paquette::CacheValidation.validator_of(__getobj__)
     Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
@@ -54,14 +53,14 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
 
   # Every byte — and every dist.integrity — is baked for one licensee.
   #
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     true
   end
 
-  # @param package_name [String]
-  # @param version [String]
-  # @return [String, nil] the personalized (or pass-through) tarball path
+  # Returns the personalized (or pass-through) tarball path.
+  #
+  #: (String package_name, String version) -> String?
   def package_file_path(package_name, version)
     original_path = __getobj__.package_file_path(package_name, version)
     return original_path unless original_path && File.exist?(original_path)
@@ -71,9 +70,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
 
   # The hashes must be the personalized tarball's; the URL stays the repository's.
   #
-  # @param package_name [String]
-  # @param version [String]
-  # @return [Hash{String => String}]
+  #: (String package_name, String version) -> Hash[String, String]
   def dist_for(package_name, version)
     original_dist = __getobj__.dist_for(package_name, version)
     return original_dist if original_dist.empty?
@@ -94,8 +91,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # out, so a personalized metadata read costs a whole package where the
   # plain one costs a cache lookup.
   #
-  # @param package_name [String]
-  # @return [Hash, nil]
+  #: (String package_name) -> Hash[untyped, untyped]?
   def package_metadata(package_name)
     metadata = __getobj__.package_metadata(package_name)
     return nil unless metadata
@@ -114,10 +110,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # Keyed by everything that goes INTO the package: two licensees never
   # share a file. See GemServer::Personalizer, whose scheme this is.
   #
-  # @param original_path [String]
-  # @param package_name [String]
-  # @param version [String]
-  # @return [String]
+  #: (String original_path, String package_name, String version) -> String
   def personalize(original_path, package_name, version)
     stat = File.stat(original_path)
     filename = "#{File.basename(package_name)}-#{version}-#{cache_digest(package_name, version, stat)}.tgz"
@@ -163,10 +156,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # another's. Stat identity, so a replaced tarball invalidates the cache
   # without re-hashing the corpus.
   #
-  # @param package_name [String]
-  # @param version [String]
-  # @param stat [::File::Stat]
-  # @return [String]
+  #: (String package_name, String version, ::File::Stat stat) -> String
   def cache_digest(package_name, version, stat)
     Digest::SHA256.hexdigest([
       package_name,
@@ -174,17 +164,14 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
       personalization_digest,
       stat.mtime.to_f,
       stat.size
-    ].join("\0"))[0, 24]
+    ].join("\0"))[0, 24] #: String
   end
 
   # Where "this package carries nothing to personalize" is written down.
   # Keyed by the package and its source identity alone, never by the
   # licensee — whether a package participates is a fact about the package.
   #
-  # @param package_name [String]
-  # @param version [String]
-  # @param stat [::File::Stat]
-  # @return [String]
+  #: (String package_name, String version, ::File::Stat stat) -> String
   def plain_marker_path(package_name, version, stat)
     digest = Digest::SHA256.hexdigest([
       package_name, version, stat.mtime.to_f, stat.size
@@ -196,7 +183,7 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
   # repacker format it writes it with. Stable across processes, so a restart
   # does not orphan the cache; a new repacker format does, on purpose.
   #
-  # @return [String]
+  #: () -> String
   def personalization_digest
     @personalization_digest ||= Digest::SHA256.hexdigest([
       Paquette::NpmRepacker::FORMAT_VERSION,
@@ -205,6 +192,6 @@ class Paquette::NpmServer::Personalizer < SimpleDelegator
       @files.sort.inspect,
       @package_json_extras.sort.inspect,
       @personalization_key.to_s
-    ].join("\0"))[0, 16]
+    ].join("\0"))[0, 16] #: String
   end
 end

@@ -23,40 +23,29 @@ class Paquette::GemServer
   include Paquette::Authentication
 
   # RubyGems' own charset for a name.
-  #
-  # @return [String]
   NAME_CHAR = "[A-Za-z0-9_.-]"
 
   # Gem::Version's own grammar plus the platform suffix a .gem *filename*
   # carries in this same column — "nokogiri-1.16.0-arm64-darwin".
-  #
-  # @return [String]
   VERSION_COLUMN = "#{Gem::Version::VERSION_PATTERN}#{NAME_CHAR}{0,255}"
 
   # Splits a "name-version" pair. The name is greedy on purpose: the dash
   # is ambiguous ("a-1-1.0.0" is the gem "a-1" at 1.0.0). \A..\z, not
   # ^..$: Mustermann unescapes %0A into a real newline.
-  #
-  # @return [Regexp]
   GEM_SPEC_NAME = /\A(#{NAME_CHAR}{1,255})-(#{VERSION_COLUMN})\z/
 
   # The bound the pattern cannot carry: Gem::Version's borrowed pattern has
   # unbounded quantifiers, and on Ruby 3.1 (no regexp memoization) the
   # split point sliding across a client-chosen segment is quadratic.
-  #
-  # @return [Integer]
-  MAX_GEM_SPEC_NAME_BYTES = 255 + 1 + 255
+  MAX_GEM_SPEC_NAME_BYTES = 255 + 1 + 255 #: Integer
 
-  # @return [String]
   GEM_FILE_EXTENSION = ".gem"
 
   # An unqualified text/plain is US-ASCII per RFC 2046, and these bodies
   # are UTF-8; the conformance suite checks this string byte for byte.
-  #
-  # @return [String]
   COMPACT_INDEX_CONTENT_TYPE = "text/plain; charset=utf-8"
 
-  @@routes = Paquette::Routes.draw do |r|
+  @@routes = Paquette::Routes.draw do |r| #$ Paquette::GemServer
     r.get "/" do
       @placeholder_app.call(@request.env)
     end
@@ -152,7 +141,7 @@ class Paquette::GemServer
 
     r.get "/gems/:gem_filename" do |gem_filename:|
       if (split = Paquette::GemServer.split_gem_filename(gem_filename))
-        handle_gem_download(*split)
+        handle_gem_download(split[0], split[1])
       else
         not_found("Invalid gem filename")
       end
@@ -163,8 +152,7 @@ class Paquette::GemServer
   # that must name a request (a monitoring action, a log field) without
   # re-implementing the routing table. Only the path is read.
   #
-  # @param env [Hash] the Rack env
-  # @return [Paquette::Routes::Recognition, nil]
+  #: (Paquette::rack_env env) -> Paquette::Routes::Recognition?
   def self.route_for(env)
     @@routes.recognize(Rack::Request.new(env))
   rescue Paquette::Routes::BadRequest
@@ -174,8 +162,9 @@ class Paquette::GemServer
   # "zip_kit-6.2.1.gem" into ["zip_kit", "6.2.1"] — the one dash rule;
   # nothing outside this class should guess at it with a regex of its own.
   #
-  # @param gem_filename [String]
-  # @return [Array(String, String), nil] nil for a filename that is not one
+  # Returns nil for a filename that is not one.
+  #
+  #: (String gem_filename) -> [String, String]?
   def self.split_gem_filename(gem_filename)
     filename = gem_filename.to_s
     return nil unless filename.end_with?(GEM_FILE_EXTENSION)
@@ -186,8 +175,7 @@ class Paquette::GemServer
   # "zip_kit-6.2.1" into ["zip_kit", "6.2.1"] — the same split without the
   # extension, so there is one dash rule and not two.
   #
-  # @param gem_spec_name [String]
-  # @return [Array(String, String), nil]
+  #: (String gem_spec_name) -> [String, String]?
   def self.split_gem_spec_name(gem_spec_name)
     spec_name = gem_spec_name.to_s
     # Length and encoding checked before a pattern ever runs: a regex over
@@ -204,8 +192,9 @@ class Paquette::GemServer
   # (Gem::Version rewrites "-" into ".pre." on construction), so the first
   # dash is always the one the platform was joined on.
   #
-  # @param version_column [String]
-  # @return [Array(String, String)] version and platform
+  # Returns version and platform.
+  #
+  #: (String version_column) -> [String, String]
   def self.split_version_column(version_column)
     number, platform = version_column.to_s.split("-", 2)
     [number.to_s, (platform.nil? || platform.empty?) ? Gem::Platform::RUBY : platform]
@@ -214,9 +203,7 @@ class Paquette::GemServer
   # The other direction, exactly as Gem::Specification#full_name has it:
   # the plain build is the one whose platform is not written down.
   #
-  # @param version [String]
-  # @param platform [String, nil]
-  # @return [String]
+  #: (String version, String? platform) -> String
   def self.version_column(version, platform)
     platform = platform.to_s
     return version.to_s if platform.empty? || platform == Gem::Platform::RUBY
@@ -224,7 +211,6 @@ class Paquette::GemServer
     "#{version}-#{platform}"
   end
 
-  # @return [String]
   DEFAULT_BLURB = "This server provides RubyGems packages. Point your gem source at it and bundle as usual."
 
   # The request body handed to the repository on a push: it refuses to
@@ -233,8 +219,7 @@ class Paquette::GemServer
     # Raised the moment a body reads past its byte cap.
     class TooLarge < StandardError; end
 
-    # @param io [IO]
-    # @param max_bytes [Integer]
+    #: (IO io, Integer max_bytes) -> void
     def initialize(io, max_bytes)
       @io = io
       @max_bytes = max_bytes
@@ -244,9 +229,11 @@ class Paquette::GemServer
     # The one method IO.copy_stream requires of a non-IO source; raises the
     # moment the count passes the cap.
     #
-    # @param args [Array] the length and buffer arguments of IO#read
-    # @return [String, nil]
-    # @raise [TooLarge]
+    # - `args`: the length and buffer arguments of IO#read
+    #
+    # Raises `TooLarge`.
+    #
+    #: (*untyped args) -> String?
     def read(*args)
       chunk = @io.read(*args)
       if chunk
@@ -259,7 +246,7 @@ class Paquette::GemServer
     # The count starts over with every rewind so that "read twice" is not
     # mistaken for "twice as large".
     #
-    # @return [void]
+    #: () -> void
     def rewind
       @bytes_read = 0
       @io.rewind if @io.respond_to?(:rewind)
@@ -269,20 +256,21 @@ class Paquette::GemServer
   # Reads, writes and yanks all flow through the repository stack the
   # caller assembled, typically constructed per request.
   #
-  # @param repository [Paquette::GemServer::GemRepository] the repository
-  #   stack to serve
-  # @param placeholder_app [#call] the Rack app answering the root path
-  # @param max_push_bytes [Integer, nil] the largest push this server
-  #   accepts; nil removes the cap, which is a decision to make knowingly
-  # @param shared_caching [Boolean] false keeps every response `private`,
-  #   as if every request carried a credential — set it when you authorize
-  #   by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
-  # @param authenticator [Object, nil] answers `read_permitted?`,
-  #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
-  #   Without one, everyone reads and nobody writes
-  # @param on_publish [#call, nil] called with a Paquette::Published and the
-  #   Rack::Request once a push has landed. An exception from it is a 500 for
-  #   a gem that is already stored
+  # - `repository`: the repository stack to serve
+  # - `placeholder_app`: the Rack app answering the root path
+  # - `max_push_bytes`: the largest push this server accepts; nil removes the
+  #   cap, which is a decision to make knowingly
+  # - `shared_caching`: false keeps every response `private`, as if every
+  #   request carried a credential — set it when you authorize by something
+  #   Paquette cannot see (an IP allowlist, mTLS, a VPN)
+  # - `authenticator`: answers `read_permitted?`, `write_permitted?` and
+  #   `check_otp!` - see Paquette::Authentication. Without one, everyone reads
+  #   and nobody writes
+  # - `on_publish`: called with a Paquette::Published and the Rack::Request
+  #   once a push has landed. An exception from it is a 500 for a gem that is
+  #   already stored
+  #
+  #: (Paquette::GemServer::GemRepository repository, ?placeholder_app: Paquette::_RackApp, ?max_push_bytes: Integer?, ?shared_caching: bool, ?authenticator: Paquette::Authentication::_Authenticator?, ?on_publish: (^(Paquette::Published, ::Rack::Request) -> void)?) -> void
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette gem server"),
     max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil)
     @repository = repository
@@ -293,16 +281,14 @@ class Paquette::GemServer
     @shared_caching = shared_caching
   end
 
-  # @param env [Hash] the Rack env
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def call(env)
     with_caching_defaults(dispatch(env))
   end
 
   private
 
-  # @param env [Hash]
-  # @return [Array] a Rack response triplet
+  #: (Paquette::rack_env env) -> Paquette::rack_response
   def dispatch(env)
     Measurometer.instrument("paquette.gem_server.call") do
       request = Rack::Request.new(env)
@@ -326,8 +312,7 @@ class Paquette::GemServer
   # The gem a request was about, out of the route's own params - or what a
   # write said it wrote, since a push names its gem only in the body.
   #
-  # @param params [Hash{String => Object}]
-  # @return [Array(String, String), Array(String), nil]
+  #: (Hash[String, untyped] params) -> ([String, String] | [String])?
   def served_package(params)
     return @written if @written
     return [params["gem_name"]] if params["gem_name"]
@@ -338,22 +323,21 @@ class Paquette::GemServer
 
   # `gem push` sends the code in the `OTP` header.
   #
-  # @param env [Hash] the Rack env
-  # @return [String, nil]
+  #: (Paquette::rack_env env) -> String?
   def otp_code(env)
     env["HTTP_OTP"]
   end
 
   # The client matches this sentence word for word to decide to prompt.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def otp_missing
     [401, {"Content-Type" => "text/plain"}, ["You have enabled multifactor authentication"]]
   end
 
   # And this one to report a wrong code rather than a failed login.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def otp_rejected
     [401, {"Content-Type" => "text/plain"}, ["OTP verification failed"]]
   end
@@ -362,9 +346,9 @@ class Paquette::GemServer
   # The platform comes out of the version column, not the spec — a spec
   # read here would cost a tar walk per version on a hot Bundler path.
   #
-  # @param gems [String, Array, nil]
-  # @param as [Symbol] :json or :marshal
-  # @return [Array] a Rack response triplet
+  # - `as`: :json or :marshal
+  #
+  #: ((String | Array[untyped])? gems, as: Symbol) -> Paquette::rack_response
   def handle_dependencies(gems, as:)
     names = case gems
     when String then gems.split(",").map(&:strip).reject(&:empty?)
@@ -399,7 +383,7 @@ class Paquette::GemServer
   # One spec read per version in the corpus — the cost grows with the
   # corpus, not with the request.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_versions
     versions = []
     Measurometer.instrument("paquette.gem_server.build_versions") do
@@ -428,8 +412,7 @@ class Paquette::GemServer
   # Every `*_uri` key filtered through SafeUrl; the rest passes through,
   # since gemspec_extras can carry anything an allowlist would eat.
   #
-  # @param metadata [Object]
-  # @return [Hash]
+  #: (untyped metadata) -> Hash[untyped, untyped]
   def safe_metadata(metadata)
     return {} unless metadata.is_a?(Hash)
 
@@ -443,7 +426,7 @@ class Paquette::GemServer
     end
   end
 
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_names
     names = @repository.gem_names
     json_ok(names)
@@ -453,7 +436,7 @@ class Paquette::GemServer
   # guards: CONTENT_LENGTH refuses an announced oversize for free, and
   # CappedBody is the guarantee for the chunked or dishonest body.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_push
     declared = declared_content_length
     if @max_push_bytes && declared && declared > @max_push_bytes
@@ -484,7 +467,7 @@ class Paquette::GemServer
   # nil when the client did not announce one — not an error on its own, it
   # only means the copy cap has to do the work.
   #
-  # @return [Integer, nil]
+  #: () -> Integer?
   def declared_content_length
     raw = @request.get_header("CONTENT_LENGTH")
     return nil if raw.nil? || raw.to_s.empty?
@@ -498,7 +481,7 @@ class Paquette::GemServer
   # params are validated before they become a path — they are as
   # client-chosen as a pushed gemspec's fields.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_yank
     gem_name = @request.params["gem_name"]
     version = @request.params["version"]
@@ -520,8 +503,7 @@ class Paquette::GemServer
 
   # The spec is read only for gems whose name matches.
   #
-  # @param query [String, nil]
-  # @return [Array] a Rack response triplet
+  #: (String? query) -> Paquette::rack_response
   def handle_search(query)
     query ||= ""
     results = []
@@ -546,8 +528,9 @@ class Paquette::GemServer
     json_ok(results)
   end
 
-  # @param version [String] "4.8" or "4.8.gz"
-  # @return [Array] a Rack response triplet
+  # - `version`: "4.8" or "4.8.gz"
+  #
+  #: (String version) -> Paquette::rack_response
   def handle_specs(version)
     specs = generate_specs_array
 
@@ -561,8 +544,9 @@ class Paquette::GemServer
     end
   end
 
-  # @param version [String] "4.8" or "4.8.gz"
-  # @return [Array] a Rack response triplet
+  # - `version`: "4.8" or "4.8.gz"
+  #
+  #: (String version) -> Paquette::rack_response
   def handle_prerelease_specs(version)
     specs = generate_prerelease_specs_array
 
@@ -579,7 +563,7 @@ class Paquette::GemServer
   # The conformance suite asks for "---\na\nb\n" byte for byte, and for
   # "---\n\n" when the corpus is empty — hence join-then-one-newline.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_compact_names
     etag = etag_for("compact-names")
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -590,7 +574,7 @@ class Paquette::GemServer
   # The conditional check goes first: answering "nothing changed" must
   # cost a corpus fingerprint, not the whole-corpus render below.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def handle_compact_versions
     # Strong — a client may do byte arithmetic against it, which is what
     # makes range serving worth anything. See compact_index_created_at.
@@ -604,8 +588,7 @@ class Paquette::GemServer
   # Every validator folds in the corpus fingerprint (a yank moves it) and
   # the gem name, so a 304 cannot outlive the gem or answer for another's.
   #
-  # @param gem_name [String]
-  # @return [Array] a Rack response triplet
+  #: (String gem_name) -> Paquette::rack_response
   def handle_compact_info(gem_name)
     etag = etag_for("compact-info", gem_name)
     return not_modified(etag) if if_none_match_satisfied?(etag)
@@ -619,7 +602,7 @@ class Paquette::GemServer
   # Rendered per request, and it renders every /info/ file in the corpus to
   # checksum it — the most expensive read this server serves.
   #
-  # @return [Array] a Rack response triplet
+  #: () -> Paquette::rack_response
   def render_compact_versions
     gem_versions = {}
     @repository.gem_versions.each do |name, version|
@@ -655,16 +638,15 @@ class Paquette::GemServer
 
   # A corpus with nothing in it, and one whose publication times nobody can
   # establish, both get the epoch.
-  #
-  # @return [String]
-  EMPTY_CORPUS_CREATED_AT = Time.at(0).utc.iso8601
+  EMPTY_CORPUS_CREATED_AT = Time.at(0).utc.iso8601 #: String
 
   # The `created_at:` of /versions: the oldest publication time in the
   # corpus, emphatically not Time.now — a clock stamp made every render
   # byte-different, which kept the validator weak and broke ranged fetches.
   #
-  # @param gem_versions [Hash{String => Array<String>}]
-  # @return [String] an ISO 8601 time
+  # Returns an ISO 8601 time.
+  #
+  #: (Hash[String, Array[String]] gem_versions) -> String
   def compact_index_created_at(gem_versions)
     return EMPTY_CORPUS_CREATED_AT unless @repository.respond_to?(:published_at)
 
@@ -683,8 +665,7 @@ class Paquette::GemServer
   # renderer for both endpoints: the byte-exact body is what /versions
   # checksums.
   #
-  # @param gem_name [String]
-  # @return [String, nil]
+  #: (String gem_name) -> String?
   def compact_info_body(gem_name)
     Measurometer.instrument("paquette.gem_server.compact_info_body") do
       info_lines = @repository.compact_info(gem_name)
@@ -698,7 +679,7 @@ class Paquette::GemServer
   # own specs.4.8 has it. The Gem::Version is not decoration:
   # Gem::SpecFetcher sorts these, and a String sorts "1.10.0" below "1.9.0".
   #
-  # @return [Array<Array(String, Gem::Version, String)>]
+  #: () -> Array[[String, Gem::Version, String]]
   def generate_specs_array
     Measurometer.instrument("paquette.gem_server.generate_specs_array") do
       @repository.gem_versions.filter_map do |name, version_column|
@@ -712,7 +693,7 @@ class Paquette::GemServer
   # Gem::Version and never of the column: Gem::Version reads "1.16.0-java"
   # — a java *release* — as the prerelease 1.16.0.pre.java.
   #
-  # @return [Array<Array(String, Gem::Version, String)>]
+  #: () -> Array[[String, Gem::Version, String]]
   def generate_prerelease_specs_array
     Measurometer.instrument("paquette.gem_server.generate_prerelease_specs_array") do
       @repository.gem_versions.filter_map do |name, version_column|
@@ -726,9 +707,7 @@ class Paquette::GemServer
   # will not accept: a file dropped into the gems directory by hand must
   # not take the whole index down with an ArgumentError.
   #
-  # @param name [String]
-  # @param version_column [String]
-  # @return [Array(String, Gem::Version, String), nil]
+  #: (String name, String version_column) -> [String, Gem::Version, String]?
   def spec_tuple(name, version_column)
     number, platform = Paquette::GemServer.split_version_column(version_column)
     return nil unless Gem::Version.correct?(number)
@@ -736,8 +715,9 @@ class Paquette::GemServer
     [name.to_s, Gem::Version.new(number), platform]
   end
 
-  # @param version [String] "4.8" or "4.8.gz"
-  # @return [Array] a Rack response triplet
+  # - `version`: "4.8" or "4.8.gz"
+  #
+  #: (String version) -> Paquette::rack_response
   def handle_latest_specs(version)
     latest_specs = generate_latest_specs_array
 
@@ -755,7 +735,7 @@ class Paquette::GemServer
   # per name would hide the other builds. Parsed versions are compared,
   # never columns: "1.16.0-java" as a version is a prerelease.
   #
-  # @return [Array<Array(String, Gem::Version, String)>]
+  #: () -> Array[[String, Gem::Version, String]]
   def generate_latest_specs_array
     Measurometer.instrument("paquette.gem_server.generate_latest_specs_array") do
       latest = {}
@@ -773,18 +753,16 @@ class Paquette::GemServer
   # Marshal's own format is 4.8 and has been since 1.8, so this is
   # Marshal.dump with a guard on the shape rather than a format choice.
   #
-  # @param obj [Object]
-  # @return [String]
+  #: (untyped obj) -> String
   def marshal_dump_4_8(obj)
     Marshal.dump(obj.is_a?(Array) ? obj : [])
   end
 
-  # @param data [String]
-  # @return [String]
+  #: (String data) -> String
   def gzip_compress(data)
     Measurometer.instrument("paquette.gem_server.gzip_compress") do
       StringIO.open do |io|
-        Zlib::GzipWriter.wrap(io) do |gz|
+        Zlib::GzipWriter.wrap(io) do |gz| # steep:ignore ArgumentTypeMismatch
           gz.write(data)
         end
         io.string
@@ -792,9 +770,7 @@ class Paquette::GemServer
     end
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Array] a Rack response triplet
+  #: (String gem_name, String version) -> Paquette::rack_response
   def handle_gem_download(gem_name, version)
     return not_found("Gem not found or it is not within your license") unless @repository.gem_exists?(gem_name, version)
 
@@ -817,11 +793,7 @@ class Paquette::GemServer
   # away, a Personalizer's path is per-licensee), so a download is served
   # immutable with a year-long max-age.
   #
-  # @param gem_path [String]
-  # @param stat [::File::Stat]
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Array] a Rack response triplet
+  #: (String gem_path, ::File::Stat stat, String gem_name, String version) -> Paquette::rack_response
   def serve_gem_file(gem_path, stat, gem_name, version)
     serve_immutable_file(gem_path, stat, gem_file_etag(gem_path, stat, gem_name, version))
   end
@@ -830,11 +802,7 @@ class Paquette::GemServer
   # publishes as `checksum:`, so the two can never disagree. Size and
   # mtime are the weaker fallback for a repository without gem_checksum.
   #
-  # @param gem_path [String]
-  # @param stat [::File::Stat]
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String]
+  #: (String gem_path, ::File::Stat stat, String gem_name, String version) -> String
   def gem_file_etag(gem_path, stat, gem_name, version)
     checksum = Paquette::GemServer::GemRepository.gem_checksum_of(@repository, gem_name, version)
     return %("#{checksum}") if checksum
@@ -844,14 +812,12 @@ class Paquette::GemServer
 
   private
 
-  # @param data [Object]
-  # @return [Array] a Rack response triplet
+  #: (untyped data) -> Paquette::rack_response
   def json_ok(data)
     [200, {"Content-Type" => "application/json"}, [JSON.pretty_generate(data)]]
   end
 
-  # @param data [String]
-  # @return [Array] a Rack response triplet
+  #: (String data) -> Paquette::rack_response
   def text_ok(data)
     [200, {"Content-Type" => "text/plain"}, [data]]
   end
@@ -859,20 +825,17 @@ class Paquette::GemServer
   # text_ok for a compact index body — the one text/plain this server
   # sends that has to name its charset.
   #
-  # @param data [String]
-  # @return [Array] a Rack response triplet
+  #: (String data) -> Paquette::rack_response
   def compact_ok(data)
     [200, {"Content-Type" => COMPACT_INDEX_CONTENT_TYPE}, [data]]
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def not_found(message = "Not Found")
     [404, {"Content-Type" => "text/plain"}, [message]]
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def bad_request(message = "Bad Request")
     [400, {"Content-Type" => "text/plain"}, [message]]
   end
@@ -880,14 +843,12 @@ class Paquette::GemServer
   # Always with a body: `gem push` prints the response text and an empty
   # 413 reads to the user as a crash rather than as a refusal.
   #
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def payload_too_large(message = "Payload Too Large")
     [413, {"Content-Type" => "text/plain"}, [message]]
   end
 
-  # @param message [String]
-  # @return [Array] a Rack response triplet
+  #: (?String message) -> Paquette::rack_response
   def server_error(message = "Internal Server Error")
     [500, {"Content-Type" => "text/plain"}, [message]]
   end

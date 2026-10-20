@@ -1,0 +1,9 @@
+module Rack
+  # Rack 3 only; the collection's signatures are for 2.2.
+  class Headers < Hash[String, String]
+    def self.[]: (*untyped) -> Headers
+  end
+
+  module BadRequest
+  end
+end

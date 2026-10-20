@@ -10,8 +10,7 @@ module Paquette::CacheValidation
   # The stack's validator. Fails closed (nil) for an object that has never
   # heard of the protocol.
   #
-  # @param repository [Object]
-  # @return [String, nil]
+  #: (untyped repository) -> String?
   def validator_of(repository)
     repository.cache_validator if repository.respond_to?(:cache_validator)
   end
@@ -21,8 +20,7 @@ module Paquette::CacheValidation
   # True for anything that cannot say: being wrong the other way only costs
   # a cache hit.
   #
-  # @param repository [Object]
-  # @return [Boolean]
+  #: (untyped repository) -> bool
   def varies_by_caller?(repository)
     return true unless repository.respond_to?(:varies_by_caller?)
 
@@ -34,10 +32,11 @@ module Paquette::CacheValidation
   # rests on. The layer name is in the digest so that gating with key "k"
   # and personalizing with key "k" cannot land on the same string.
   #
-  # @param inner_validator [String, nil] the wrapped stack's validator
-  # @param layer [String] a constant naming the wrapping layer
-  # @param key [String, nil] what distinguishes this instance of the layer
-  # @return [String, nil]
+  # - `inner_validator`: the wrapped stack's validator
+  # - `layer`: a constant naming the wrapping layer
+  # - `key`: what distinguishes this instance of the layer
+  #
+  #: (String? inner_validator, String layer, String? key) -> String?
   def derive_validator(inner_validator, layer, key)
     return nil if inner_validator.nil? || key.nil?
 
@@ -47,11 +46,10 @@ module Paquette::CacheValidation
   # The validator for one response. Returns nil, meaning "emit no ETag",
   # whenever the stack refused to name itself.
   #
-  # @param repository [Object]
-  # @param resource_parts [Array<String>] what distinguishes this endpoint's
-  #   body from another's over the same corpus
-  # @param weak [Boolean]
-  # @return [String, nil]
+  # - `resource_parts`: what distinguishes this endpoint's body from another's
+  #   over the same corpus
+  #
+  #: (untyped repository, *String resource_parts, ?weak: bool) -> String?
   def etag_for(repository, *resource_parts, weak: false)
     base = validator_of(repository)
     return nil if base.nil?

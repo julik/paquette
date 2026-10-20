@@ -1,0 +1,37 @@
+/* What commonmarker's GFM output needs that Aliki does not style: alerts and
+   task lists. Translucent colours, so the light and dark themes both work. */
+
+.markdown-alert {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-left: 4px solid var(--alert-color);
+  background: color-mix(in srgb, var(--alert-color) 8%, transparent);
+  border-radius: 4px;
+}
+
+.markdown-alert > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-alert-title {
+  font-weight: 600;
+  color: var(--alert-color);
+}
+
+.markdown-alert-note { --alert-color: #3b82f6; }
+.markdown-alert-tip { --alert-color: #22a35a; }
+.markdown-alert-important { --alert-color: #8b5cf6; }
+.markdown-alert-warning { --alert-color: #d4a017; }
+.markdown-alert-caution { --alert-color: #e5484d; }
+
+li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+li > input[type="checkbox"] {
+  margin: 0 0.4em 0 -1.3em;
+}
+
+details > summary {
+  cursor: pointer;
+}

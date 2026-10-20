@@ -4,23 +4,24 @@ require "measurometer"
 # Filters every read through an entitler block; non-entitled packages do
 # not exist. Writes pass through - see the gem-side twin.
 class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
-  # @param repository [Paquette::NpmServer::NpmRepository] the repository
-  #   to wrap
-  # @param gate_key [String, nil] names this gate for HTTP caching — see
-  #   the gem-side ReadGatedRepository for the full contract: name the
-  #   identity the entitler consults and everything the answers depend on,
-  #   or leave it out and the whole stack emits no ETag (the intended
-  #   fail-closed default — a wrong ETag on a gated packument is one
-  #   customer holding another's entitlements).
-  # @yield [name:, version:] the entitler; returns truthy when the caller
-  #   may see that package/version
+  # - `repository`: the repository to wrap
+  # - `gate_key`: names this gate for HTTP caching — see the gem-side
+  #   ReadGatedRepository for the full contract: name the identity the
+  #   entitler consults and everything the answers depend on, or leave it out
+  #   and the whole stack emits no ETag (the intended fail-closed default — a
+  #   wrong ETag on a gated packument is one customer holding another's
+  #   entitlements).
+  # - the block: the entitler; returns truthy when the caller may see that
+  #   package/version
+  #
+  #: (Paquette::NpmServer::NpmRepository repository, ?gate_key: String?) { (name: String, ?version: String?) -> boolish } -> void
   def initialize(repository, gate_key: nil, &entitler)
     super(repository)
     @entitler = entitler
     @gate_key = gate_key
   end
 
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     inner = Paquette::CacheValidation.validator_of(__getobj__)
     Paquette::CacheValidation.derive_validator(inner, "read-gate", @gate_key)
@@ -29,25 +30,24 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   # A gate may decide by something Paquette never sees — an IP, a header —
   # so even two anonymous callers can get different views. Never `public`.
   #
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     true
   end
 
-  # @return [Array<String>]
+  #: () -> Array[String]
   def package_names
     super.select { |name| entitled?(name: name) }
   end
 
-  # @return [Array<Array(String, String)>]
+  #: () -> Array[[String, String]]
   def package_versions
     super.select do |package_name, version|
       entitled?(name: package_name, version: version)
     end
   end
 
-  # @param package_name [String]
-  # @return [Array<String>]
+  #: (String package_name) -> Array[String]
   def versions_for_package(package_name)
     return [] unless entitled?(name: package_name)
 
@@ -56,9 +56,7 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     end
   end
 
-  # @param package_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (String package_name, String version) -> String?
   def package_file_path(package_name, version)
     if entitled?(name: package_name, version: version)
       super
@@ -67,9 +65,7 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
 
   # false rather than nil: callers treat this as a boolean.
   #
-  # @param package_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String package_name, String version) -> bool
   def package_exists?(package_name, version)
     if entitled?(name: package_name, version: version)
       !!super
@@ -78,18 +74,14 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     end
   end
 
-  # @param package_name [String]
-  # @param version [String]
-  # @return [Hash, nil]
+  #: (String package_name, String version) -> Hash[untyped, untyped]?
   def package_info(package_name, version)
     if entitled?(name: package_name, version: version)
       super
     end
   end
 
-  # @param package_name [String]
-  # @param version [String]
-  # @return [Hash{String => String}]
+  #: (String package_name, String version) -> Hash[String, String]
   def package_dependencies(package_name, version)
     if entitled?(name: package_name, version: version)
       super
@@ -98,8 +90,7 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     end
   end
 
-  # @param package_name [String]
-  # @return [Hash{String => String}]
+  #: (String package_name) -> Hash[String, String]
   def dist_tags(package_name)
     return {} unless entitled?(name: package_name)
 
@@ -110,8 +101,7 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     tags
   end
 
-  # @param package_name [String]
-  # @return [Hash, nil]
+  #: (String package_name) -> Hash[untyped, untyped]?
   def package_metadata(package_name)
     return nil unless entitled?(name: package_name)
 
@@ -136,9 +126,7 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   # A repository predating package_summary gets no summary at all rather than
   # the newest release's.
   #
-  # @param package_name [String]
-  # @param version [String]
-  # @return [Hash{String => Object}]
+  #: (String package_name, String? version) -> Hash[String, untyped]
   def summary_of(package_name, version)
     inner = __getobj__
     inner.respond_to?(:package_summary) ? inner.package_summary(package_name, version) : {}
@@ -146,9 +134,7 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
 
   # Recomputed so created/modified do not leak withheld publication dates.
   #
-  # @param times [Hash, nil]
-  # @param entitled [Array<String>]
-  # @return [Hash{String => String}]
+  #: (Hash[untyped, untyped]? times, Array[String] entitled) -> Hash[String, String]
   def entitled_times(times, entitled)
     return {} unless times.is_a?(Hash)
 
@@ -163,14 +149,16 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   # in the corpus — an entitler that reaches for a database on every call
   # is the usual reason a gated index is slower than an ungated one.
   #
-  # @param criteria [Hash]
-  # @return [Object] truthy when entitled
+  # Returns truthy when entitled.
+  #
+  #: (**untyped criteria) -> untyped
   def entitled?(**criteria)
     Measurometer.instrument("paquette.npm_read_gate.entitled") { @entitler.call(**criteria) }
   end
 end
 
 # Former name, kept so existing stacks keep building.
-#
-# @return [Class]
 Paquette::NpmServer::GatedNpmRepository = Paquette::NpmServer::ReadGatedRepository
+
+# @rbs!
+#   class Paquette::NpmServer::GatedNpmRepository = Paquette::NpmServer::ReadGatedRepository

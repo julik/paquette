@@ -9,21 +9,20 @@ require "measurometer"
 # the repacked files cached on disk. Counterpart of NpmServer::Personalizer,
 # and the same two contracts about `files_for:` apply.
 class Paquette::PypiServer::Personalizer < SimpleDelegator
-  # @param repository [Paquette::PypiServer::PypiRepository] the repository
-  #   to wrap
-  # @param license_key [String]
-  # @param magic_comment_replacements [Hash{String => String}] whole comment
-  #   lines in *.py and *.pyi to replace, marker => replacement
-  # @param files [Hash{String => String}] injected into every file, path
-  #   relative to the archive root - site-packages, for a wheel
-  # @param stamp [Hash, nil] written as paquette.json into the wheel's
-  #   .dist-info and the sdist's root; defaults to the license key
-  # @param files_for [Proc, nil] per-file extras, called with (project,
-  #   filename, original_path); nil means the file is served byte for byte
-  # @param personalization_key [String, nil] everything the personalized
-  #   bytes depend on beyond the file itself
-  # @param cache_dir [String, nil] where personalized files and opt-out
-  #   markers are kept
+  # - `repository`: the repository to wrap
+  # - `magic_comment_replacements`: whole comment lines in *.py and *.pyi to
+  #   replace, marker => replacement
+  # - `files`: injected into every file, path relative to the archive root -
+  #   site-packages, for a wheel
+  # - `stamp`: written as paquette.json into the wheel's .dist-info and the
+  #   sdist's root; defaults to the license key
+  # - `files_for`: per-file extras, called with (project, filename,
+  #   original_path); nil means the file is served byte for byte
+  # - `personalization_key`: everything the personalized bytes depend on
+  #   beyond the file itself
+  # - `cache_dir`: where personalized files and opt-out markers are kept
+  #
+  #: (Paquette::PypiServer::PypiRepository repository, license_key: String, ?magic_comment_replacements: Hash[String, String], ?files: Hash[String, String], ?stamp: Hash[String, untyped]?, ?files_for: Proc?, ?personalization_key: String?, ?cache_dir: String?) -> void
   def initialize(repository, license_key:, magic_comment_replacements: {}, files: {}, stamp: nil,
     files_for: nil, personalization_key: nil, cache_dir: nil)
     Paquette::NpmRepacker.check_replacements!(magic_comment_replacements)
@@ -37,20 +36,18 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
     @cache_dir = cache_dir || File.join(Dir.tmpdir, "paquette_personalized_pypi")
   end
 
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     inner = Paquette::CacheValidation.validator_of(__getobj__)
     Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
   end
 
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     true
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [String, nil]
+  #: (String project, String filename) -> String?
   def file_path(project, filename)
     original_path = __getobj__.file_path(project, filename)
     return original_path unless original_path && File.exist?(original_path)
@@ -61,9 +58,7 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
   # The hash and size have to be the personalized file's, or pip refuses
   # it. METADATA is never touched, so its hash stays the repository's.
   #
-  # @param project [String]
-  # @param filename [String]
-  # @return [Paquette::PypiServer::PypiRepository::DistributionFile, nil]
+  #: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
   def file_info(project, filename)
     info = __getobj__.file_info(project, filename)
     return nil unless info
@@ -85,12 +80,11 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
   # the hash is kept next to the file it describes. The path names everything
   # that went into the file, which is what makes the sidecar safe to trust.
   #
-  # @param served [String]
-  # @return [String]
+  #: (String served) -> String
   def served_sha256(served)
     sidecar = "#{served}.sha256"
     cached = File.read(sidecar) if File.exist?(sidecar)
-    return cached if cached&.bytesize == 64
+    return cached if cached && cached.bytesize == 64
 
     Digest::SHA256.file(served).hexdigest.tap do |hex|
       partial = "#{sidecar}.#{Process.pid}.#{Thread.current.object_id}"
@@ -101,10 +95,7 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
 
   # Keyed by everything that goes INTO the file: two licensees never share one.
   #
-  # @param original_path [String]
-  # @param project [String]
-  # @param filename [String]
-  # @return [String]
+  #: (String original_path, String project, String filename) -> String
   def personalize(original_path, project, filename)
     stat = File.stat(original_path)
     # The served filename is the original one - pip reads the tags out of
@@ -149,26 +140,20 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
     personalized_path
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @param stat [::File::Stat]
-  # @return [String]
+  #: (String project, String filename, ::File::Stat stat) -> String
   def cache_digest(project, filename, stat)
-    Digest::SHA256.hexdigest([project, filename, personalization_digest, stat.mtime.to_r, stat.size].join("\0"))[0, 24]
+    Digest::SHA256.hexdigest([project, filename, personalization_digest, stat.mtime.to_r, stat.size].join("\0"))[0, 24] #: String
   end
 
   # Keyed by the file alone, never the licensee - see NpmServer::Personalizer.
   #
-  # @param project [String]
-  # @param filename [String]
-  # @param stat [::File::Stat]
-  # @return [String]
+  #: (String project, String filename, ::File::Stat stat) -> String
   def plain_marker_path(project, filename, stat)
     digest = Digest::SHA256.hexdigest([project, filename, stat.mtime.to_r, stat.size].join("\0"))[0, 24]
     File.join(@cache_dir, "plain", "#{digest}.plain")
   end
 
-  # @return [String]
+  #: () -> String
   def personalization_digest
     @personalization_digest ||= Digest::SHA256.hexdigest([
       Paquette::PypiRepacker::FORMAT_VERSION,
@@ -177,6 +162,6 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
       @files.sort.inspect,
       @stamp.sort.inspect,
       @personalization_key.to_s
-    ].join("\0"))[0, 16]
+    ].join("\0"))[0, 16] #: String
   end
 end

@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Write the types inline as rbs-inline `#:` comments and check them with Steep, instead of YARD tags turned into signatures by sord. `rake rbs` writes `sig/generated`, which ships with the gem in place of `sig/paquette.rbs`; `rbi/paquette.rbi` is gone. The docs are rdoc now, with comments in GitHub Flavored Markdown rendered by commonmarker (raw HTML included), and `rake docs` builds them into `doc/` with each method's signature and each attribute's type on the page. The authenticator, the placeholder app and `on_publish:` are typed (`Paquette::Authentication::_Authenticator`, `Paquette::_RackApp`, a proc), as are Rack responses and envs (`Paquette::rack_response`, `Paquette::rack_env`)
+- `SubdomainRouter` sends a request without a host to the fallback rather than raising on it
+- `GemServer::GemRepacker.repack` no longer takes a block it never called
 - Rebuild a gated npm packument's README, description, keywords, license, author, maintainers, repository, bugs and homepage from the newest version the caller may see (security). They came from the newest version on disk, so a lapsed licensee read the README of releases they were not entitled to. A repository that cannot describe one version gets none of them. New `NpmRepository#package_summary`
 - Stop storing anonymous requests and requests with a query string in `ResponseCache`, and key on whether `Accept` asks for JSON instead of the raw `Accept` and `Accept-Encoding` (security). Every distinct query string or header value used to be a new entry on disk that nothing evicts, so anybody could fill the disk
 - Refuse a token that is not valid UTF-8 in `AuthToken.from_env`, which now always returns a UTF-8 string, so an authenticator's regexps and lookups cannot raise on one

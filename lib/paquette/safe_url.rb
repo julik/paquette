@@ -12,9 +12,12 @@ module Paquette::SafeUrl
   # that are not valid UTF-8, on which URI's parser raises rather than
   # declining to match.
   #
-  # @param value [Object] the published field value
-  # @return [String, nil] the original string byte for byte — this is a
-  #   filter, not a rewriter
+  # - `value`: the published field value
+  #
+  # Returns the original string byte for byte — this is a
+  # filter, not a rewriter.
+  #
+  #: (untyped value) -> String?
   def http_url(value)
     str = value.to_s
     return nil unless str.valid_encoding?

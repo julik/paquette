@@ -8,46 +8,47 @@ class Paquette::GemServer::GemRepository
     raise NotImplementedError, "GemRepository is an abstract class"
   end
 
-  # @return [Array<String>] the gem names available in the repository
+  # Returns the gem names available in the repository.
+  #
+  #: () -> Array[String]
   def gem_names
     raise NotImplementedError, "Subclasses must implement gem_names"
   end
 
-  # @return [Array<Array(String, String)>] [name, version] pairs for all gems
+  # Returns [name, version] pairs for all gems.
+  #
+  #: () -> Array[[String, String]]
   def gem_versions
     raise NotImplementedError, "Subclasses must implement gem_versions"
   end
 
-  # @param gem_name [String]
-  # @return [Array<String>] the versions of the gem
+  # Returns the versions of the gem.
+  #
+  #: (String gem_name) -> Array[String]
   def versions_for_gem(gem_name)
     raise NotImplementedError, "Subclasses must implement versions_for_gem"
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String] the path of the .gem file
+  # Returns the path of the .gem file.
+  #
+  #: (String gem_name, String version) -> String
   def gem_file_path(gem_name, version)
     raise NotImplementedError, "Subclasses must implement gem_file_path"
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Boolean]
+  #: (String gem_name, String version) -> bool
   def gem_exists?(gem_name, version)
     raise NotImplementedError, "Subclasses must implement gem_exists?"
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [::Gem::Specification, nil]
+  #: (String gem_name, String version) -> ::Gem::Specification?
   def gem_spec(gem_name, version)
     raise NotImplementedError, "Subclasses must implement gem_spec"
   end
 
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Array] the gem's dependencies
+  # Returns the gem's dependencies.
+  #
+  #: (String gem_name, String version) -> Array[untyped]
   def gem_dependencies(gem_name, version)
     raise NotImplementedError, "Subclasses must implement gem_dependencies"
   end
@@ -55,15 +56,16 @@ class Paquette::GemServer::GemRepository
   # When the given version was published; CooldownRepository asks this.
   # Subclasses override only to put a cache in front of it.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [Time, nil] nil when it cannot be established
+  # Returns nil when it cannot be established.
+  #
+  #: (String gem_name, String version) -> Time?
   def published_at(gem_name, version)
     gem_spec(gem_name, version)&.date
   end
 
-  # @param gem_name [String]
-  # @return [String, nil] the /info/ document for the gem, all versions
+  # Returns the /info/ document for the gem, all versions.
+  #
+  #: (String gem_name) -> String?
   def compact_info(gem_name)
     raise NotImplementedError, "Subclasses must implement compact_info"
   end
@@ -79,7 +81,7 @@ class Paquette::GemServer::GemRepository
   # serve changes — wrappers included. A wrapper that cannot describe
   # itself must return nil, "do not cache this", which propagates outward.
   #
-  # @return [String, nil]
+  #: () -> String?
   def cache_validator
     nil
   end
@@ -88,7 +90,7 @@ class Paquette::GemServer::GemRepository
   # false permits `public` responses. True is the only safe default for a
   # repository nobody here has seen.
   #
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     true
   end
@@ -96,9 +98,9 @@ class Paquette::GemServer::GemRepository
   # The SHA256 of the .gem file this repository would actually serve —
   # under a Personalizer, not the bytes on disk.
   #
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String, nil] nil when unknown or when the gem is not there
+  # Returns nil when unknown or when the gem is not there.
+  #
+  #: (String gem_name, String version) -> String?
   def gem_checksum(gem_name, version)
     nil
   end
@@ -107,24 +109,17 @@ class Paquette::GemServer::GemRepository
   # the protocol. The rules live in Paquette::CacheValidation, shared with
   # the npm side.
   #
-  # @param repository [Object]
-  # @return [String, nil]
+  #: (untyped repository) -> String?
   def self.cache_validator_of(repository)
     Paquette::CacheValidation.validator_of(repository)
   end
 
-  # @param repository [Object]
-  # @param gem_name [String]
-  # @param version [String]
-  # @return [String, nil]
+  #: (untyped repository, String gem_name, String version) -> String?
   def self.gem_checksum_of(repository, gem_name, version)
     repository.gem_checksum(gem_name, version) if repository.respond_to?(:gem_checksum)
   end
 
-  # @param inner_validator [String, nil]
-  # @param layer [String]
-  # @param key [String, nil]
-  # @return [String, nil]
+  #: (String? inner_validator, String layer, String? key) -> String?
   def self.derive_validator(inner_validator, layer, key)
     Paquette::CacheValidation.derive_validator(inner_validator, layer, key)
   end
@@ -136,10 +131,7 @@ class Paquette::GemServer::GemRepository
   # A class method on purpose: some repositories are SimpleDelegators, and
   # an instance method would be forwarded to the wrapped repository.
   #
-  # @param version [String]
-  # @param spec [::Gem::Specification]
-  # @param checksum [String]
-  # @return [String]
+  #: (String version, ::Gem::Specification spec, String checksum) -> String
   def self.compact_info_line(version, spec, checksum)
     compact_info_line_from_fields(version, compact_info_fields(spec, checksum))
   end
@@ -147,9 +139,7 @@ class Paquette::GemServer::GemRepository
   # The spec boiled down to plain strings and arrays — this hash is what a
   # repository may cache on disk, and strings deserialize into no surprises.
   #
-  # @param spec [::Gem::Specification]
-  # @param checksum [String]
-  # @return [Hash{String => Object}]
+  #: (::Gem::Specification spec, String checksum) -> Hash[String, untyped]
   def self.compact_info_fields(spec, checksum)
     # Development dependencies are not part of the resolution and
     # rubygems.org does not publish them.
@@ -180,9 +170,7 @@ class Paquette::GemServer::GemRepository
   # a cache, the bytes must come out the same either way. Keys beyond the
   # ones this reads are ignored.
   #
-  # @param version [String]
-  # @param fields [Hash{String => Object}]
-  # @return [String]
+  #: (String version, Hash[String, untyped] fields) -> String
   def self.compact_info_line_from_fields(version, fields)
     deps = fields.fetch("dependencies").map { |dep_name, req| "#{dep_name}:#{req}" }.join(",")
 
@@ -206,9 +194,7 @@ class Paquette::GemServer::GemRepository
   # class owns the line format; the pattern cannot stray into a
   # neighbouring field.
   #
-  # @param line [String]
-  # @param checksum [String]
-  # @return [String]
+  #: (String line, String checksum) -> String
   def self.replace_checksum(line, checksum)
     line.sub(/checksum:[0-9a-f]+/) { "checksum:#{checksum}" }
   end
@@ -217,8 +203,7 @@ class Paquette::GemServer::GemRepository
   # dependency the clauses are joined with "&": ">= 1.0, < 3" becomes
   # ">= 1.0&< 3".
   #
-  # @param requirement [Gem::Requirement]
-  # @return [String]
+  #: (Gem::Requirement requirement) -> String
   def self.requirement_string(requirement)
     requirement.to_s.split(", ").join("&")
   end

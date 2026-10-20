@@ -6,28 +6,41 @@ require_relative "paquette/version"
 # directory, with the index formats, conditional GETs and push endpoints the
 # two clients expect.
 module Paquette
+  # @rbs!
+  #   # A Rack response: status, headers, body.
+  #   type rack_response = [Integer, Hash[String, String], untyped]
+  #
+  #   # A Rack env.
+  #   type rack_env = Hash[String, untyped]
+  #
+  #   # Anything Rack can call.
+  #   interface _RackApp
+  #     def call: (rack_env env) -> rack_response
+  #   end
+
   # The default ceiling on any single regexp match, in seconds. Lives here
   # rather than next to RegexpTimeout so that setting it at boot does not
   # load the rest of the gem.
-  #
-  # @return [Float]
   DEFAULT_REGEXP_TIMEOUT = 0.05
 
   class << self
     # The regexp timeout every Rack app in this gem installs for the duration
     # of a request, in seconds. `nil` is "no ceiling".
-    #
-    # @return [Float, nil]
+    #--
+    # @rbs skip
     attr_accessor :regexp_timeout
   end
+
+  # rbs-inline reads an attr inside `class << self` as an instance one.
+  # @rbs!
+  #   def self.regexp_timeout: () -> Float?
+  #   def self.regexp_timeout=: (Float? seconds) -> Float?
 
   self.regexp_timeout = DEFAULT_REGEXP_TIMEOUT
 
   # The largest package push either server accepts, in bytes — the default
   # for the `max_push_bytes:` keyword both take. `nil` removes the cap.
-  #
-  # @return [Integer]
-  MAX_PUSH_SIZE_BYTES = 50 * 1024 * 1024
+  MAX_PUSH_SIZE_BYTES = 50 * 1024 * 1024 #: Integer
 
   # What an authenticator's `check_otp!` raises for a code that is not good.
   # The server answers it with the refusal its client knows.

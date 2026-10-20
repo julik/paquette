@@ -1,0 +1,48 @@
+# Corners of RubyGems the core signatures leave out.
+class Gem::Exception < RuntimeError
+end
+
+module Gem
+  def self.load_yaml: () -> void
+end
+
+module Gem::SafeYAML
+  def self.aliases_enabled?: () -> bool
+  def self.aliases_enabled=: (bool) -> bool
+end
+
+# Core RBS declares Gem::Specification without its attributes.
+class Gem::Specification
+  attr_accessor name: String
+  attr_accessor version: Gem::Version
+  attr_accessor date: Time
+  attr_accessor summary: String?
+  attr_accessor description: String?
+  attr_accessor homepage: String?
+  attr_accessor authors: Array[String]
+  attr_accessor licenses: Array[String]
+  attr_accessor files: Array[String]
+  attr_accessor executables: Array[String]
+  attr_accessor metadata: Hash[String, String]
+  attr_accessor platform: String | Gem::Platform
+  attr_accessor required_ruby_version: Gem::Requirement
+  attr_accessor required_rubygems_version: Gem::Requirement
+  def dependencies: () -> Array[Gem::Dependency]
+  def runtime_dependencies: () -> Array[Gem::Dependency]
+  def full_name: () -> String
+end
+
+class Gem::Dependency
+  def name: () -> String
+  def requirement: () -> Gem::Requirement
+  def type: () -> Symbol
+end
+
+class Gem::Platform
+  RUBY: String
+end
+
+class Gem::Version
+  VERSION_PATTERN: String
+  ANCHORED_VERSION_PATTERN: Regexp
+end

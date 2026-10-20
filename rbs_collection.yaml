@@ -1,0 +1,27 @@
+# Signatures for the gems paquette depends on, fetched by
+# `rbs collection install` into .gem_rbs_collection/. Only the runtime
+# dependencies matter to Steep; the tooling gems are left out.
+sources:
+  - type: git
+    name: ruby/gem_rbs_collection
+    remote: https://github.com/ruby/gem_rbs_collection.git
+    revision: main
+    repo_dir: gems
+
+path: .gem_rbs_collection
+
+gems:
+  - name: paquette
+    ignore: true
+  - name: rbs-inline
+    ignore: true
+  - name: steep
+    ignore: true
+  - name: rdoc
+    ignore: true
+  - name: standard
+    ignore: true
+  - name: rubocop
+    ignore: true
+  - name: gem_server_conformance
+    ignore: true

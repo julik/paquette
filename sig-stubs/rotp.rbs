@@ -1,0 +1,6 @@
+module ROTP
+  class TOTP
+    def initialize: (String secret, **untyped) -> void
+    def verify: (String otp, ?drift_ahead: Integer, ?drift_behind: Integer, ?after: Integer?, ?at: Time | Integer) -> Integer?
+  end
+end

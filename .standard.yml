@@ -1,1 +1,11 @@
 ruby_version: 3.1
+
+ignore:
+  # `Paquette::Routes.draw do |r| #$ Paquette::GemServer` is Steep's type
+  # application, which has to be written with no space after the `#`.
+  - "lib/paquette/gem_server.rb":
+      - Layout/LeadingCommentSpace
+  - "lib/paquette/npm_server.rb":
+      - Layout/LeadingCommentSpace
+  - "lib/paquette/pypi_server.rb":
+      - Layout/LeadingCommentSpace

@@ -19,10 +19,11 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # Raised on a yank of a file that is not there.
   class FileNotFound < StandardError; end
 
-  # @return [String]
   YANKED_SUFFIX = ".yanked"
 
-  # @param packages_dir [String] the corpus root, created if absent
+  # - `packages_dir`: the corpus root, created if absent
+  #
+  #: (String packages_dir) -> void
   def initialize(packages_dir)
     @packages_dir = packages_dir
     FileUtils.mkdir_p(@packages_dir)
@@ -31,7 +32,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # A digest of the paths in the corpus, plus the mtimes of the yank
   # sidecars - a yank edits what a page says without adding a distribution.
   #
-  # @return [String]
+  #: () -> String
   def fingerprint
     Measurometer.instrument("paquette.pypi_repository.fingerprint") do
       d = Digest::SHA256.new
@@ -43,17 +44,17 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
     end
   end
 
-  # @return [String]
+  #: () -> String
   def cache_validator
     fingerprint
   end
 
-  # @return [Boolean]
+  #: () -> bool
   def varies_by_caller?
     false
   end
 
-  # @return [Array<String>]
+  #: () -> Array[String]
   def project_names
     Measurometer.instrument("paquette.pypi_repository.project_names") do
       Dir.children(@packages_dir).select do |name|
@@ -67,8 +68,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # Files whose names belong to a different project are left out: a stray
   # copy must not be served under a name it does not carry.
   #
-  # @param project [String]
-  # @return [Array<String>]
+  #: (String project) -> Array[String]
   def filenames_for_project(project)
     dir = project_dir(project)
     return [] unless dir && Dir.exist?(dir)
@@ -81,9 +81,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # nil for anything that is not a file of this project, so "../../secret"
   # resolves to nothing rather than to a path.
   #
-  # @param project [String]
-  # @param filename [String]
-  # @return [String, nil]
+  #: (String project, String filename) -> String?
   def file_path(project, filename)
     dir = project_dir(project)
     return nil unless dir
@@ -92,17 +90,13 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
     File.join(dir, filename)
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [Boolean]
+  #: (String project, String filename) -> bool
   def file_exists?(project, filename)
     path = file_path(project, filename)
     !!path && File.file?(path)
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [Paquette::PypiServer::PypiRepository::DistributionFile, nil]
+  #: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
   def file_info(project, filename)
     path = file_path(project, filename)
     return nil unless path && File.file?(path)
@@ -113,9 +107,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
     end
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @return [String, nil]
+  #: (String project, String filename) -> String?
   def core_metadata(project, filename)
     return nil unless self.class.wheel?(filename)
 
@@ -128,9 +120,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # The moment the file landed here. An rsync or a restore that does not
   # keep mtimes moves this, which is what the cooldown reads by default.
   #
-  # @param project [String]
-  # @param filename [String]
-  # @return [Time, nil]
+  #: (String project, String filename) -> Time?
   def published_at(project, filename)
     path = file_path(project, filename)
     (path && File.file?(path)) ? File.mtime(path) : nil
@@ -139,11 +129,10 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # The name in the metadata has to be the name on the file: a wheel
   # uploaded as acme_widgets must not turn out to install something else.
   #
-  # @param source_path [String]
-  # @param filename [String]
-  # @return [Paquette::PypiServer::PypiRepository::DistributionFile]
-  # @raise [InvalidDistribution]
-  # @raise [FileAlreadyExists]
+  # Raises `InvalidDistribution`.
+  # Raises `FileAlreadyExists`.
+  #
+  #: (String source_path, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile
   def add_file(source_path, filename)
     parsed = self.class.parse_filename(filename)
     raise InvalidDistribution, "Not a wheel or sdist filename: #{filename.to_s.scrub.inspect}" unless parsed
@@ -163,7 +152,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
       raise InvalidDistribution, "#{filename} says its name is #{fields["name"].to_s.inspect}"
     end
 
-    destination = file_path(project, filename)
+    destination = file_path(project, filename) #: String
     FileUtils.mkdir_p(File.dirname(destination))
     # The link refuses a destination that exists, so two racing uploads of
     # one filename cannot both land
@@ -176,14 +165,12 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
     end
     FileUtils.chmod(0o644, destination)
 
-    file_info(project, filename)
+    file_info(project, filename) #: Paquette::PypiServer::PypiRepository::DistributionFile
   end
 
-  # @param project [String]
-  # @param filename [String]
-  # @param reason [String]
-  # @return [void]
-  # @raise [FileNotFound]
+  # Raises `FileNotFound`.
+  #
+  #: (String project, String filename, ?reason: String) -> void
   def yank_file(project, filename, reason: "")
     path = file_path(project, filename)
     raise FileNotFound, "#{filename} not found" unless path && File.file?(path)
@@ -197,11 +184,9 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
   # A tempfile on another filesystem cannot be linked, so a copy is made on
   # this one first - and linked into place, keeping the refusal above.
   #
-  # @param source_path [String]
-  # @param destination [String]
-  # @param filename [String]
-  # @return [void]
-  # @raise [FileAlreadyExists]
+  # Raises `FileAlreadyExists`.
+  #
+  #: (String source_path, String destination, String filename) -> void
   def link_copy(source_path, destination, filename)
     partial = "#{destination}.#{SecureRandom.hex(8)}.partial"
     FileUtils.cp(source_path, partial)
@@ -212,16 +197,14 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
     File.unlink(partial) if partial && File.exist?(partial)
   end
 
-  # @param project [String]
-  # @return [String, nil]
+  #: (String project) -> String?
   def project_dir(project)
     return nil unless self.class.valid_project_name?(project)
 
     File.join(@packages_dir, project)
   end
 
-  # @param path [String]
-  # @return [String, false]
+  #: (String path) -> (String | false)
   def yank_reason(path)
     sidecar = path + YANKED_SUFFIX
     File.exist?(sidecar) ? Paquette::Tarball.as_text(File.read(sidecar)) : false
@@ -229,9 +212,7 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
 
   # Everything about a file that only changes when its bytes do.
   #
-  # @param path [String]
-  # @param filename [String]
-  # @return [Hash{Symbol => Object}]
+  #: (String path, String filename) -> Hash[Symbol, untyped]
   def describe(path, filename)
     Measurometer.instrument("paquette.pypi_repository.describe") do
       metadata = begin
@@ -255,9 +236,9 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
 
   # Keyed on mtime + size so a replaced file is not described stale.
   #
-  # @param path [String]
-  # @param aspect [Symbol]
-  # @return [Object] the cached block result
+  # Returns the cached block result.
+  #
+  #: [T] (String path, Symbol aspect) { () -> T } -> T
   def cached(path, aspect)
     stat = File.stat(path)
     key = [path, aspect, stat.mtime.to_r, stat.size]

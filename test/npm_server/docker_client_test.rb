@@ -158,8 +158,9 @@ class DockerNpmClientTest < Minitest::Test
     assert_match(/409|conflict|already exists/i, output)
   end
 
-  def test_writes_are_refused_through_a_read_gated_registry
-    serve(Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| true })
+  # What a registry without an authenticator says to `npm publish`
+  def test_writes_are_refused_without_an_authenticator
+    serve_app(Paquette::NpmServer.new(@repository))
 
     output = run_npm(<<~SH, expect_failure: true)
       #{write_package_json("nope", "1.0.0")}

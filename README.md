@@ -47,15 +47,9 @@ The `Paquette::GemServer::DirectoryGemRepository` is a repository. The `Paquette
 
 ## Repository wrappers
 
-You can make your package server do interesting things by wrapping your `repo`. For example, to disallow gem pushes:
+You can make your package server do interesting things by wrapping your `repo`. Wrappers change what is read - who may write is the authenticator's business alone (see [Authentication](#authentication)), and a server without one already refuses every write.
 
-```ruby
-# ...the rest as above
-gem_repo = Paquette::GemServer::ReadonlyRepository.new(gem_repo) # forbids yank and push
-gem_server = Paquette::GemServer.new(gem_repo)
-```
-
-You can also create your own entitlement checks. This allows you to customize which gems get offered to a specific user:
+For example, you can create your own entitlement checks. This allows you to customize which gems get offered to a specific user:
 
 ```ruby
 # ...the rest as above

@@ -1727,10 +1727,9 @@ module Paquette
 
     # Wraps a gem repository and hides every version that was published less
     # than `interval` seconds ago, giving a publisher a window to yank a
-    # compromised or broken release before anybody can pick it up. Read-only:
-    # a push into a delayed view would land and then immediately vanish from
-    # the view that accepted it.
-    class CooldownRepository < Paquette::GemServer::ReadonlyRepository
+    # compromised or broken release before anybody can pick it up. A push
+    # through it lands, and stays out of this view until it has cooled.
+    class CooldownRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
       # _@param_ `interval` — the cooldown, in seconds
@@ -1831,24 +1830,11 @@ module Paquette
       def published_time(gem_name, version); end
     end
 
-    # Forbids package pushes
-    class ReadonlyRepository < SimpleDelegator
-      sig { void }
-      def add_gem; end
-
-      sig { void }
-      def yank_gem; end
-
-      # Raised by every write on a readonly repository.
-      class WriteNotAllowed < StandardError
-      end
-    end
-
     # Wraps a gem repository and filters every read through an entitler block:
     # non-entitled gems disappear from listings, return nil paths, and report
-    # as non-existent. Writes always raise — gating reads blocks writes, full
-    # stop; a more nuanced policy belongs in its own wrapper.
-    class ReadGatedRepository < Paquette::GemServer::ReadonlyRepository
+    # as non-existent. Writes pass through - who may write is the authenticator's
+    # to say, and the server asks it before any repository is touched.
+    class ReadGatedRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
       # _@param_ `gate_key` — what this gate is called, for HTTP caching: the identity the entitler consults plus everything the answers depend on. Left out, the whole stack emits no ETag and serves every request in full — the intended fail-closed default, because a wrong ETag hands one customer another's entitlements.
@@ -3026,7 +3012,7 @@ module Paquette
     end
 
     # Filters every read through an entitler block; non-entitled packages do
-    # not exist. Writes always raise: a gated caller may not mutate the corpus.
+    # not exist. Writes pass through - see the gem-side twin.
     class ReadGatedRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
@@ -3103,19 +3089,6 @@ module Paquette
       # _@return_ — truthy when entitled
       sig { params(criteria: T::Hash[T.untyped, T.untyped]).returns(Object) }
       def entitled?(**criteria); end
-
-      sig { void }
-      def add_package; end
-
-      sig { void }
-      def yank_package; end
-
-      sig { void }
-      def write_dist_tag; end
-
-      # Raised by every write on a gated repository.
-      class WriteNotAllowed < StandardError
-      end
     end
 
     # Reads NPM packages from a directory; a scope is an ordinary directory:

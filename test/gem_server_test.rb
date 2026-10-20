@@ -520,21 +520,4 @@ class GemServerTest < Minitest::Test
     assert_equal 404, session.last_response.status
     assert_match(/not found/i, session.last_response.body)
   end
-
-  def test_push_and_yank_return_403_through_read_gated_repository
-    Dir.mktmpdir do |dir|
-      repo = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| true }
-      read_only_app = Writable.gem_server(gated)
-      session = Rack::Test::Session.new(Rack::MockSession.new(read_only_app))
-
-      session.post "/api/v1/gems", "anything", "CONTENT_TYPE" => "application/octet-stream"
-      assert_equal 403, session.last_response.status
-      assert_match(/not allowed/, session.last_response.body)
-
-      session.delete "/api/v1/gems/yank", {gem_name: "foo", version: "1.0.0"}
-      assert_equal 403, session.last_response.status
-      assert_match(/not allowed/, session.last_response.body)
-    end
-  end
 end

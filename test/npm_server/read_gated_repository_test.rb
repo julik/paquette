@@ -84,20 +84,18 @@ class NpmReadGatedRepositoryTest < Minitest::Test
     assert_empty repo.dist_tags("denied")
   end
 
-  def test_writes_are_refused
+  # Who may write is the authenticator's to say, not the gate's
+  def test_writes_pass_through
     repo = allowing_everything
 
-    assert_raises(Paquette::NpmServer::ReadGatedRepository::WriteNotAllowed) do
-      repo.add_package(npm_tarball_bytes(name: "new", version: "1.0.0"))
-    end
+    repo.add_package(npm_tarball_bytes(name: "new", version: "1.0.0"))
+    assert repo.package_exists?("new", "1.0.0")
 
-    assert_raises(Paquette::NpmServer::ReadGatedRepository::WriteNotAllowed) do
-      repo.yank_package("allowed", "1.0.0")
-    end
+    repo.write_dist_tag("new", "next", "1.0.0")
+    assert_equal "1.0.0", repo.dist_tags("new")["next"]
 
-    assert_raises(Paquette::NpmServer::ReadGatedRepository::WriteNotAllowed) do
-      repo.write_dist_tag("allowed", "next", "1.0.0")
-    end
+    repo.yank_package("new", "1.0.0")
+    refute repo.package_exists?("new", "1.0.0")
   end
 
   def test_the_former_name_still_builds_a_stack

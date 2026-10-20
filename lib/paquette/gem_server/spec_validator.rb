@@ -1,3 +1,4 @@
+require "date"
 require "rubygems"
 
 # Everything a pushed gemspec claims about itself, checked before any of it
@@ -45,6 +46,42 @@ class Paquette::GemServer::SpecValidator
   #
   # @return [Integer]
   MAX_FIELD_BYTES = 2048
+
+  # The RubyGems placeholder a reproducible build stamps when it is given no
+  # date, which says nothing about when the gem was released. Gem's own
+  # DEFAULT_SOURCE_DATE_EPOCH is not loaded with rubygems/package, and older
+  # RubyGems have none - this is its value.
+  #
+  # @return [Date]
+  PLACEHOLDER_DATE = Time.at(315_619_200).utc.to_date
+
+  # How far from today a release date may plausibly be, in days.
+  #
+  # @return [Integer]
+  RELEASE_DATE_TOLERANCE_DAYS = 3 * 366
+
+  # Refuses a gem whose date cannot be when it was released: the placeholder,
+  # or years away from today. For a registry that decides anything by the date
+  # a publisher wrote into the gem.
+  #
+  # @param spec [::Gem::Specification]
+  # @param today [Date]
+  # @raise [Paquette::GemServer::DirectoryGemRepository::InvalidGem]
+  # @return [void]
+  def self.validate_release_date!(spec, today: Date.today)
+    day = spec.date&.to_date
+    plausible = day && day != PLACEHOLDER_DATE && (day - today).abs <= RELEASE_DATE_TOLERANCE_DAYS
+    return if plausible
+
+    invalid!(<<~MESSAGE.strip)
+      This registry needs a gem's release date, and #{day || "no date"} does not look like one.
+      Rebuild with the release commit's own date and push again:
+
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) gem build #{spec.name}.gemspec
+
+      The build stays byte-for-byte reproducible; it simply stops claiming a date it cannot have.
+    MESSAGE
+  end
 
   # One error class deliberately: a client cannot act differently on
   # unreadable versus dishonest.

@@ -45,6 +45,7 @@ module Paquette
   autoload :IndexPage, "#{__dir__}/paquette/index_page"
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
+  autoload :Published, "#{__dir__}/paquette/published"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
   autoload :ResponseCache, "#{__dir__}/paquette/response_cache"
   autoload :Routes, "#{__dir__}/paquette/routes"

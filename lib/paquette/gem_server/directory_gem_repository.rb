@@ -22,8 +22,12 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   class GemYanked < StandardError; end
 
   # @param gems_dir [String] the corpus root, created if absent
-  def initialize(gems_dir)
+  # @param require_release_date [Boolean] refuse a push whose gemspec date is
+  #   the RubyGems placeholder or years from today - see
+  #   SpecValidator.validate_release_date!
+  def initialize(gems_dir, require_release_date: false)
     @gems_dir = gems_dir
+    @require_release_date = require_release_date
     FileUtils.mkdir_p(@gems_dir)
   end
 
@@ -112,6 +116,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
     # Before anything touches the filesystem with them. Every field below
     # this line came out of a YAML document the uploader wrote.
     name, version, platform = Paquette::GemServer::SpecValidator.validate!(spec)
+    Paquette::GemServer::SpecValidator.validate_release_date!(spec) if @require_release_date
 
     # The key, and the filename: a java build and a plain-ruby build are
     # two artifacts, so everything below is keyed by the column.

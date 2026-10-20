@@ -395,6 +395,14 @@ Measurometer.drivers << Appsignal
 
 Metric paths that Paquette outputs are all prefixed with `paquette.` - the rest should be fairly self-explanatory.
 
+For your own log line or monitoring transaction, each server says what a request turned out to be about in the env:
+
+```ruby
+env["paquette.served"] # => {route: "GET /gems/:gem_filename", package: "zip_kit", version: "6.2.1"}
+```
+
+The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body. `env["paquette.authentication"]` and `env["paquette.response_cache"]` sit beside it.
+
 ## Running the tests
 
 ```bash

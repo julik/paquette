@@ -34,6 +34,124 @@ module Paquette
     def self.verify!: (String secret, String code, ?drift: Integer) -> void
   end
 
+  # Reading and writing of wheels - zip archives - for the PyPI side, the
+  # counterpart of Paquette::Tarball. zip_kit's FileReader finds the entries;
+  # the inflate is ours, because its own reader has no ceiling and zip_kit says
+  # as much about reading archives other people wrote.
+  module Wheel
+    MAX_ENTRIES: Integer
+    MAX_INFLATED_BYTES: Integer
+    INFLATE_STEP: Integer
+    DOS_EPOCH: Time
+    DEFLATED: Integer
+    STORED: Integer
+
+    # The bytes of one member, or nil when there is no such member.
+    # 
+    # _@param_ `wheel_path`
+    # 
+    # _@param_ `name`
+    # 
+    # _@param_ `limit` — refuse to inflate past this many bytes
+    def self.read_entry: (String wheel_path, String name, limit: Integer) -> String?
+
+    # The member names, in the order they sit in the central directory.
+    # 
+    # _@param_ `wheel_path`
+    def self.entry_names: (String wheel_path) -> ::Array[String]
+
+    # Every file member, inflated. Directory members are dropped - a wheel
+    # does not need them and pip does not look for them.
+    # 
+    # _@param_ `wheel_path`
+    def self.entries: (String wheel_path) -> ::Array[Entry]
+
+    # Writes a wheel. Same entries in, same bytes out - pip checks the
+    # sha256 the index published - so the order is the caller's, every
+    # timestamp comes from the entry and nothing is stamped with the clock.
+    # Byte-identical per zlib build, as with Paquette::Tarball.
+    # 
+    # _@param_ `dest_path`
+    # 
+    # _@param_ `entries`
+    # 
+    # _@return_ — dest_path
+    def self.write: (String dest_path, ::Array[Entry] entries) -> String
+
+    # A RECORD line's hash: urlsafe base64 sha256 without the padding,
+    # per the binary distribution format.
+    # 
+    # _@param_ `content`
+    def self.record_hash: (String content) -> String
+
+    # A fresh RECORD for these entries. The signature files the old one may
+    # have listed are the caller's to drop: whatever they signed is gone.
+    # 
+    # _@param_ `entries`
+    # 
+    # _@param_ `record_name`
+    def self.record_for: (::Array[Entry] entries, String record_name) -> String
+
+    # _@param_ `wheel_path`
+    # 
+    # _@return_ — what the block returns
+    def self.with_structure: (String wheel_path) ?{ (::File io, ::Array[ZipKit::FileReader::ZipEntry] entries) -> void } -> Object
+
+    # _@param_ `io`
+    # 
+    # _@param_ `entry`
+    # 
+    # _@param_ `limit`
+    def self.inflate: (::File io, ZipKit::FileReader::ZipEntry entry, Integer limit) -> String
+
+    # _@param_ `data`
+    def self.deflate: (String data) -> String
+
+    # _@param_ `entry`
+    def self.unix_mode: (ZipKit::FileReader::ZipEntry entry) -> Integer
+
+    # Only the executable bit survives, as in Paquette::Tarball
+    # 
+    # _@param_ `mode`
+    def self.normalized_mode: (Integer mode) -> Integer
+
+    # The member's own DOS timestamp, so a repack keeps the dates it was built with.
+    # 
+    # _@param_ `entry`
+    def self.dos_time: (ZipKit::FileReader::ZipEntry entry) -> Time
+
+    # RECORD is CSV, so a path with a comma or a quote in it gets quoted
+    # 
+    # _@param_ `value`
+    def self.csv_field: (String value) -> String
+
+    # Raised for anything that cannot be read as a zip archive, or that is
+    # bigger than this module is willing to inflate.
+    class MalformedWheel < StandardError
+    end
+
+    # One member of a wheel.
+    # 
+    # @!attribute name
+    #   @return [String]
+    # @!attribute mode
+    #   @return [Integer] unix permission bits
+    # @!attribute mtime
+    #   @return [Time]
+    # @!attribute content
+    #   @return [String]
+    class Entry < Struct
+      attr_accessor name: String
+
+      # _@return_ — unix permission bits
+      attr_accessor mode: Integer
+
+      attr_accessor mtime: Time
+
+      attr_accessor content: String
+    end
+  end
+
   # A small method-and-pattern route table with a per-request matching budget.
   # Both servers dispatch through one of these.
   class Routes
@@ -439,12 +557,15 @@ module Paquette
   #   Authorization: Bearer <token>                   # npm
   #   Authorization: Basic base64("<token>:")         # Bundler, any password ignored
   #   Authorization: Basic base64("x-oauth-basic:<token>")
+  #   Authorization: Basic base64("__token__:<token>")  # pip and twine, the PyPI convention
+  #   Authorization: Basic base64("123456:<token>")     # twine with a one-time password
   # 
   # Some HTTP clients refuse to send an empty password, which is where the
   # placeholders come from - GitHub documents them both ways round.
   module AuthToken
     BEARER_SENTINEL: String
     USERNAME_SENTINELS: ::Array[String]
+    OTP_USERNAME: Regexp
     SCHEMES: ::Array[String]
 
     # Whether the request carries credentials at all. With some that yield no
@@ -460,11 +581,24 @@ module Paquette
     # _@return_ — the token, or nil when there is none to be had
     def self.from_env: (::Hash[untyped, untyped] env) -> String?
 
+    # The one-time password a Basic username carries - see OTP_USERNAME.
+    # 
+    # _@param_ `env` — the Rack env
+    def self.otp_from_env: (::Hash[untyped, untyped] env) -> String?
+
     # The password next to a token username carries no secret, so it is not
     # looked at - `TOKEN:x-oauth-basic` is what GitHub's docs teach.
     # 
     # _@param_ `encoded` — the base64 Basic credentials
     def self.from_basic: (String encoded) -> String?
+
+    # A token that happens to be all digits still works the GitHub way round,
+    # `123456:x-oauth-basic`, and on its own with no password at all
+    # 
+    # _@param_ `username`
+    # 
+    # _@param_ `password`
+    def self.otp_username?: (String? username, String? password) -> bool
   end
 
   # Rack app serving a RubyGems registry — compact index, legacy Marshal
@@ -2957,6 +3091,982 @@ module Paquette
     end
   end
 
+  # Rack app serving a Python package index - the Simple API of PEP 503 and
+  # PEP 691, with PEP 658 metadata files, PEP 592 yanks and PEP 700 upload
+  # times - plus the upload endpoint twine speaks, over any PypiRepository stack.
+  class PypiServer
+    include Paquette::RegexpTimeout
+    include Paquette::ConditionalGet
+    include Paquette::Authentication
+    JSON_TYPE: String
+    HTML_TYPE: String
+    TEXT_HTML_TYPE: String
+    MEDIA_TYPES: ::Hash[String, [Symbol, String]]
+    MAX_ACCEPT_BYTES: Integer
+    API_VERSION: String
+    METADATA_SUFFIX: String
+    DEFAULT_BLURB: String
+
+    # What a request would dispatch to, without dispatching it - the twin of
+    # GemServer.route_for. Only the path is read.
+    # 
+    # _@param_ `env` — the Rack env
+    def self.route_for: (::Hash[untyped, untyped] env) -> Paquette::Routes::Recognition?
+
+    # _@param_ `repository` — the repository stack to serve, or a directory path to wrap in a DirectoryPypiRepository
+    # 
+    # _@param_ `placeholder_app` — the Rack app answering the root path
+    # 
+    # _@param_ `max_push_bytes` — the largest upload body this server will read; nil removes the cap
+    # 
+    # _@param_ `shared_caching` — false keeps every response `private` - see the same option on GemServer
+    # 
+    # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    def initialize: (
+                      (Paquette::PypiServer::PypiRepository | String) repository,
+                      ?placeholder_app: untyped,
+                      ?max_push_bytes: Integer?,
+                      ?shared_caching: bool,
+                      ?authenticator: Object?
+                    ) -> void
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # _@param_ `env`
+    # 
+    # _@return_ — a Rack response triplet
+    def dispatch: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # The multipart parse reads the body before any handler sees it, so the
+    # cap goes under the parser: refused outright when the length says so,
+    # and cut off mid-read when it did not say.
+    # 
+    # _@param_ `env` — the request env, changed in place
+    # 
+    # _@return_ — a refusal
+    def cap_request_body: (::Hash[untyped, untyped] env) -> ::Array[untyped]?
+
+    # twine has nowhere to put a code but the username - see
+    # Paquette::AuthToken::OTP_USERNAME. The `OTP` header is for curl.
+    # 
+    # _@param_ `env` — the Rack env
+    def otp_code: (::Hash[untyped, untyped] env) -> String?
+
+    # twine prints only the status line unless run with --verbose, which is
+    # where this body shows up
+    # 
+    # _@return_ — a Rack response triplet
+    def otp_missing: () -> ::Array[untyped]
+
+    # _@return_ — a Rack response triplet
+    def otp_rejected: () -> ::Array[untyped]
+
+    # Basic rather than Bearer: Basic is the only scheme pip and twine answer
+    # 
+    # _@return_ — a Rack response triplet
+    def unauthorized: () -> ::Array[untyped]
+
+    # The format the page is in decides the body, so a cache has to know it
+    def vary_header: () -> String
+
+    # _@return_ — a Rack response triplet
+    def handle_index: () -> ::Array[untyped]
+
+    # _@param_ `project`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_project: (String project) -> ::Array[untyped]
+
+    # Relative URLs, which pip resolves against the page: the page stays the
+    # same behind a proxy and under a mount, and so does its ETag.
+    # 
+    # _@param_ `project`
+    # 
+    # _@param_ `filename`
+    def file_url: (String project, String filename) -> String
+
+    # _@param_ `project`
+    # 
+    # _@param_ `files`
+    def project_json: (String project, ::Array[Paquette::PypiServer::PypiRepository::DistributionFile] files) -> String
+
+    # _@param_ `project`
+    # 
+    # _@param_ `files`
+    def project_html: (String project, ::Array[Paquette::PypiServer::PypiRepository::DistributionFile] files) -> String
+
+    # _@param_ `title`
+    # 
+    # _@param_ `links`
+    def html_page: (String title, ::Array[String] links) -> String
+
+    # Serves a distribution, or with ".metadata" on the end its core metadata
+    # 
+    # _@param_ `project`
+    # 
+    # _@param_ `filename`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_file: (String project, String filename) -> ::Array[untyped]
+
+    # _@param_ `project`
+    # 
+    # _@param_ `filename`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_core_metadata: (String project, String filename) -> ::Array[untyped]
+
+    # The fields twine sends besides the file describe it, and are not
+    # believed: the file is read for its name and metadata. A digest it sent
+    # is checked, so a body mangled in transit is refused rather than stored.
+    # 
+    # _@param_ `params`
+    # 
+    # _@return_ — a Rack response triplet
+    def handle_upload: (::Hash[Symbol, Object] params) -> ::Array[untyped]
+
+    # The format the client asked for, by q-value, and the Content-Type to
+    # answer with. A `?format=` query parameter wins, per PEP 691. No Accept
+    # at all is HTML, which is what a client from before PEP 691 expects.
+    # 
+    # _@return_ — nil when nothing on offer is acceptable
+    def negotiate: () -> [Symbol, String]?
+
+    # Relative to the mount, so a registry served at /@acme redirects within it
+    # 
+    # _@param_ `path`
+    # 
+    # _@return_ — a Rack response triplet
+    def redirect: (String path) -> ::Array[untyped]
+
+    # _@param_ `string`
+    def url_segment: (String string) -> String
+
+    # _@param_ `string`
+    def h: (String string) -> String
+
+    # _@param_ `data`
+    # 
+    # _@return_ — a Rack response triplet
+    def text_ok: (String data) -> ::Array[untyped]
+
+    # _@param_ `status`
+    # 
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def text_error: (Integer status, String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def not_found: (?String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def bad_request: (?String message) -> ::Array[untyped]
+
+    # Not `forbidden`, which Paquette::Authentication answers a refused token with
+    # 
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def forbidden_with: (String message) -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def conflict: (?String message) -> ::Array[untyped]
+
+    # _@return_ — a Rack response triplet
+    def not_acceptable: () -> ::Array[untyped]
+
+    # _@param_ `message`
+    # 
+    # _@return_ — a Rack response triplet
+    def payload_too_large: (?String message) -> ::Array[untyped]
+
+    # _@param_ `authenticator`
+    def setup_authentication: (Object? authenticator) -> void
+
+    # The refusal for this request, or nil to let it through.
+    # 
+    # _@param_ `route` — nil when nothing matched - the caller is still asked about, so an unknown path does not tell a stranger which paths exist
+    # 
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def authentication_refusal: (Paquette::Routes::Route? route, ::Hash[untyped, untyped] env) -> ::Array[untyped]?
+
+    # _@param_ `route`
+    # 
+    # _@param_ `token`
+    # 
+    # _@param_ `env` — the Rack env
+    def authentication_outcome: (Paquette::Routes::Route? route, String? token, ::Hash[untyped, untyped] env) -> String
+
+    # The authenticator is the caller's, and it usually goes to a database to
+    # resolve the token - before any of the work the request asked for.
+    # 
+    # _@param_ `question`
+    # 
+    # _@param_ `kwargs`
+    def ask_authenticator: (Symbol question, **::Hash[untyped, untyped] kwargs) -> Object
+
+    # _@return_ — a Rack response triplet
+    def forbidden: () -> ::Array[untyped]
+
+    # The validator for one response. nil (no ETag at all) when the stack
+    # refuses to name itself: a wrong ETag on a gated index is worse than
+    # serving every request in full.
+    # 
+    # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
+    # 
+    # _@param_ `weak`
+    def etag_for: (*::Array[String] resource_parts, ?weak: bool) -> String?
+
+    # `public` only when the embedder allowed shared caching, the request
+    # carried no credential and nothing in the stack varies by caller —
+    # getting this wrong serves one caller's view to the next. `no-cache`
+    # rather than `no-store` so the 304 stays reachable.
+    # 
+    # _@param_ `max_age`
+    def cache_directives: (?max_age: Integer?) -> ::Hash[String, String]
+
+    def shareable_response?: () -> bool
+
+    # What every response leaving either server goes through. Anything a
+    # handler did not label is `private, no-store`: it carries no validator,
+    # so nothing could revalidate it.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def with_caching_defaults: (::Array[untyped] response) -> ::Array[untyped]
+
+    # _@param_ `vary` — the Vary already on the response
+    # 
+    # _@return_ — that Vary with Authorization merged in
+    def vary_with_authorization: (String? vary) -> String
+
+    # A 200 with the validator and the caching directives attached. An absent
+    # etag (fail-closed) still gets the directives: the response is then
+    # simply uncacheable-without-asking rather than mislabelled.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # `cacheable` plus ranges — what makes Bundler >= 2.5 fetch the compact
+    # index incrementally. `Repr-Digest` carries the digest of the *whole*
+    # representation even on a 206 (RFC 9530), or Bundler will not append;
+    # `Digest:` is the obsolete RFC 3230 spelling some intermediaries read.
+    # 
+    # _@param_ `response` — a Rack response triplet, body already in hand
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def cacheable_with_ranges: (::Array[untyped] response, String? etag) -> ::Array[untyped]
+
+    # The single byte range this request asks for, or nil for "serve the
+    # whole thing" — never a 416, which would turn a Bundler that merely
+    # guessed the tail wrong into a failed install. Called after the
+    # conditional check: a matching If-None-Match is a 304, not a 206.
+    # 
+    # _@param_ `size` — the body size in bytes
+    # 
+    # _@param_ `etag`
+    def requested_byte_range: (Integer size, String? etag) -> ::Range[untyped]?
+
+    # Absent, If-Range allows the range. Present, only a strong tag equal to
+    # ours does: a weak validator says nothing about byte offsets, and a date
+    # says nothing about a body that is not a file.
+    # 
+    # _@param_ `etag`
+    def if_range_allows_range?: (String? etag) -> bool
+
+    # Parses `bytes=first-last`, with either side optionally empty, and
+    # nothing else. String operations rather than a pattern over the whole
+    # header, per AGENTS.md.
+    # 
+    # _@param_ `header`
+    # 
+    # _@param_ `size`
+    def parse_byte_range: (String header, Integer size) -> ::Range[untyped]?
+
+    # `bytes=-N` asks for the final N bytes. A bare `bytes=-` names no number
+    # and `bytes=-0` asks for nothing; neither is satisfiable, so both get the
+    # whole body.
+    # 
+    # _@param_ `last`
+    # 
+    # _@param_ `size`
+    def suffix_byte_range: (String last, Integer size) -> ::Range[untyped]?
+
+    # A 304 repeats the validator and the directives — a shared cache
+    # updates its stored headers from it.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `extra` — extra headers
+    # 
+    # _@return_ — a Rack response triplet
+    def not_modified: (String? etag, ?extra: ::Hash[String, String]) -> ::Array[untyped]
+
+    # A response that must never be stored by anything, for content that is
+    # the caller's identity itself.
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def uncacheable: (::Array[untyped] response) -> ::Array[untyped]
+
+    # If-None-Match wins over If-Modified-Since when both are present, which
+    # is what RFC 9110 requires.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `mtime`
+    def conditional_hit?: (String? etag, Time mtime) -> bool?
+
+    # _@param_ `etag`
+    def if_none_match_satisfied?: (String? etag) -> bool
+
+    # Weak comparison, which is what If-None-Match on a GET calls for: a
+    # W/"x" a client holds matches the "x" we would send. String operations
+    # rather than a regexp because the value is client-chosen and arbitrarily
+    # long (see AGENTS.md).
+    # 
+    # _@param_ `value`
+    def opaque_tag: (String value) -> String
+
+    # An unparseable date is not a match; second resolution is all an HTTP
+    # date has.
+    # 
+    # _@param_ `mtime`
+    def if_modified_since_satisfied?: (Time mtime) -> bool
+
+    # Rack::Files, so the range machinery is Rack's rather than ours. A nil
+    # root: #serving takes an absolute path and never reads @root, and the
+    # path is the repository's to decide.
+    def package_file_server: () -> ::Rack::Files
+
+    # Serves one immutable artifact off disk — a .gem or .tgz at a given
+    # path never changes; yank and unpublish rename away.
+    # 
+    # _@param_ `path` — absolute path of the file
+    # 
+    # _@param_ `stat`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@return_ — a Rack response triplet
+    def serve_immutable_file: (String path, ::File::Stat stat, String? etag) -> ::Array[untyped]
+
+    # The request as Rack::Files should see it: If-Modified-Since comes out
+    # because we already answered it (Rack::Files would 304 bare, dropping
+    # ETag and Cache-Control), and If-Range is answered here by dropping the
+    # Range header, because Rack::Files does not implement it at all.
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def rack_files_request: (String? etag, ::File::Stat stat) -> ::Rack::Request
+
+    # An If-Range carries either an entity tag or an HTTP date. A tag is
+    # compared strongly — a weak validator says nothing about byte offsets,
+    # which is the only thing this comparison is for.
+    # 
+    # _@param_ `if_range`
+    # 
+    # _@param_ `etag`
+    # 
+    # _@param_ `stat`
+    def if_range_matches?: (String if_range, String? etag, ::File::Stat stat) -> bool
+
+    # An upload body past `max_push_bytes:`, answered 413 - from inside the
+    # multipart parse if it has to be, which is where the bytes get read.
+    class PayloadTooLarge < StandardError
+    end
+
+    # An input stream that raises once more than `limit` bytes have come out of it.
+    class CappedInput
+      # _@param_ `io`
+      # 
+      # _@param_ `limit`
+      def initialize: (_Reader io, Integer limit) -> void
+
+      # _@param_ `length`
+      # 
+      # _@param_ `outbuf`
+      def read: (?Integer? length, ?String? outbuf) -> String?
+
+      def rewind: () -> void
+
+      def close: () -> void
+    end
+
+    # Serves each wheel and sdist repacked for one licensee - magic comment lines
+    # replaced, files injected, the license key stamped into paquette.json - with
+    # the repacked files cached on disk. Counterpart of NpmServer::Personalizer,
+    # and the same two contracts about `files_for:` apply.
+    class Personalizer < SimpleDelegator
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `license_key`
+      # 
+      # _@param_ `magic_comment_replacements` — whole comment lines in *.py and *.pyi to replace, marker => replacement
+      # 
+      # _@param_ `files` — injected into every file, path relative to the archive root - site-packages, for a wheel
+      # 
+      # _@param_ `stamp` — written as paquette.json into the wheel's .dist-info and the sdist's root; defaults to the license key
+      # 
+      # _@param_ `files_for` — per-file extras, called with (project, filename, original_path); nil means the file is served byte for byte
+      # 
+      # _@param_ `personalization_key` — everything the personalized bytes depend on beyond the file itself
+      # 
+      # _@param_ `cache_dir` — where personalized files and opt-out markers are kept
+      def initialize: (
+                        Paquette::PypiServer::PypiRepository repository,
+                        license_key: String,
+                        ?magic_comment_replacements: ::Hash[String, String],
+                        ?files: ::Hash[String, String],
+                        ?stamp: ::Hash[untyped, untyped]?,
+                        ?files_for: Proc?,
+                        ?personalization_key: String?,
+                        ?cache_dir: String?
+                      ) -> void
+
+      def cache_validator: () -> String?
+
+      def varies_by_caller?: () -> bool
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_path: (String project, String filename) -> String?
+
+      # The hash and size have to be the personalized file's, or pip refuses
+      # it. METADATA is never touched, so its hash stays the repository's.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_info: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
+
+      # A project page lists every file, and the stack is built per request, so
+      # the hash is kept next to the file it describes. The path names everything
+      # that went into the file, which is what makes the sidecar safe to trust.
+      # 
+      # _@param_ `served`
+      def served_sha256: (String served) -> String
+
+      # Keyed by everything that goes INTO the file: two licensees never share one.
+      # 
+      # _@param_ `original_path`
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def personalize: (String original_path, String project, String filename) -> String
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      # 
+      # _@param_ `stat`
+      def cache_digest: (String project, String filename, ::File::Stat stat) -> String
+
+      # Keyed by the file alone, never the licensee - see NpmServer::Personalizer.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      # 
+      # _@param_ `stat`
+      def plain_marker_path: (String project, String filename, ::File::Stat stat) -> String
+
+      def personalization_digest: () -> String
+    end
+
+    # Abstract base class for Python package repositories; mirrors NpmRepository.
+    # 
+    # A project is addressed by its PEP 503 normalized name ("acme-widgets"), and
+    # what it holds are distribution files - wheels and sdists - each named the way
+    # PyPA's specifications name them. The version is read out of the filename.
+    class PypiRepository
+      MAX_NAME_BYTES: Integer
+      NAME_SEPARATORS: Regexp
+      NORMALIZED_NAME: Regexp
+      DISTRIBUTION: Regexp
+      SDIST_DISTRIBUTION: Regexp
+      VERSION: Regexp
+      BUILD_TAG: Regexp
+      WHEEL_TAG: Regexp
+      MAX_FILENAME_BYTES: Integer
+      MAX_METADATA_BYTES: Integer
+
+      def initialize: () -> void
+
+      # _@return_ — normalized project names
+      def project_names: () -> ::Array[String]
+
+      # _@param_ `project` — a normalized project name
+      # 
+      # _@return_ — distribution filenames, sorted
+      def filenames_for_project: (String project) -> ::Array[String]
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      # 
+      # _@return_ — the path of the file on disk
+      def file_path: (String project, String filename) -> String?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_exists?: (String project, String filename) -> bool
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_info: (String project, String filename) -> DistributionFile?
+
+      # The bytes of a wheel's METADATA, served next to it per PEP 658.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def core_metadata: (String project, String filename) -> String?
+
+      # _@param_ `source_path` — where the uploaded bytes are
+      # 
+      # _@param_ `filename` — what the uploader called them
+      def add_file: (String source_path, String filename) -> DistributionFile
+
+      # PEP 592: the file stays downloadable for a pinned install, but no
+      # resolver picks it otherwise.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      # 
+      # _@param_ `reason`
+      def yank_file: (String project, String filename, ?reason: String) -> void
+
+      # The versions the project's files carry, in no meaningful order -
+      # sorting PEP 440 versions is the installer's business, not ours.
+      # 
+      # _@param_ `project`
+      def versions_for_project: (String project) -> ::Array[String]
+
+      # A short string that changes whenever anything this repository would
+      # serve changes, or nil for "do not cache this" - see Paquette::CacheValidation.
+      def cache_validator: () -> String?
+
+      def varies_by_caller?: () -> bool
+
+      # PEP 503 normalization. Several spellings reach one project, and the
+      # directory on disk is named by this one.
+      # 
+      # _@param_ `name`
+      # 
+      # _@return_ — nil for anything that is not a project name
+      def self.normalize_name: (String name) -> String?
+
+      # _@param_ `project`
+      def self.valid_project_name?: (String project) -> bool
+
+      # Splits a distribution filename into its parts, refusing anything the
+      # specifications would not have produced. String operations do the
+      # splitting, the patterns above only ever see one part.
+      # 
+      # _@param_ `filename`
+      # 
+      # _@return_ — :distribution, :version, :filetype
+      # ("bdist_wheel" or "sdist")
+      def self.parse_filename: (String filename) -> ::Hash[Symbol, String]?
+
+      # {distribution}-{version}(-{build tag})?-{python tag}-{abi tag}-{platform tag}.whl
+      # 
+      # _@param_ `filename`
+      def self.parse_wheel_filename: (String filename) -> ::Hash[Symbol, String]?
+
+      # _@param_ `filename`
+      def self.parse_sdist_filename: (String filename) -> ::Hash[Symbol, String]?
+
+      # _@param_ `filename`
+      def self.version_from_filename: (String filename) -> String?
+
+      # The normalized project a file belongs to, read from its name alone.
+      # 
+      # _@param_ `filename`
+      def self.project_for_filename: (String filename) -> String?
+
+      # _@param_ `filename`
+      def self.wheel?: (String filename) -> bool
+
+      # Reads the headers of a core metadata file - RFC 822, near enough - up to
+      # the blank line that starts the description. Repeated fields keep the first.
+      # Lines, not a pattern: this is publisher-written text.
+      # 
+      # _@param_ `text`
+      # 
+      # _@return_ — lowercased field name => value
+      def self.parse_core_metadata: (String text) -> ::Hash[String, String]
+
+      # The core metadata of a wheel or an sdist: METADATA out of the wheel's
+      # .dist-info, PKG-INFO out of the sdist's root.
+      # 
+      # _@param_ `path`
+      # 
+      # _@param_ `filename`
+      def self.distribution_metadata: (String path, String filename) -> String?
+
+      # The specification puts it in "{distribution}-{version}.dist-info", but
+      # older tools spelled that directory their own way, so a lone top-level
+      # .dist-info is taken too. Two of them and it is anybody's guess, so neither.
+      # 
+      # _@param_ `path`
+      # 
+      # _@param_ `filename`
+      def self.wheel_metadata: (String path, String filename) -> String?
+
+      # _@param_ `path`
+      def self.sdist_metadata: (String path) -> String?
+
+      # What the Simple API says about one file.
+      # 
+      # @!attribute filename
+      #   @return [String]
+      # @!attribute version
+      #   @return [String]
+      # @!attribute sha256
+      #   @return [String] hex digest of the bytes served
+      # @!attribute size
+      #   @return [Integer]
+      # @!attribute requires_python
+      #   @return [String, nil]
+      # @!attribute upload_time
+      #   @return [Time, nil]
+      # @!attribute yanked
+      #   @return [String, false] the yank reason, possibly empty, or false
+      # @!attribute core_metadata_sha256
+      #   @return [String, nil] hex digest of the PEP 658 metadata file, nil when
+      #     there is none to serve
+      class DistributionFile < Struct
+        attr_accessor filename: String
+
+        attr_accessor version: String
+
+        # _@return_ — hex digest of the bytes served
+        attr_accessor sha256: String
+
+        attr_accessor size: Integer
+
+        attr_accessor requires_python: String?
+
+        attr_accessor upload_time: Time?
+
+        # _@return_ — the yank reason, possibly empty, or false
+        attr_accessor yanked: (String | bool)
+
+        # _@return_ — hex digest of the PEP 658 metadata file, nil when
+        # there is none to serve
+        attr_accessor core_metadata_sha256: String?
+      end
+    end
+
+    # Hides every file that arrived less than `interval` seconds ago - the PyPI
+    # twin of GemServer::CooldownRepository. Per file rather than per version: a
+    # wheel added to an old release later is exactly the kind of arrival a
+    # cooldown is for. Read-only, like the gem side.
+    class CooldownRepository < Paquette::PypiServer::ReadonlyRepository
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `interval` — the cooldown, in seconds
+      # 
+      # _@param_ `published_at` — called with `name:`, `version:` and `filename:`, returns a Time or nil for "I do not know". Defaults to the repository's own published_at - the file's mtime, for a directory.
+      # 
+      # _@param_ `published_at_validator` — only with `published_at:` - a string that changes whenever any answer `published_at:` would give does
+      # 
+      # _@param_ `clock` — returns the current Time
+      def initialize: (
+                        Paquette::PypiServer::PypiRepository repository,
+                        interval: (Integer | _ToI),
+                        ?published_at: Proc?,
+                        ?published_at_validator: Proc?,
+                        ?clock: Proc
+                      ) -> void
+
+      # Named by how many known publish times have cooled - see the gem side,
+      # whose reasoning this is.
+      def cache_validator: () -> String?
+
+      def project_names: () -> ::Array[String]
+
+      # _@param_ `project`
+      def filenames_for_project: (String project) -> ::Array[String]
+
+      # _@param_ `project`
+      def versions_for_project: (String project) -> ::Array[String]
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_path: (String project, String filename) -> String?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_exists?: (String project, String filename) -> bool
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_info: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def core_metadata: (String project, String filename) -> String?
+
+      # An unknown publication time fails open: this is a delay policy, and
+      # authorization is ReadGatedRepository's job.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def servable?: (String project, String filename) -> bool
+
+      # _@param_ `published`
+      # 
+      # _@param_ `now`
+      def cooled?: (Time published, Time now) -> bool
+
+      # _@param_ `key`
+      def publish_times_for: (::Array[untyped] key) -> ::Array[Time]
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def published_time: (String project, String filename) -> Time?
+    end
+
+    # Forbids uploads and yanks
+    class ReadonlyRepository < SimpleDelegator
+      def add_file: () -> void
+
+      def yank_file: () -> void
+
+      # Raised by every write on a readonly repository.
+      class WriteNotAllowed < StandardError
+      end
+    end
+
+    # Filters every read through an entitler block; non-entitled projects and
+    # versions do not exist. Writes always raise: a gated caller may not mutate
+    # the corpus.
+    class ReadGatedRepository < SimpleDelegator
+      # _@param_ `repository` — the repository to wrap
+      # 
+      # _@param_ `gate_key` — names this gate for HTTP caching - see the gem-side ReadGatedRepository for the contract. Without one the whole stack emits no ETag.
+      def initialize: (Paquette::PypiServer::PypiRepository repository, ?gate_key: String?) -> void
+
+      def cache_validator: () -> String?
+
+      def varies_by_caller?: () -> bool
+
+      # A project with no entitled file is left out too - pip treats a listed
+      # name as one it can install from.
+      def project_names: () -> ::Array[String]
+
+      # _@param_ `project`
+      def filenames_for_project: (String project) -> ::Array[String]
+
+      # _@param_ `project`
+      def versions_for_project: (String project) -> ::Array[String]
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_path: (String project, String filename) -> String?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_exists?: (String project, String filename) -> bool
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_info: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def core_metadata: (String project, String filename) -> String?
+
+      def add_file: () -> void
+
+      def yank_file: () -> void
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def entitled_file?: (String project, String filename) -> bool
+
+      # The entitler is the caller's, and a project page calls it once per file.
+      # 
+      # _@param_ `criteria`
+      # 
+      # _@return_ — truthy when entitled
+      def entitled?: (**::Hash[untyped, untyped] criteria) -> Object
+
+      # Raised by every write on a gated repository.
+      class WriteNotAllowed < StandardError
+      end
+    end
+
+    # Reads Python distributions from a directory, one per normalized project name:
+    #   packages/pypi/acme-widgets/acme_widgets-1.0.0-py3-none-any.whl
+    #   packages/pypi/acme-widgets/acme_widgets-1.0.0.tar.gz
+    # 
+    # A yanked file keeps its place and gains a `.yanked` sidecar holding the reason.
+    class DirectoryPypiRepository < Paquette::PypiServer::PypiRepository
+      YANKED_SUFFIX: String
+      MAX_NAME_BYTES: Integer
+      NAME_SEPARATORS: Regexp
+      NORMALIZED_NAME: Regexp
+      DISTRIBUTION: Regexp
+      SDIST_DISTRIBUTION: Regexp
+      VERSION: Regexp
+      BUILD_TAG: Regexp
+      WHEEL_TAG: Regexp
+      MAX_FILENAME_BYTES: Integer
+      MAX_METADATA_BYTES: Integer
+
+      # _@param_ `packages_dir` — the corpus root, created if absent
+      def initialize: (String packages_dir) -> void
+
+      # A digest of the paths in the corpus, plus the mtimes of the yank
+      # sidecars - a yank edits what a page says without adding a distribution.
+      def fingerprint: () -> String
+
+      def cache_validator: () -> String
+
+      def varies_by_caller?: () -> bool
+
+      def project_names: () -> ::Array[String]
+
+      # Files whose names belong to a different project are left out: a stray
+      # copy must not be served under a name it does not carry.
+      # 
+      # _@param_ `project`
+      def filenames_for_project: (String project) -> ::Array[String]
+
+      # nil for anything that is not a file of this project, so "../../secret"
+      # resolves to nothing rather than to a path.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_path: (String project, String filename) -> String?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_exists?: (String project, String filename) -> bool
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def file_info: (String project, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile?
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def core_metadata: (String project, String filename) -> String?
+
+      # The moment the file landed here. An rsync or a restore that does not
+      # keep mtimes moves this, which is what the cooldown reads by default.
+      # 
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      def published_at: (String project, String filename) -> Time?
+
+      # The name in the metadata has to be the name on the file: a wheel
+      # uploaded as acme_widgets must not turn out to install something else.
+      # 
+      # _@param_ `source_path`
+      # 
+      # _@param_ `filename`
+      def add_file: (String source_path, String filename) -> Paquette::PypiServer::PypiRepository::DistributionFile
+
+      # _@param_ `project`
+      # 
+      # _@param_ `filename`
+      # 
+      # _@param_ `reason`
+      def yank_file: (String project, String filename, ?reason: String) -> void
+
+      # A tempfile on another filesystem cannot be linked, so a copy is made on
+      # this one first - and linked into place, keeping the refusal above.
+      # 
+      # _@param_ `source_path`
+      # 
+      # _@param_ `destination`
+      # 
+      # _@param_ `filename`
+      def link_copy: (String source_path, String destination, String filename) -> void
+
+      # _@param_ `project`
+      def project_dir: (String project) -> String?
+
+      # _@param_ `path`
+      def yank_reason: (String path) -> (String | bool)
+
+      # Everything about a file that only changes when its bytes do.
+      # 
+      # _@param_ `path`
+      # 
+      # _@param_ `filename`
+      def describe: (String path, String filename) -> ::Hash[Symbol, Object]
+
+      # Keyed on mtime + size so a replaced file is not described stale.
+      # 
+      # _@param_ `path`
+      # 
+      # _@param_ `aspect`
+      # 
+      # _@return_ — the cached block result
+      def cached: (String path, Symbol aspect) -> Object
+
+      # Raised on an upload of a filename already on disk - yanked or not, PyPI
+      # never lets a filename carry different bytes.
+      class FileAlreadyExists < StandardError
+      end
+
+      # Raised when an upload cannot be read as the distribution its name says it is.
+      class InvalidDistribution < StandardError
+      end
+
+      # Raised on a yank of a file that is not there.
+      class FileNotFound < StandardError
+      end
+    end
+  end
+
   # Rewrites the contents of an npm tarball into a new one; counterpart of
   # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
   # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
@@ -3068,6 +4178,95 @@ module Paquette
     # Raised for a marker or replacement spanning several lines.
     class MultilineReplacement < StandardError
     end
+  end
+
+  # Rewrites the contents of a wheel or an sdist into a new one; the Python
+  # counterpart of Paquette::NpmRepacker. Byte-reproducible, since pip checks
+  # the sha256 the index published for the file.
+  # 
+  # A wheel has its RECORD rewritten to match, and loses any signature over the
+  # old one. An sdist only gets its files changed - whatever wheel pip builds
+  # from it is pip's.
+  class PypiRepacker
+    FORMAT_VERSION: Integer
+    SOURCE_EXTENSIONS: ::Array[String]
+    STAMP_FILE: String
+    RECORD_SIGNATURES: ::Array[String]
+
+    # _@param_ `path`
+    # 
+    # _@param_ `filename` — the distribution filename, which says which kind of archive this is
+    # 
+    # _@param_ `stamp` — written as paquette.json; nil writes none
+    # 
+    # _@param_ `magic_comment_replacements`
+    # 
+    # _@param_ `files` — path relative to the archive root => content - the root of a wheel is site-packages
+    # 
+    # _@param_ `into`
+    # 
+    # _@return_ — the path of the repacked file
+    def self.repack: (
+                       String path,
+                       filename: String,
+                       ?stamp: ::Hash[untyped, untyped]?,
+                       ?magic_comment_replacements: ::Hash[String, String],
+                       ?files: ::Hash[String, String],
+                       ?into: String?
+                     ) -> String
+
+    # _@param_ `path`
+    # 
+    # _@param_ `filename`
+    # 
+    # _@param_ `stamp`
+    # 
+    # _@param_ `magic_comment_replacements`
+    # 
+    # _@param_ `files`
+    # 
+    # _@param_ `into`
+    def initialize: (
+                      String path,
+                      filename: String,
+                      ?stamp: ::Hash[untyped, untyped]?,
+                      ?magic_comment_replacements: ::Hash[String, String],
+                      ?files: ::Hash[String, String],
+                      ?into: String?
+                    ) -> void
+
+    # _@return_ — the path of the repacked file
+    def repack: () -> String
+
+    def destination: () -> String
+
+    def repack_wheel: () -> String
+
+    # _@param_ `entries`
+    def record_name_in: (::Array[Paquette::Wheel::Entry] entries) -> String
+
+    def repack_sdist: () -> String
+
+    # Either kind of entry - both structs answer to the same four fields
+    # 
+    # _@param_ `entry`
+    # 
+    # _@param_ `relative_path`
+    def rewrite: ((Paquette::Wheel::Entry | Paquette::Tarball::Entry) entry, String relative_path) -> (Paquette::Wheel::Entry | Paquette::Tarball::Entry)
+
+    # An injected file that replaces a shipped one keeps that one's place and mode.
+    # 
+    # _@param_ `entries`
+    # 
+    # _@param_ `injected`
+    def inject: (::Array[untyped] entries, ::Array[[String, String]] injected) ?{ (String name, Integer mode, String content) -> void } -> ::Array[untyped]
+
+    # A whole comment line is replaced by a whole comment line, indentation and all
+    # 
+    # _@param_ `content`
+    # 
+    # _@param_ `relative_path`
+    def apply_magic_comment_replacements: (String content, String relative_path) -> String
   end
 
   # What both servers ask of the authenticator they are built with. It is any

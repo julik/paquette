@@ -64,12 +64,19 @@ class RegexpFuzzTest < Minitest::Test
     "/-/package/%s/dist-tags",
     "/-/package/%s/dist-tags/%s",
     "/%s/-rev/%s",
-    "/api/v1/search.json?query=%s"
+    "/api/v1/search.json?query=%s",
+    "/simple/%s/",
+    "/simple/%s",
+    "/files/%s/%s",
+    "/files/%s/%s.metadata"
   ].freeze
 
   def setup
     @gems = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     @npm = Paquette::NpmServer::DirectoryNpmRepository.new(FIXTURE_NPM_DIR)
+    @pypi_dir = Dir.mktmpdir("paquette_fuzz_pypi")
+    write_wheel(@pypi_dir, name: "widgets", version: "1.0.0")
+    @pypi = Paquette::PypiServer::DirectoryPypiRepository.new(@pypi_dir)
   end
 
   def test_pathological_segments_are_answered_promptly_by_the_gem_server
@@ -86,6 +93,68 @@ class RegexpFuzzTest < Minitest::Test
 
   def test_random_segments_are_answered_promptly_by_the_npm_server
     assert_survives(npm_server, random_paths(400))
+  end
+
+  def teardown
+    FileUtils.rm_rf(@pypi_dir) if @pypi_dir
+  end
+
+  def test_pathological_segments_are_answered_promptly_by_the_pypi_server
+    assert_survives(pypi_server, pathological_paths)
+  end
+
+  def test_random_segments_are_answered_promptly_by_the_pypi_server
+    assert_survives(pypi_server, random_paths(400))
+  end
+
+  # A %0A decodes to a real newline, and a line-anchored pattern would take
+  # the first line as the project or the filename
+  def test_a_newline_never_reaches_a_pypi_handler_as_a_valid_name
+    app = pypi_server
+
+    assert_equal 200, status_of(app, "/simple/widgets/")
+    assert_equal 404, status_of(app, "/simple/widgets%0Ajunk/")
+    assert_equal 404, status_of(app, "/simple/%0Awidgets/")
+    assert_equal 200, status_of(app, "/files/widgets/widgets-1.0.0-py3-none-any.whl")
+    assert_equal 404, status_of(app, "/files/widgets/widgets-1.0.0-py3-none-any.whl%0Ajunk")
+    assert_equal 404, status_of(app, "/files/widgets/junk%0Awidgets-1.0.0-py3-none-any.whl")
+    assert_equal 404, status_of(app, "/files/widgets%0A/widgets-1.0.0-py3-none-any.whl")
+  end
+
+  def test_bytes_that_are_not_utf8_in_a_pypi_path_are_answered_rather_than_raised
+    app = pypi_server
+
+    ["/simple/%E2/", "/simple/widgets%FF/", "/files/%E2/widgets-1.0.0.tar.gz", "/files/widgets/widgets-1.0.0%FF.tar.gz",
+      "/files/widgets/%E2.whl.metadata"].each do |path|
+      assert_includes 200..499, status_of(app, path), path
+    end
+  end
+
+  # The same splitter is reached by an upload's filename, which never
+  # passed a route's own encoding check
+  def test_the_pypi_filename_parser_survives_bytes_that_are_not_utf8
+    ["%E2", "\xE2".b, "\xFF".b, "widgets-1.0.0\xFF.tar.gz".b, "wid\xFFgets-1.0.0-py3-none-any.whl".b,
+      ("\xFF" * 4096).b + ".whl", ("\xE2" * 4096) + "-1.0.0.tar.gz"].each do |bytes|
+      assert_nil Paquette::PypiServer::PypiRepository.parse_filename(bytes), bytes[0, 40].inspect
+      assert_nil Paquette::PypiServer::PypiRepository.normalize_name(bytes), bytes[0, 40].inspect
+    end
+  end
+
+  def test_the_pypi_filename_parser_refuses_pathological_segments_promptly
+    segments = [1, 8, 64, 512, 4096].flat_map do |size|
+      pathological_segments(size).flat_map { |segment| [segment, "#{segment}.whl", "#{segment}.tar.gz", "#{segment}-py3-none-any.whl"] }
+    end
+
+    segments.each do |segment|
+      parsed = nil
+      ran_for = elapsed { parsed = Paquette::PypiServer::PypiRepository.parse_filename(segment) }
+
+      assert_operator ran_for, :<, SLOWEST_ACCEPTABLE, "#{segment[0, 120].inspect} took #{ran_for}s"
+      next if parsed.nil?
+
+      # A match is allowed, but only a whole one
+      assert segment.start_with?("#{parsed[:distribution]}-#{parsed[:version]}"), segment[0, 120].inspect
+    end
   end
 
   # The one segment shape that used to be served a 200 it had no business
@@ -212,5 +281,9 @@ class RegexpFuzzTest < Minitest::Test
 
   def npm_server
     Paquette::NpmServer.new(@npm)
+  end
+
+  def pypi_server
+    Paquette::PypiServer.new(@pypi)
   end
 end

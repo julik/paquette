@@ -50,6 +50,8 @@ vendor/
 !/packages/gems/.keep
 /packages/npm/*
 !/packages/npm/.keep
+/packages/pypi/*
+!/packages/pypi/.keep
 
 .claude/
 

@@ -46,6 +46,8 @@ module Paquette
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
   autoload :Published, "#{__dir__}/paquette/published"
+  autoload :PypiRepacker, "#{__dir__}/paquette/pypi_repacker"
+  autoload :PypiServer, "#{__dir__}/paquette/pypi_server"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
   autoload :ResponseCache, "#{__dir__}/paquette/response_cache"
   autoload :Routes, "#{__dir__}/paquette/routes"
@@ -54,4 +56,5 @@ module Paquette
   autoload :SubdomainRouter, "#{__dir__}/paquette/subdomain_router"
   autoload :Tarball, "#{__dir__}/paquette/tarball"
   autoload :Totp, "#{__dir__}/paquette/totp"
+  autoload :Wheel, "#{__dir__}/paquette/wheel"
 end

@@ -11,6 +11,7 @@ jobs:
       # A skip is indistinguishable from a pass; these make missing tools fail.
       PAQUETTE_REQUIRE_NPM: "1"
       PAQUETTE_REQUIRE_DOCKER: "1"
+      PAQUETTE_REQUIRE_PYTHON: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -24,12 +25,19 @@ jobs:
         with:
           node-version: "22"
 
+      # Pinned for the same reason. The suite builds its own venv with twine,
+      # build and setuptools from PyPI on first use
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       # Makes an environment failure legible in the log.
       - name: Show tooling versions
         run: |
           ruby --version
           node --version
           npm --version
+          python3 --version
           docker --version
           docker info --format 'Docker: {{.ServerVersion}} on {{.OperatingSystem}}'
 

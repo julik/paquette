@@ -39,7 +39,15 @@ class RegexpLinearityTest < Minitest::Test
       "SpecValidator::VERSION" => Paquette::GemServer::SpecValidator::VERSION,
       "SpecValidator::PLATFORM" => Paquette::GemServer::SpecValidator::PLATFORM,
       "SpecValidator::FORBIDDEN_IN_FIELD" => Paquette::GemServer::SpecValidator::FORBIDDEN_IN_FIELD,
-      "NpmRepository::VERSION" => Paquette::NpmServer::NpmRepository::VERSION
+      "NpmRepository::VERSION" => Paquette::NpmServer::NpmRepository::VERSION,
+      "PypiRepository::NAME_SEPARATORS" => Paquette::PypiServer::PypiRepository::NAME_SEPARATORS,
+      "PypiRepository::NORMALIZED_NAME" => Paquette::PypiServer::PypiRepository::NORMALIZED_NAME,
+      "PypiRepository::DISTRIBUTION" => Paquette::PypiServer::PypiRepository::DISTRIBUTION,
+      "PypiRepository::SDIST_DISTRIBUTION" => Paquette::PypiServer::PypiRepository::SDIST_DISTRIBUTION,
+      "PypiRepository::VERSION" => Paquette::PypiServer::PypiRepository::VERSION,
+      "PypiRepository::BUILD_TAG" => Paquette::PypiServer::PypiRepository::BUILD_TAG,
+      "PypiRepository::WHEEL_TAG" => Paquette::PypiServer::PypiRepository::WHEEL_TAG,
+      "AuthToken::OTP_USERNAME" => Paquette::AuthToken::OTP_USERNAME
     }
 
     patterns.each do |name, regexp|
@@ -389,6 +397,92 @@ class RegexpLinearityTest < Minitest::Test
     refute Paquette::NpmServer::NpmRepository.valid_version?("\xE2".b)
   end
 
+  def test_pypi_filenames_that_the_specifications_produce_parse
+    repository = Paquette::PypiServer::PypiRepository
+    {
+      "widgets-1.0.0-py3-none-any.whl" => ["widgets", "1.0.0", "bdist_wheel"],
+      "acme_widgets-2.0.0rc1-1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" => ["acme_widgets", "2.0.0rc1", "bdist_wheel"],
+      "zope.interface-6.0-py2.py3-none-any.whl" => ["zope.interface", "6.0", "bdist_wheel"],
+      "widgets-1!2.0+local.7-py3-none-any.whl" => ["widgets", "1!2.0+local.7", "bdist_wheel"],
+      "widgets-1.0.0.tar.gz" => ["widgets", "1.0.0", "sdist"],
+      "python-dateutil-2.8.2.tar.gz" => ["python-dateutil", "2.8.2", "sdist"]
+    }.each do |filename, (distribution, version, filetype)|
+      assert_equal({distribution: distribution, version: version, filetype: filetype}, repository.parse_filename(filename), filename)
+    end
+  end
+
+  def test_pypi_filenames_that_are_not_distributions_are_refused
+    ["widgets.whl", "widgets-1.0.0.whl", "widgets-1.0.0-py3-none.whl", "widgets-1.0.0-x-y-py3-none-any.whl",
+      "widgets-1.0.0-py3-none-any.whl.yanked", "widgets-1.0.0.tar.gz.partial", "widgets-1.0.0.zip", "-1.0.0.tar.gz",
+      "widgets-.tar.gz", "widgets-v1.0.tar.gz", "../widgets-1.0.0.tar.gz", "widgets/../x-1.0.0.tar.gz",
+      "widgets-1.0.0-py3-none-any.whl\n", "", ".whl", ".tar.gz"].each do |filename|
+      assert_nil Paquette::PypiServer::PypiRepository.parse_filename(filename), filename.inspect
+    end
+  end
+
+  def test_pypi_patterns_are_anchored_against_an_injected_newline
+    repository = Paquette::PypiServer::PypiRepository
+
+    assert_nil repository.parse_filename("widgets-1.0.0.tar.gz\n/etc/passwd")
+    assert_nil repository.parse_filename("widgets\nevil-1.0.0.tar.gz")
+    assert_nil repository.parse_filename("widgets-1.0.0\n-py3-none-any.whl")
+    assert_nil repository.normalize_name("widgets\nevil")
+    refute repository.valid_project_name?("widgets\n")
+    refute repository.valid_project_name?("\nwidgets")
+    refute Paquette::AuthToken::OTP_USERNAME.match?("123456\n")
+    refute Paquette::AuthToken::OTP_USERNAME.match?("\n123456")
+  end
+
+  def test_pypi_patterns_refuse_an_absurdly_long_segment
+    repository = Paquette::PypiServer::PypiRepository
+
+    assert_equal "a" * 200, repository.normalize_name("a" * 200)
+    assert_nil repository.normalize_name("a" * 201)
+    assert_nil repository.parse_filename(("a" * 600) + "-1.0.0.tar.gz")
+    assert_nil repository.parse_filename("widgets-" + ("1" * 65) + ".tar.gz")
+    assert_nil repository.parse_filename("widgets-1.0.0-py3-none-" + ("a" * 256) + ".whl")
+    assert_nil repository.parse_filename(("a" * 2000) + ".whl")
+    refute Paquette::AuthToken::OTP_USERNAME.match?("1" * 9)
+  end
+
+  # The separators normalization folds are the delimiter here, and a dot,
+  # a dash and an underscore are all one run to it
+  def test_pypi_patterns_answer_pathological_input_promptly
+    repository = Paquette::PypiServer::PypiRepository
+    size = 20_000
+    candidates = ["-" * size, "." * size, "_" * size, "-._" * size, "a-" * size, ("a" * size) + "!",
+      ("1." * size) + "tar.gz", ("a-1.0.0-" * size) + "any.whl", ("py3." * size) + "whl", ("a" * size) + "\n"]
+
+    took = elapsed do
+      candidates.each do |candidate|
+        assert_nil repository.parse_filename(candidate), candidate[0, 16].inspect
+        assert_nil repository.normalize_name(candidate), candidate[0, 16].inspect
+        refute Paquette::AuthToken::OTP_USERNAME.match?(candidate), candidate[0, 16].inspect
+      end
+    end
+
+    assert took < 1.0, "matching pathological input took #{took}s"
+  end
+
+  def test_pypi_name_normalization_follows_pep_503
+    {"Acme.Widgets" => "acme-widgets", "acme__widgets" => "acme-widgets", "ACME-._-Widgets" => "acme-widgets",
+     "zope.interface" => "zope-interface", "a" => "a"}.each do |name, normalized|
+      assert_equal normalized, Paquette::PypiServer::PypiRepository.normalize_name(name), name
+    end
+    ["", "-widgets", "widgets.", "wid gets", "widgets/..", "wídgets"].each do |name|
+      assert_nil Paquette::PypiServer::PypiRepository.normalize_name(name), name.inspect
+    end
+  end
+
+  # The repository never builds a pattern out of a name, as AGENTS.md asks
+  def test_the_pypi_side_does_not_build_patterns_of_its_own
+    Dir.glob(File.expand_path("../lib/paquette/{pypi_server,pypi_server/*,pypi_repacker,wheel}.rb", __dir__)).each do |path|
+      source = File.read(path)
+      refute_match(/Regexp\.escape/, source, path)
+      refute_match(/Regexp\.new/, source, path)
+    end
+  end
+
   private
 
   # The platform as the validator sees it: pushed inside a gemspec, which
@@ -409,7 +503,7 @@ class RegexpLinearityTest < Minitest::Test
   end
 
   def route_patterns
-    [Paquette::GemServer, Paquette::NpmServer].flat_map do |server|
+    [Paquette::GemServer, Paquette::NpmServer, Paquette::PypiServer].flat_map do |server|
       server.class_variable_get(:@@routes).routes.map do |route|
         [route.metric_name, route.pattern.to_regexp]
       end

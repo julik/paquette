@@ -4,7 +4,7 @@ Gem::Specification.new do |spec|
   spec.name = "paquette"
   spec.version = Paquette::VERSION
   spec.authors = ["Julik Tarkhanov"]
-  spec.summary = "Rack-based server for gated gem and NPM package repositories"
+  spec.summary = "Rack-based server for gated gem, NPM and Python package repositories"
   spec.homepage = "https://github.com/julik/paquette"
   spec.license = "Osassy"
   spec.metadata = {
@@ -22,4 +22,6 @@ Gem::Specification.new do |spec|
   spec.add_dependency "mustermann", "~> 3.0"
   spec.add_dependency "measurometer", "~> 1.3"
   spec.add_dependency "rotp", "~> 6.3"
+  # Wheels are zip files; only the PyPI side loads it
+  spec.add_dependency "zip_kit", "~> 6.4"
 end

@@ -243,6 +243,13 @@ class ResponseCacheTest < Minitest::Test
     assert_equal [nil, nil], @origin.seen_etags
   end
 
+  # What Rack::MockRequest and some servers hand over: UTF-8 in name only
+  def test_a_utf8_tagged_header_that_is_not_utf8_does_not_raise
+    header = (+"Bearer \xFF\xE2").force_encoding("UTF-8")
+
+    assert_equal [200, 200], 2.times.map { get("/versions", "HTTP_AUTHORIZATION" => header)[0] }
+  end
+
   def test_keys_survive_header_bytes_that_are_not_utf8
     response = get("/versions", "HTTP_AUTHORIZATION" => "Bearer \xFF\xE2".b)
 

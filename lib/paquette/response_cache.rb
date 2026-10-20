@@ -82,7 +82,8 @@ class Paquette::ResponseCache
   # @return [Boolean]
   def cacheable_request?(env)
     env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE") &&
-      !env["HTTP_AUTHORIZATION"].to_s.strip.empty? && env["QUERY_STRING"].to_s.empty?
+      # Binary: `strip` raises on a header that is not valid UTF-8
+      !env["HTTP_AUTHORIZATION"].to_s.b.strip.empty? && env["QUERY_STRING"].to_s.empty?
   end
 
   # The env is the caller's own and is handed on, not copied: an application

@@ -12,7 +12,6 @@ class Paquette::PypiServer
   autoload :Personalizer, "#{__dir__}/pypi_server/personalizer"
   autoload :PypiRepository, "#{__dir__}/pypi_server/pypi_repository"
   autoload :ReadGatedRepository, "#{__dir__}/pypi_server/read_gated_repository"
-  autoload :ReadonlyRepository, "#{__dir__}/pypi_server/readonly_repository"
 
   prepend Paquette::RegexpTimeout
   include Paquette::ConditionalGet
@@ -120,8 +119,11 @@ class Paquette::PypiServer
   # @param authenticator [Object, nil] answers `read_permitted?`,
   #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
   #   Without one, everyone reads and nobody writes
+  # @param on_publish [#call, nil] called with a Paquette::Published and the
+  #   Rack::Request once an upload has landed - see the same option on GemServer
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette Python package index"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil)
+    @on_publish = on_publish
     @repository = if repository.is_a?(String)
       DirectoryPypiRepository.new(repository)
     else
@@ -148,7 +150,8 @@ class Paquette::PypiServer
       request_env = env.dup
       request = Rack::Request.new(request_env)
       route = @@routes.match(request)
-      # The outcome goes into the env the application holds, not the dup
+      # Outcomes go into the env the application holds, not the dup
+      Paquette::Served.route(env, route) if route
       refusal = authentication_refusal(route, env)
       next refusal if refusal
       next not_found("Not Found") unless route
@@ -161,12 +164,31 @@ class Paquette::PypiServer
       # Shared across Rack threads: the request lives on a per-request clone
       handler = clone
       handler.instance_variable_set(:@request, request)
-      @@routes.perform_action(route, handler, request)
+      response = @@routes.perform_action(route, handler, request)
+      Paquette::Served.package(env, handler.send(:served_package, route.params(request)), response[0])
+      response
     end
   rescue Paquette::Routes::BadRequest => e
     bad_request(e.message)
   rescue PayloadTooLarge => e
     payload_too_large(e.message)
+  end
+
+  # The project a request was about, and the version when a file names one -
+  # or what an upload wrote, since that names its project in the body only.
+  # A misspelled project is a redirect, so only the normalized name is ever named.
+  #
+  # @param params [Hash{String => Object}]
+  # @return [Array(String, String), Array(String), nil]
+  def served_package(params)
+    return @written if @written
+
+    project = params["project"]
+    return nil unless project
+
+    filename = params["filename"]&.delete_suffix(METADATA_SUFFIX)
+    version = filename && Paquette::PypiServer::PypiRepository.version_from_filename(filename)
+    version ? [project, version] : [project]
   end
 
   # The multipart parse reads the body before any handler sees it, so the
@@ -440,10 +462,12 @@ class Paquette::PypiServer
       return bad_request("sha256_digest does not match the uploaded file")
     end
 
-    Measurometer.instrument("paquette.pypi_server.upload") { @repository.add_file(tempfile.path, filename) }
+    info = Measurometer.instrument("paquette.pypi_server.upload") { @repository.add_file(tempfile.path, filename) }
+    project = Paquette::PypiServer::PypiRepository.normalize_name(parsed[:distribution])
+    @written = [project, info.version]
+    # A wheel carries no date worth trusting either, so this is the moment of arrival
+    @on_publish&.call(Paquette::Published.new(name: project, version: info.version, released_at: info.upload_time || Time.now), @request)
     text_ok("OK")
-  rescue ReadGatedRepository::WriteNotAllowed, ReadonlyRepository::WriteNotAllowed => e
-    forbidden_with(e.message)
   rescue DirectoryPypiRepository::FileAlreadyExists => e
     # 409 is what `twine upload --skip-existing` reads as "already there"
     conflict(e.message)
@@ -529,14 +553,6 @@ class Paquette::PypiServer
   # @return [Array] a Rack response triplet
   def bad_request(message = "Bad Request")
     text_error(400, message)
-  end
-
-  # Not `forbidden`, which Paquette::Authentication answers a refused token with
-  #
-  # @param message [String]
-  # @return [Array] a Rack response triplet
-  def forbidden_with(message)
-    text_error(403, message)
   end
 
   # @param message [String]

@@ -1,10 +1,12 @@
+require "delegate"
 require "measurometer"
 
 # Hides every file that arrived less than `interval` seconds ago - the PyPI
 # twin of GemServer::CooldownRepository. Per file rather than per version: a
 # wheel added to an old release later is exactly the kind of arrival a
-# cooldown is for. Read-only, like the gem side.
-class Paquette::PypiServer::CooldownRepository < Paquette::PypiServer::ReadonlyRepository
+# cooldown is for. An upload through it lands, and stays out of this view
+# until it has cooled.
+class Paquette::PypiServer::CooldownRepository < SimpleDelegator
   # @param repository [Paquette::PypiServer::PypiRepository] the repository
   #   to wrap
   # @param interval [Integer, #to_i] the cooldown, in seconds

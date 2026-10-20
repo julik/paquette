@@ -358,11 +358,34 @@ class PypiServerTest < Minitest::Test
     refute_path_exists File.join(@dir, "widgets")
   end
 
-  def test_a_readonly_repository_refuses_uploads
-    @app = Writable.pypi_server(Paquette::PypiServer::ReadonlyRepository.new(@repository))
+  # Who may write is the authenticator's to say, before any wrapper is asked
+  def test_an_upload_through_a_gate_lands
+    gated = Paquette::PypiServer::ReadGatedRepository.new(@repository) { |**| false }
+    @app = Writable.pypi_server(gated)
     upload(wheel_bytes(name: "widgets", version: "1.0.0"), "widgets-1.0.0-py3-none-any.whl")
 
-    assert_equal 403, last_response.status
+    assert_equal 200, last_response.status, last_response.body
+    assert_path_exists File.join(@dir, "widgets", "widgets-1.0.0-py3-none-any.whl")
+  end
+
+  def test_an_upload_is_reported_once_it_has_landed
+    published = []
+    @app = Writable.pypi_server(@repository, on_publish: ->(release, request) { published << [release, request] })
+    upload(wheel_bytes(name: "Acme.Widgets", version: "1.0.0"), "acme_widgets-1.0.0-py3-none-any.whl")
+
+    release, request = published.fetch(0)
+    assert_equal ["acme-widgets", "1.0.0"], [release.name, release.version]
+    assert_equal File.mtime(File.join(@dir, "acme-widgets", "acme_widgets-1.0.0-py3-none-any.whl")).utc, release.released_at
+    assert_kind_of Rack::Request, request
+  end
+
+  def test_a_refused_upload_is_not_reported
+    published = []
+    @app = Writable.pypi_server(@repository, on_publish: ->(release, _) { published << release })
+    2.times { upload(wheel_bytes(name: "widgets", version: "1.0.0"), "widgets-1.0.0-py3-none-any.whl") }
+
+    assert_equal 409, last_response.status
+    assert_equal 1, published.length
   end
 
   def test_a_server_without_an_authenticator_refuses_uploads

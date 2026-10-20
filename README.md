@@ -198,7 +198,7 @@ Note that the default dev setup runs `Paquette::Authentication::Open`, which tak
 
 ### After a push
 
-Both servers take an `on_publish:` callable, called once a push or a publish has landed with a `Paquette::Published` (`name`, `version`, `released_at`) and the `Rack::Request` - to record the release, mail somebody, note the address it came from:
+All three servers take an `on_publish:` callable, called once a push, a publish or an upload has landed with a `Paquette::Published` (`name`, `version`, `released_at`) and the `Rack::Request` - to record the release, mail somebody, note the address it came from:
 
 ```ruby
 Paquette::GemServer.new(repo, authenticator: authenticator, on_publish: ->(published, request) {
@@ -206,7 +206,7 @@ Paquette::GemServer.new(repo, authenticator: authenticator, on_publish: ->(publi
 })
 ```
 
-`released_at` is the gemspec's date for a gem, and the moment of arrival for an npm package - `npm pack` stamps every tarball entry with 1985-10-26, so there is no better date in one. An exception from the callable is a 500 for a package that is already stored, so rescue what is allowed to fail.
+`released_at` is the gemspec's date for a gem, and the moment of arrival for an npm package or a Python file - `npm pack` stamps every tarball entry with 1985-10-26, and a wheel carries no date of its own, so there is no better one. A Python project is named by its PEP 503 normalized name, as the gate sees it. An exception from the callable is a 500 for a package that is already stored, so rescue what is allowed to fail.
 
 If anything downstream trusts a gem's date - a cooldown, a license window - make the date mean something: `DirectoryGemRepository.new(dir, require_release_date: true)` refuses a push dated with the RubyGems placeholder (1980-01-02, what a reproducible build stamps without `SOURCE_DATE_EPOCH`) or more than about three years from today, before anything is stored.
 
@@ -349,7 +349,7 @@ repo = Paquette::PypiServer::Personalizer.new(repo,
 Paquette::PypiServer.new(repo, authenticator: AUTHENTICATOR)
 ```
 
-`CooldownRepository` and `ReadonlyRepository` are there too, and mean what they mean for gems. A few things are particular to Python:
+`CooldownRepository` is there too, and means what it means for gems: an upload through it lands and stays out of view until it has cooled. As on the other two servers, the wrappers pass writes through - who may upload is the authenticator's to say. A few things are particular to Python:
 
 - **Files, not versions.** A version is a set of files - a wheel per platform, an sdist - and the index lists files. The gate's entitler is still asked about `name:` and `version:`, the version read out of each filename, and a cooldown withholds each file on its own: a wheel added to an old release is held back like any new arrival. By default the cooldown reads the file's mtime, because a wheel carries no date of its own; `published_at:` takes a block called with `name:`, `version:` and `filename:` when you keep a better one.
 - **Yanks.** `repo.yank_file(project, filename, reason: "")` is a PEP 592 yank: pip passes over the file unless a requirement pins that exact version, and the file stays downloadable for the lockfiles that already have it. There is no HTTP endpoint for it, since no client sends one.
@@ -418,7 +418,7 @@ On an open registry, anonymous downloads are then served out of the cache and in
 
 ### Caching behind authentication
 
-`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization` and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
+`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization`, `Accept` (the PyPI index answers one URL in HTML or JSON) and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
 
 ```ruby
 use Paquette::ResponseCache, directory: "tmp/cache/gems"
@@ -475,7 +475,7 @@ For your own log line or monitoring transaction, each server says what a request
 env["paquette.served"] # => {route: "GET /gems/:gem_filename", package: "zip_kit", version: "6.2.1"}
 ```
 
-The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body. `env["paquette.authentication"]` and `env["paquette.response_cache"]` sit beside it.
+The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body, and an upload the Python project and version it wrote. `env["paquette.authentication"]` and `env["paquette.response_cache"]` sit beside it.
 
 ## Running the tests
 

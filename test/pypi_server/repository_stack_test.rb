@@ -99,7 +99,6 @@ class PypiRepositoryStackTest < Minitest::Test
     assert_nil gated.file_info("widgets", "widgets-2.0.0-py3-none-any.whl")
     assert_nil gated.core_metadata("widgets", "widgets-2.0.0-py3-none-any.whl")
     assert_nil gated.file_info("secret", "secret-1.0.0-py3-none-any.whl")
-    assert_raises(Paquette::PypiServer::ReadGatedRepository::WriteNotAllowed) { gated.add_file("x", "y") }
   end
 
   def test_a_gated_download_outside_the_entitlement_is_a_404
@@ -154,7 +153,16 @@ class PypiRepositoryStackTest < Minitest::Test
     assert_equal ["widgets"], cooled.project_names
     assert_equal ["widgets-1.0.0-py3-none-any.whl"], cooled.filenames_for_project("widgets")
     assert_nil cooled.file_path("widgets", "widgets-1.1.0-py3-none-any.whl")
-    assert_raises(Paquette::PypiServer::ReadonlyRepository::WriteNotAllowed) { cooled.add_file("x", "y") }
+  end
+
+  def test_an_upload_through_the_cooldown_lands_and_stays_out_of_view
+    source = File.join(@cache_dir, "upload.whl")
+    File.binwrite(source, wheel_bytes(name: "widgets", version: "1.0.0"))
+    cooled = Paquette::PypiServer::CooldownRepository.new(@repository, interval: 600)
+    cooled.add_file(source, "widgets-1.0.0-py3-none-any.whl")
+
+    assert_equal ["widgets-1.0.0-py3-none-any.whl"], @repository.filenames_for_project("widgets")
+    assert_empty cooled.filenames_for_project("widgets")
   end
 
   def test_the_cooldown_validator_moves_when_a_file_cools

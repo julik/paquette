@@ -2,12 +2,8 @@ require "delegate"
 require "measurometer"
 
 # Filters every read through an entitler block; non-entitled projects and
-# versions do not exist. Writes always raise: a gated caller may not mutate
-# the corpus.
+# versions do not exist. Writes pass through - see the gem-side twin.
 class Paquette::PypiServer::ReadGatedRepository < SimpleDelegator
-  # Raised by every write on a gated repository.
-  class WriteNotAllowed < StandardError; end
-
   # @param repository [Paquette::PypiServer::PypiRepository] the repository
   #   to wrap
   # @param gate_key [String, nil] names this gate for HTTP caching - see the
@@ -81,18 +77,6 @@ class Paquette::PypiServer::ReadGatedRepository < SimpleDelegator
   # @return [String, nil]
   def core_metadata(project, filename)
     super if entitled_file?(project, filename)
-  end
-
-  # @raise [WriteNotAllowed] always
-  # @return [void]
-  def add_file(*, **)
-    raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
-  end
-
-  # @raise [WriteNotAllowed] always
-  # @return [void]
-  def yank_file(*, **)
-    raise WriteNotAllowed, "Writes are not allowed through a read-gated repository"
   end
 
   private

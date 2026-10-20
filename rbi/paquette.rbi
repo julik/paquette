@@ -3586,16 +3586,19 @@ module Paquette
     # _@param_ `shared_caching` — false keeps every response `private` - see the same option on GemServer
     # 
     # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # 
+    # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once an upload has landed - see the same option on GemServer
     sig do
       params(
         repository: T.any(Paquette::PypiServer::PypiRepository, String),
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object)
+        authenticator: T.nilable(Object),
+        on_publish: T.nilable(T.untyped)
       ).void
     end
-    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette Python package index"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil); end
+    def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette Python package index"), max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil); end
 
     # _@param_ `env` — the Rack env
     # 
@@ -3608,6 +3611,14 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def dispatch(env); end
+
+    # The project a request was about, and the version when a file names one -
+    # or what an upload wrote, since that names its project in the body only.
+    # A misspelled project is a redirect, so only the normalized name is ever named.
+    # 
+    # _@param_ `params`
+    sig { params(params: T::Hash[String, Object]).returns(T.nilable(T.any([String, String], [String]))) }
+    def served_package(params); end
 
     # The multipart parse reads the body before any handler sees it, so the
     # cap goes under the parser: refused outright when the length says so,
@@ -3761,14 +3772,6 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(message: String).returns(T::Array[T.untyped]) }
     def bad_request(message = "Bad Request"); end
-
-    # Not `forbidden`, which Paquette::Authentication answers a refused token with
-    # 
-    # _@param_ `message`
-    # 
-    # _@return_ — a Rack response triplet
-    sig { params(message: String).returns(T::Array[T.untyped]) }
-    def forbidden_with(message); end
 
     # _@param_ `message`
     # 
@@ -4359,8 +4362,9 @@ module Paquette
     # Hides every file that arrived less than `interval` seconds ago - the PyPI
     # twin of GemServer::CooldownRepository. Per file rather than per version: a
     # wheel added to an old release later is exactly the kind of arrival a
-    # cooldown is for. Read-only, like the gem side.
-    class CooldownRepository < Paquette::PypiServer::ReadonlyRepository
+    # cooldown is for. An upload through it lands, and stays out of this view
+    # until it has cooled.
+    class CooldownRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
       # _@param_ `interval` — the cooldown, in seconds
@@ -4447,22 +4451,8 @@ module Paquette
       def published_time(project, filename); end
     end
 
-    # Forbids uploads and yanks
-    class ReadonlyRepository < SimpleDelegator
-      sig { void }
-      def add_file; end
-
-      sig { void }
-      def yank_file; end
-
-      # Raised by every write on a readonly repository.
-      class WriteNotAllowed < StandardError
-      end
-    end
-
     # Filters every read through an entitler block; non-entitled projects and
-    # versions do not exist. Writes always raise: a gated caller may not mutate
-    # the corpus.
+    # versions do not exist. Writes pass through - see the gem-side twin.
     class ReadGatedRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
@@ -4513,12 +4503,6 @@ module Paquette
       sig { params(project: String, filename: String).returns(T.nilable(String)) }
       def core_metadata(project, filename); end
 
-      sig { void }
-      def add_file; end
-
-      sig { void }
-      def yank_file; end
-
       # _@param_ `project`
       # 
       # _@param_ `filename`
@@ -4532,10 +4516,6 @@ module Paquette
       # _@return_ — truthy when entitled
       sig { params(criteria: T::Hash[T.untyped, T.untyped]).returns(Object) }
       def entitled?(**criteria); end
-
-      # Raised by every write on a gated repository.
-      class WriteNotAllowed < StandardError
-      end
     end
 
     # Reads Python distributions from a directory, one per normalized project name:
@@ -5069,7 +5049,8 @@ module Paquette
   #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # Entries are keyed by the URL, the credential and `Accept-Encoding`, which only
+  # Entries are keyed by the URL, the credential, `Accept` - the PyPI index answers
+  # one URL in HTML or JSON - and `Accept-Encoding`, which only
   # matters with a compressor inside the cache. The key is not what keeps two
   # callers apart - the ETag is, since the stored one has to be current for the
   # caller asking - but it keeps each token from overwriting another's entry, and
@@ -5080,7 +5061,7 @@ module Paquette
     include Paquette::RegexpTimeout
     DEFAULT_MAX_BODY_BYTES = T.let(8 * 1024 * 1024, T.untyped)
     OUTCOME_KEY = T.let("paquette.response_cache", T.untyped)
-    KEYED_HEADERS = T.let(%w[HTTP_AUTHORIZATION HTTP_ACCEPT_ENCODING].freeze, T.untyped)
+    KEYED_HEADERS = T.let(%w[HTTP_AUTHORIZATION HTTP_ACCEPT HTTP_ACCEPT_ENCODING].freeze, T.untyped)
     UNSTORED_HEADERS = T.let(%w[connection keep-alive transfer-encoding date age content-length].freeze, T.untyped)
 
     # _@param_ `app` — the Rack app to cache

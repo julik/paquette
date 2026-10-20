@@ -3127,6 +3127,129 @@ module Paquette
     def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
   end
 
+  # Keeps whole 200s of either server on disk, one entry per credential, and
+  # replays one only when the server says it is still current. Rack::Cache cannot
+  # do this here: a response to a request with credentials is `private`, and a
+  # shared cache refuses to store those, so behind authentication it stores
+  # nothing at all.
+  # 
+  # Every request still reaches the server - with `If-None-Match` set to the
+  # stored entry's ETag. A server that can name its stack (a ReadGatedRepository
+  # given a `gate_key:`, say) answers that with a 304 before rendering anything,
+  # and the stored body goes out as the 200. So the authenticator and the gate are
+  # asked every time: a revoked token is refused even with a body on disk for it,
+  # and a response without an ETag is never stored.
+  # 
+  #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
+  #   run Paquette::GemServer.new(repo, authenticator: authenticator)
+  # 
+  # Entries are keyed by the URL, the credential and `Accept-Encoding`, which only
+  # matters with a compressor inside the cache. The key is not what keeps two
+  # callers apart - the ETag is, since the stored one has to be current for the
+  # caller asking - but it keeps each token from overwriting another's entry, and
+  # a gate_key that wrongly names two customers alike from serving one's body to
+  # the other. Nothing is evicted: there are as many entries as credentials times
+  # index URLs, and the directory can be emptied at any time.
+  class ResponseCache
+    include Paquette::RegexpTimeout
+    DEFAULT_MAX_BODY_BYTES: Integer
+    OUTCOME_KEY: String
+    KEYED_HEADERS: ::Array[String]
+    UNSTORED_HEADERS: ::Array[String]
+
+    # _@param_ `app` — the Rack app to cache
+    # 
+    # _@param_ `directory` — where entries live, created when missing
+    # 
+    # _@param_ `max_body_bytes`
+    def initialize: (untyped app, directory: String, ?max_body_bytes: Integer) -> void
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    def call: (::Hash[untyped, untyped] env) -> ::Array[untyped]
+
+    # The env is the caller's own and is handed on, not copied: an application
+    # that leaves notes in it for its log line has to find them afterwards.
+    # 
+    # _@param_ `env`
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `entry`
+    # 
+    # _@return_ — a Rack response triplet
+    def revalidate: (::Hash[untyped, untyped] env, String key, ::Hash[untyped, untyped] entry) -> ::Array[untyped]
+
+    # _@param_ `env`
+    # 
+    # _@param_ `key`
+    # 
+    # _@return_ — a Rack response triplet
+    def fetch: (::Hash[untyped, untyped] env, String key) -> ::Array[untyped]
+
+    # _@param_ `env`
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    def store_and_answer: (::Hash[untyped, untyped] env, String key, ::Array[untyped] response) -> ::Array[untyped]
+
+    # _@param_ `status`
+    # 
+    # _@param_ `headers`
+    # 
+    # _@param_ `body`
+    def storable?: (Integer status, Rack::Headers headers, _Each[untyped] body) -> bool
+
+    # Weak comparison, as RFC 9110 asks of If-None-Match.
+    # 
+    # _@param_ `header` — the client's If-None-Match
+    # 
+    # _@param_ `etag`
+    def etag_matches?: (String? header, String? etag) -> bool
+
+    # _@param_ `env`
+    # 
+    # _@param_ `outcome`
+    # 
+    # _@return_ — a Rack response triplet
+    def record: (::Hash[untyped, untyped] env, String outcome) -> ::Array[untyped]
+
+    # The URL whole, host and scheme included: npm package documents carry
+    # absolute tarball URLs built from them.
+    # 
+    # _@param_ `env`
+    def key_for: (::Hash[untyped, untyped] env) -> String
+
+    # _@param_ `key`
+    def read: (String key) -> ::Hash[untyped, untyped]?
+
+    # Body first and the metadata last, each renamed into place, so a reader
+    # never finds metadata pointing at half a body.
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `headers`
+    # 
+    # _@param_ `chunks`
+    def write: (String key, Rack::Headers headers, ::Array[String] chunks) -> void
+
+    # _@param_ `path`
+    def atomically: (String path) -> void
+
+    # _@param_ `key`
+    def delete: (String key) -> void
+
+    # _@param_ `key`
+    def meta_path: (String key) -> String
+
+    # _@param_ `key`
+    def body_path: (String key) -> String
+  end
+
   # Conditional GET and cache directives, shared by both servers so the
   # security-critical answers cannot drift between them. The including class
   # supplies `@request` (the Rack::Request being served), `@repository` (the

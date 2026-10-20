@@ -46,6 +46,7 @@ module Paquette
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
   autoload :RegexpTimeout, "#{__dir__}/paquette/regexp_timeout"
+  autoload :ResponseCache, "#{__dir__}/paquette/response_cache"
   autoload :Routes, "#{__dir__}/paquette/routes"
   autoload :SafeUrl, "#{__dir__}/paquette/safe_url"
   autoload :SubdomainRouter, "#{__dir__}/paquette/subdomain_router"

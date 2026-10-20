@@ -324,7 +324,7 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 
 ## HTTP caching
 
-Paquette does not cache anything itself. It emits correct HTTP cache headers and answers conditional requests, and leaves the actual caching to a cache you put in front of it. I usually use `Rack::Cache` which is fairly reliable. You can put a CDN in front of Paquette if you know that it handles the `Vary: Authorization` bits correctly.
+Paquette emits correct HTTP cache headers and answers conditional requests. For anonymous traffic, a shared cache in front of it does the rest - I usually use `Rack::Cache`, which is fairly reliable, and a CDN works if you know that it handles the `Vary: Authorization` bits correctly. Behind authentication, use `Paquette::ResponseCache` (see below).
 
 Paquette will try to emit sensible ETags for most endpoints, and there is support for partial responses.
 
@@ -346,7 +346,18 @@ run Paquette::GemServer.new(gem_repo)
 
 Under Rails, `config.action_dispatch.rack_cache = true` does the same. Put your authorization *below* the cache, next to Paquette, so it runs on every request the cache does not answer.
 
-On an open registry, anonymous downloads are then served out of the cache and index documents are revalidated against Paquette with a cheap 304. Authorized, gated and personalized responses are never stored; each of those requests reaches your gate and Paquette every time, and the client's own cache still revalidates cheaply. If the server-side cost of those is what you are after, cache inside your application - the personalizer already keeps repacked artifacts on disk.
+On an open registry, anonymous downloads are then served out of the cache and index documents are revalidated against Paquette with a cheap 304. Authorized, gated and personalized responses are never stored there: they are `private`, which a shared cache refuses to keep.
+
+### Caching behind authentication
+
+`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization` and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
+
+```ruby
+use Paquette::ResponseCache, directory: "tmp/cache/gems"
+run Paquette::GemServer.new(gated_repo, authenticator: authenticator)
+```
+
+That only pays off when the stack can name itself, so that Paquette answers the 304 _before_ rendering: give the `ReadGatedRepository` a `gate_key:`. The authenticator and the gate's cache key are still consulted on every request, so a revoked token is refused with a body on disk for it, and a stack without a validator is simply never stored. Ranges, `HEAD`, writes and file downloads go straight through, and so does any body over `max_body_bytes:` (8 MiB by default). Nothing is evicted - the directory holds credentials times index URLs, and can be emptied at any time. `env["paquette.response_cache"]` says `hit`, `miss` or `bypass`, for your log line.
 
 ### Caching validators
 

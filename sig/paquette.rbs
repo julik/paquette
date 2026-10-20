@@ -412,6 +412,26 @@ module Paquette
     def self.http_url: (Object value) -> String?
   end
 
+  # What a push or a publish wrote, handed to a server's `on_publish:` once the
+  # write has landed. `released_at` is the gemspec's date for a gem - see
+  # `require_release_date:` on DirectoryGemRepository for keeping it honest - and
+  # the moment of arrival for an npm package, whose tarball carries no date worth
+  # trusting: `npm pack` stamps every entry with 1985-10-26.
+  # 
+  # @!attribute name
+  #   @return [String]
+  # @!attribute version
+  #   @return [String]
+  # @!attribute released_at
+  #   @return [Time]
+  class Published < Data
+    attr_accessor name: String
+
+    attr_accessor version: String
+
+    attr_accessor released_at: Time
+  end
+
   # Reads the access token out of a request, whichever way the client wrapped it.
   # This is the token an authenticator gets:
   # 
@@ -513,12 +533,15 @@ module Paquette
     # _@param_ `shared_caching` — false keeps every response `private`, as if every request carried a credential — set it when you authorize by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
     # 
     # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # 
+    # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once a push has landed. An exception from it is a 500 for a gem that is already stored
     def initialize: (
                       Paquette::GemServer::GemRepository repository,
                       ?placeholder_app: untyped,
                       ?max_push_bytes: Integer?,
                       ?shared_caching: bool,
-                      ?authenticator: Object?
+                      ?authenticator: Object?,
+                      ?on_publish: untyped?
                     ) -> void
 
     # _@param_ `env` — the Rack env
@@ -1480,6 +1503,17 @@ module Paquette
       VERSION: Regexp
       FORBIDDEN_IN_FIELD: Regexp
       MAX_FIELD_BYTES: Integer
+      PLACEHOLDER_DATE: Date
+      RELEASE_DATE_TOLERANCE_DAYS: Integer
+
+      # Refuses a gem whose date cannot be when it was released: the placeholder,
+      # or years away from today. For a registry that decides anything by the date
+      # a publisher wrote into the gem.
+      # 
+      # _@param_ `spec`
+      # 
+      # _@param_ `today`
+      def self.validate_release_date!: (::Gem::Specification spec, ?today: Date) -> void
 
       # One error class deliberately: a client cannot act differently on
       # unreadable versus dishonest.
@@ -1704,7 +1738,9 @@ module Paquette
       SIDECAR_FORMAT_VERSION: Integer
 
       # _@param_ `gems_dir` — the corpus root, created if absent
-      def initialize: (String gems_dir) -> void
+      # 
+      # _@param_ `require_release_date` — refuse a push whose gemspec date is the RubyGems placeholder or years from today - see SpecValidator.validate_release_date!
+      def initialize: (String gems_dir, ?require_release_date: bool) -> void
 
       # A digest of what the corpus holds. Paths alone are enough: a push adds
       # one, a yank renames one away to a tomb, and a .gem file at a given path
@@ -1985,12 +2021,15 @@ module Paquette
     # _@param_ `shared_caching` — false keeps every response `private` — see the same option on GemServer
     # 
     # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # 
+    # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once a publish has landed - see the same option on GemServer
     def initialize: (
                       (Paquette::NpmServer::NpmRepository | String) repository,
                       ?placeholder_app: untyped,
                       ?max_push_bytes: Integer?,
                       ?shared_caching: bool,
-                      ?authenticator: Object?
+                      ?authenticator: Object?,
+                      ?on_publish: untyped?
                     ) -> void
 
     # _@param_ `env` — the Rack env

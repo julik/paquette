@@ -141,8 +141,11 @@ class Paquette::NpmServer
   # @param authenticator [Object, nil] answers `read_permitted?`,
   #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
   #   Without one, everyone reads and nobody writes
+  # @param on_publish [#call, nil] called with a Paquette::Published and the
+  #   Rack::Request once a publish has landed - see the same option on GemServer
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
-    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil)
+    max_push_bytes: Paquette::MAX_PUSH_SIZE_BYTES, shared_caching: true, authenticator: nil, on_publish: nil)
+    @on_publish = on_publish
     @repository = if repository.is_a?(String)
       DirectoryNpmRepository.new(repository)
     else
@@ -367,6 +370,7 @@ class Paquette::NpmServer
       @repository.add_package(tarball, dist_tags: document["dist-tags"] || {})
     end
     @written = [info["name"], info["version"]]
+    @on_publish&.call(Paquette::Published.new(name: info["name"], version: info["version"], released_at: Time.now), @request)
     json_ok({success: true, id: info["name"], rev: revision_for(info["name"])}, status: 201)
   rescue DirectoryNpmRepository::PackageYanked => e
     forbidden(e.message)

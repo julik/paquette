@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Take `on_publish:` on both servers, called with a `Paquette::Published` (name, version, release date) and the request once a push or publish has landed - instead of wrapping the repository to find out
+- Take `require_release_date: true` on `DirectoryGemRepository`, which refuses a push dated with the RubyGems placeholder or years from today, before it is stored
 - Leave `env["paquette.served"]` - the route, and the package and version a request served or wrote - for the application's log line and monitoring, so it does not have to recognize the route and split filenames itself. The package is only named for a 2xx, or a 304 on a validator the client held
 - Remove `GemServer::ReadonlyRepository` and the `WriteNotAllowed` errors (breaking). Since the authenticator decides who may write, before any repository is touched, `ReadGatedRepository` (both of them) and `CooldownRepository` pass writes through instead of raising, and the servers no longer turn a repository's refusal into a 403. A server without an authenticator still refuses every write
 - Add `Paquette::ResponseCache`, a Rack middleware that keeps whole 200s on disk per credential and replays one when the server answers a revalidation with a 304. `Rack::Cache` stores nothing behind authentication, because every authorized response is `private`; this one still sends every request to the server, so the authenticator and the gate are asked every time

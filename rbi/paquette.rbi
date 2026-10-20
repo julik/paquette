@@ -3594,6 +3594,141 @@ module Paquette
     def call(env); end
   end
 
+  # Keeps whole 200s of either server on disk, one entry per credential, and
+  # replays one only when the server says it is still current. Rack::Cache cannot
+  # do this here: a response to a request with credentials is `private`, and a
+  # shared cache refuses to store those, so behind authentication it stores
+  # nothing at all.
+  # 
+  # Every request still reaches the server - with `If-None-Match` set to the
+  # stored entry's ETag. A server that can name its stack (a ReadGatedRepository
+  # given a `gate_key:`, say) answers that with a 304 before rendering anything,
+  # and the stored body goes out as the 200. So the authenticator and the gate are
+  # asked every time: a revoked token is refused even with a body on disk for it,
+  # and a response without an ETag is never stored.
+  # 
+  #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
+  #   run Paquette::GemServer.new(repo, authenticator: authenticator)
+  # 
+  # Entries are keyed by the URL, `Authorization`, `Cookie` and `Accept-Encoding`
+  # - the request headers Paquette varies by. Nothing is evicted: there are as
+  # many entries as credentials times index URLs, and the directory can be
+  # emptied at any time.
+  class ResponseCache
+    include Paquette::RegexpTimeout
+    DEFAULT_MAX_BODY_BYTES = T.let(8 * 1024 * 1024, T.untyped)
+    OUTCOME_KEY = T.let("paquette.response_cache", T.untyped)
+    KEYED_HEADERS = T.let(%w[HTTP_AUTHORIZATION HTTP_COOKIE HTTP_ACCEPT_ENCODING].freeze, T.untyped)
+    UNSTORED_HEADERS = T.let(%w[connection keep-alive transfer-encoding date age content-length].freeze, T.untyped)
+
+    # _@param_ `app` — the Rack app to cache
+    # 
+    # _@param_ `directory` — where entries live, created when missing
+    # 
+    # _@param_ `max_body_bytes`
+    sig { params(app: T.untyped, directory: String, max_body_bytes: Integer).void }
+    def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES); end
+
+    # _@param_ `env` — the Rack env
+    # 
+    # _@return_ — a Rack response triplet
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
+    def call(env); end
+
+    # The env is the caller's own and is handed on, not copied: an application
+    # that leaves notes in it for its log line has to find them afterwards.
+    # 
+    # _@param_ `env`
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `entry`
+    # 
+    # _@return_ — a Rack response triplet
+    sig { params(env: T::Hash[T.untyped, T.untyped], key: String, entry: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
+    def revalidate(env, key, entry); end
+
+    # _@param_ `env`
+    # 
+    # _@param_ `key`
+    # 
+    # _@return_ — a Rack response triplet
+    sig { params(env: T::Hash[T.untyped, T.untyped], key: String).returns(T::Array[T.untyped]) }
+    def fetch(env, key); end
+
+    # _@param_ `env`
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `response` — a Rack response triplet
+    # 
+    # _@return_ — a Rack response triplet
+    sig { params(env: T::Hash[T.untyped, T.untyped], key: String, response: T::Array[T.untyped]).returns(T::Array[T.untyped]) }
+    def store_and_answer(env, key, response); end
+
+    # _@param_ `status`
+    # 
+    # _@param_ `headers`
+    # 
+    # _@param_ `body`
+    sig { params(status: Integer, headers: Rack::Headers, body: T.untyped).returns(T::Boolean) }
+    def storable?(status, headers, body); end
+
+    # Weak comparison, as RFC 9110 asks of If-None-Match.
+    # 
+    # _@param_ `header` — the client's If-None-Match
+    # 
+    # _@param_ `etag`
+    sig { params(header: T.nilable(String), etag: T.nilable(String)).returns(T::Boolean) }
+    def etag_matches?(header, etag); end
+
+    # _@param_ `env`
+    # 
+    # _@param_ `outcome`
+    # 
+    # _@return_ — a Rack response triplet
+    sig { params(env: T::Hash[T.untyped, T.untyped], outcome: String).returns(T::Array[T.untyped]) }
+    def record(env, outcome); end
+
+    # The URL whole, host and scheme included: npm package documents carry
+    # absolute tarball URLs built from them.
+    # 
+    # _@param_ `env`
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(String) }
+    def key_for(env); end
+
+    # _@param_ `key`
+    sig { params(key: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
+    def read(key); end
+
+    # Body first and the metadata last, each renamed into place, so a reader
+    # never finds metadata pointing at half a body.
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `headers`
+    # 
+    # _@param_ `chunks`
+    sig { params(key: String, headers: Rack::Headers, chunks: T::Array[String]).void }
+    def write(key, headers, chunks); end
+
+    # _@param_ `path`
+    sig { params(path: String).void }
+    def atomically(path); end
+
+    # _@param_ `key`
+    sig { params(key: String).void }
+    def delete(key); end
+
+    # _@param_ `key`
+    sig { params(key: String).returns(String) }
+    def meta_path(key); end
+
+    # _@param_ `key`
+    sig { params(key: String).returns(String) }
+    def body_path(key); end
+  end
+
   # Conditional GET and cache directives, shared by both servers so the
   # security-critical answers cannot drift between them. The including class
   # supplies `@request` (the Rack::Request being served), `@repository` (the

@@ -350,7 +350,7 @@ On an open registry, anonymous downloads are then served out of the cache and in
 
 ### Caching behind authentication
 
-`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization`, `Cookie` and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
+`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization` and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
 
 ```ruby
 use Paquette::ResponseCache, directory: "tmp/cache/gems"

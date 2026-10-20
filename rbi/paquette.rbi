@@ -3610,15 +3610,18 @@ module Paquette
   #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # Entries are keyed by the URL, `Authorization`, `Cookie` and `Accept-Encoding`
-  # - the request headers Paquette varies by. Nothing is evicted: there are as
-  # many entries as credentials times index URLs, and the directory can be
-  # emptied at any time.
+  # Entries are keyed by the URL, the credential and `Accept-Encoding`, which only
+  # matters with a compressor inside the cache. The key is not what keeps two
+  # callers apart - the ETag is, since the stored one has to be current for the
+  # caller asking - but it keeps each token from overwriting another's entry, and
+  # a gate_key that wrongly names two customers alike from serving one's body to
+  # the other. Nothing is evicted: there are as many entries as credentials times
+  # index URLs, and the directory can be emptied at any time.
   class ResponseCache
     include Paquette::RegexpTimeout
     DEFAULT_MAX_BODY_BYTES = T.let(8 * 1024 * 1024, T.untyped)
     OUTCOME_KEY = T.let("paquette.response_cache", T.untyped)
-    KEYED_HEADERS = T.let(%w[HTTP_AUTHORIZATION HTTP_COOKIE HTTP_ACCEPT_ENCODING].freeze, T.untyped)
+    KEYED_HEADERS = T.let(%w[HTTP_AUTHORIZATION HTTP_ACCEPT_ENCODING].freeze, T.untyped)
     UNSTORED_HEADERS = T.let(%w[connection keep-alive transfer-encoding date age content-length].freeze, T.untyped)
 
     # _@param_ `app` — the Rack app to cache

@@ -83,6 +83,14 @@ class ResponseCacheTest < Minitest::Test
     assert_equal [nil, nil, nil], @origin.seen_etags
   end
 
+  # Paquette never reads them, and Cloudflare and the like hand out new ones
+  def test_a_cookie_does_not_split_the_entry
+    get("/versions", "HTTP_AUTHORIZATION" => "Bearer a", "HTTP_COOKIE" => "__cf_bm=one")
+    get("/versions", "HTTP_AUTHORIZATION" => "Bearer a", "HTTP_COOKIE" => "__cf_bm=two")
+
+    assert_equal [nil, %("v1")], @origin.seen_etags
+  end
+
   # npm package documents carry absolute tarball URLs built from the host
   def test_each_host_and_encoding_has_its_own_entry
     get("http://npm.one.test/widget")

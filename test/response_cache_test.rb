@@ -100,6 +100,35 @@ class ResponseCacheTest < Minitest::Test
     assert_equal [nil, nil, nil], @origin.seen_etags
   end
 
+  # The PyPI index answers one URL in HTML or JSON, so pip and a browser
+  # would otherwise keep replacing each other's entry
+  def test_each_accept_has_its_own_entry
+    json = "application/vnd.pypi.simple.v1+json"
+    get("/simple/widgets/", "HTTP_ACCEPT" => json)
+    get("/simple/widgets/", "HTTP_ACCEPT" => "text/html")
+    get("/simple/widgets/", "HTTP_ACCEPT" => json)
+    get("/simple/widgets/", "HTTP_ACCEPT" => "text/html")
+
+    assert_equal [nil, nil, %("v1"), %("v1")], @origin.seen_etags
+  end
+
+  def test_the_pypi_index_is_replayed_in_the_format_asked_for
+    packages = Dir.mktmpdir("paquette_response_cache_pypi")
+    write_wheel(packages, name: "widgets", version: "1.0.0")
+    cache = Paquette::ResponseCache.new(Paquette::PypiServer.new(packages), directory: @dir)
+    page = ->(accept) { cache.call(Rack::MockRequest.env_for("/simple/widgets/", "HTTP_ACCEPT" => accept)) }
+
+    2.times do
+      json = page.call(Paquette::PypiServer::JSON_TYPE)
+      html = page.call("text/html")
+      assert_equal Paquette::PypiServer::JSON_TYPE, json[1]["content-type"]
+      assert_equal "widgets", JSON.parse(body_of(json))["name"]
+      assert_includes body_of(html), "<h1>Links for widgets</h1>"
+    end
+  ensure
+    FileUtils.rm_rf(packages)
+  end
+
   # The cache never answers on its own, so a credential refused later is
   # refused with a body on disk for it
   def test_a_refusal_on_revalidation_goes_out_and_drops_the_entry

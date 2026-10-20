@@ -33,6 +33,47 @@ class AuthTokenTest < Minitest::Test
     assert_equal "someone", token_for(basic("someone", TOKEN))
   end
 
+  # pip and twine, against any index that follows pypi.org
+  def test_reads_the_password_behind_the_pypi_token_username
+    assert_equal TOKEN, token_for(basic("__token__", TOKEN))
+  end
+
+  # twine has nowhere else to put a one-time password
+  def test_a_code_shaped_username_gives_way_to_the_password
+    ["123456", "1234567", "12345678"].each do |code|
+      assert_equal TOKEN, token_for(basic(code, TOKEN)), code
+      assert_equal code, otp_for(basic(code, TOKEN)), code
+    end
+  end
+
+  # A token that is all digits is still a token the GitHub way round
+  def test_a_numeric_token_with_a_placeholder_or_no_password_stays_the_token
+    ["", "x-oauth-basic", "__token__"].each do |password|
+      assert_equal "123456", token_for(basic("123456", password)), password
+      assert_nil otp_for(basic("123456", password)), password
+    end
+    assert_equal "123456", token_for("Basic #{["123456"].pack("m0")}")
+  end
+
+  def test_a_username_that_is_not_quite_a_code_is_the_token
+    ["12345", "123456789", "12345a", "123 456", "123456\n"].each do |username|
+      assert_equal username, token_for(basic(username, TOKEN)), username.inspect
+      assert_nil otp_for(basic(username, TOKEN)), username.inspect
+    end
+  end
+
+  def test_no_code_out_of_anything_but_basic
+    assert_nil otp_for("Bearer 123456")
+    assert_nil otp_for("123456")
+    assert_nil Paquette::AuthToken.otp_from_env(Rack::MockRequest.env_for("/"))
+  end
+
+  def test_a_code_out_of_a_basic_payload_that_is_not_utf8_is_nil_or_bytes
+    otp = otp_for("Basic #{["\xFF\xFE:#{TOKEN}".b].pack("m0")}")
+
+    assert_nil otp
+  end
+
   def test_nil_without_a_header
     assert_nil Paquette::AuthToken.from_env(Rack::MockRequest.env_for("/"))
     refute Paquette::AuthToken.provided?(Rack::MockRequest.env_for("/"))
@@ -89,5 +130,9 @@ class AuthTokenTest < Minitest::Test
 
   def token_for(header)
     Paquette::AuthToken.from_env(env_with(header))
+  end
+
+  def otp_for(header)
+    Paquette::AuthToken.otp_from_env(env_with(header))
   end
 end

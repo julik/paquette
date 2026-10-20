@@ -334,6 +334,155 @@ module Writable
   def self.npm_server(repository, **options)
     WithOtp.new(Paquette::NpmServer.new(repository, authenticator: OPEN_AUTHENTICATOR, **options))
   end
+
+  def self.pypi_server(repository, **options)
+    WithOtp.new(Paquette::PypiServer.new(repository, authenticator: OPEN_AUTHENTICATOR, **options))
+  end
+end
+
+# Wheels and sdists built in Ruby, so a test can say exactly what is inside
+# one - including what no build backend would ever produce.
+module PythonDistributionHelpers
+  def wheel_filename(name, version, tag: "py3-none-any")
+    "#{name.gsub(/[-.]+/, "_")}-#{version}-#{tag}.whl"
+  end
+
+  def core_metadata_text(name, version, requires_python: nil)
+    lines = ["Metadata-Version: 2.1", "Name: #{name}", "Version: #{version}"]
+    lines << "Requires-Python: #{requires_python}" if requires_python
+    lines.join("\n") + "\n\nA package for tests.\n"
+  end
+
+  # A wheel pip will install: a module, METADATA, WHEEL and a RECORD that
+  # agrees with all of them. `files:` lands at the root of site-packages.
+  def wheel_bytes(name:, version:, files: nil, requires_python: nil, tag: "py3-none-any", metadata: nil, dist_info: nil)
+    module_name = name.gsub(/[-.]+/, "_").downcase
+    files ||= {"#{module_name}/__init__.py" => "VERSION = #{version.inspect}\n"}
+    dist_info ||= "#{name.gsub(/[-.]+/, "_")}-#{version}.dist-info"
+    mtime = Time.utc(2024, 1, 2, 3, 4, 6)
+
+    contents = files.merge(
+      "#{dist_info}/METADATA" => metadata || core_metadata_text(name, version, requires_python: requires_python),
+      "#{dist_info}/WHEEL" => "Wheel-Version: 1.0\nGenerator: paquette-tests\nRoot-Is-Purelib: true\nTag: #{tag}\n"
+    )
+    entries = contents.map { |path, content| Paquette::Wheel::Entry.new(name: path, mode: 0o644, mtime: mtime, content: content) }
+    record_name = "#{dist_info}/RECORD"
+    entries << Paquette::Wheel::Entry.new(name: record_name, mode: 0o644, mtime: mtime,
+      content: Paquette::Wheel.record_for(entries, record_name))
+
+    Dir.mktmpdir("paquette_test_wheel") do |dir|
+      File.binread(Paquette::Wheel.write(File.join(dir, "built.whl"), entries))
+    end
+  end
+
+  # An sdist setuptools can build without a network: pip has to be run with
+  # --no-build-isolation against a Python that already has setuptools.
+  def sdist_bytes(name:, version:, files: nil, requires_python: nil)
+    module_name = name.gsub(/[-.]+/, "_").downcase
+    root = "#{name.gsub(/[-.]+/, "_")}-#{version}"
+    files ||= {"#{module_name}/__init__.py" => "VERSION = #{version.inspect}\n"}
+    pyproject = <<~TOML
+      [build-system]
+      requires = ["setuptools"]
+      build-backend = "setuptools.build_meta"
+
+      [project]
+      name = "#{name}"
+      version = "#{version}"
+      #{%(requires-python = "#{requires_python}") if requires_python}
+
+      [tool.setuptools]
+      packages = ["#{module_name}"]
+    TOML
+    contents = files.merge(
+      "PKG-INFO" => core_metadata_text(name, version, requires_python: requires_python),
+      "pyproject.toml" => pyproject
+    )
+    entries = contents.map do |path, content|
+      Paquette::Tarball::Entry.new(name: "#{root}/#{path}", mode: 0o644, mtime: 1_700_000_000, content: content)
+    end
+
+    Dir.mktmpdir("paquette_test_sdist") do |dir|
+      File.binread(Paquette::Tarball.write(File.join(dir, "built.tar.gz"), entries))
+    end
+  end
+
+  def write_wheel(packages_dir, name:, version:, **options)
+    filename = wheel_filename(name, version, tag: options.fetch(:tag, "py3-none-any"))
+    write_distribution(packages_dir, name, filename, wheel_bytes(name: name, version: version, **options))
+  end
+
+  def write_sdist(packages_dir, name:, version:, **options)
+    filename = "#{name.gsub(/[-.]+/, "_")}-#{version}.tar.gz"
+    write_distribution(packages_dir, name, filename, sdist_bytes(name: name, version: version, **options))
+  end
+
+  def write_distribution(packages_dir, name, filename, bytes)
+    project = Paquette::PypiServer::PypiRepository.normalize_name(name)
+    path = File.join(packages_dir, project, filename)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.binwrite(path, bytes)
+    path
+  end
+
+  def wheel_file(path, name)
+    Paquette::Wheel.read_entry(path, name, limit: 10 * 1024 * 1024)
+  end
+end
+
+# One venv per machine with twine, build and setuptools in it, made on first
+# use and kept in tmp/ - creating it needs the network, using it does not.
+# Forked test classes race to build it, hence the lock.
+module PythonTooling
+  VENV_DIR = File.expand_path("../tmp/test-python-venv", __dir__)
+  VENV_PACKAGES = %w[twine build setuptools wheel].freeze
+
+  def require_python_venv
+    python = ENV.fetch("PAQUETTE_PYTHON", "python3")
+    usable = system(python, "-c", "import sys; sys.exit(sys.version_info < (3, 9))", out: File::NULL, err: File::NULL)
+    require_tool "Python 3", usable, "PAQUETTE_REQUIRE_PYTHON"
+
+    ready = File.join(VENV_DIR, ".paquette-ready")
+    FileUtils.mkdir_p(File.dirname(VENV_DIR))
+    File.open("#{VENV_DIR}.lock", File::RDWR | File::CREAT) do |lock|
+      lock.flock(File::LOCK_EX)
+      next if File.exist?(ready)
+
+      FileUtils.rm_rf(VENV_DIR)
+      output = IO.popen([python, "-m", "venv", VENV_DIR], err: [:child, :out], &:read)
+      if $?.success?
+        pip = [venv_bin("pip"), "install", "--quiet", "--disable-pip-version-check", *VENV_PACKAGES]
+        output = IO.popen(pip, err: [:child, :out], &:read)
+      end
+      require_tool "a venv with #{VENV_PACKAGES.join(", ")} (#{output.lines.last(3).join.strip})", $?.success?,
+        "PAQUETTE_REQUIRE_PYTHON"
+      FileUtils.touch(ready)
+    end
+  end
+
+  def venv_bin(name)
+    File.join(VENV_DIR, "bin", name)
+  end
+
+  # Nothing from the machine's own pip or keyring config may leak in, or a
+  # passing test proves something about the developer's setup
+  def python_env(home)
+    {
+      "HOME" => home,
+      "PIP_CONFIG_FILE" => File::NULL,
+      "PIP_NO_CACHE_DIR" => "1",
+      "PIP_DISABLE_PIP_VERSION_CHECK" => "1",
+      "PIP_NO_INPUT" => "1",
+      "PIP_KEYRING_PROVIDER" => "disabled",
+      "PIP_INDEX_URL" => nil,
+      "PIP_EXTRA_INDEX_URL" => nil,
+      "PYTHON_KEYRING_BACKEND" => "keyring.backends.null.Keyring",
+      "PYTHONNOUSERSITE" => "1",
+      "TWINE_USERNAME" => nil,
+      "TWINE_PASSWORD" => nil,
+      "TWINE_REPOSITORY_URL" => nil
+    }
+  end
 end
 
 # Rack::Test cannot build a body that disagrees with its own Content-Length,
@@ -368,5 +517,6 @@ module Minitest
     include ExternalTooling
     include MalformedRequestHelpers
     include TimingHelpers
+    include PythonDistributionHelpers
   end
 end

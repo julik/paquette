@@ -119,3 +119,54 @@ class ServedNpmTest < Minitest::Test
     env[Paquette::Served::KEY]
   end
 end
+
+class ServedPypiTest < Minitest::Test
+  def setup
+    @dir = Dir.mktmpdir("paquette_served_pypi")
+    write_wheel(@dir, name: "acme-widgets", version: "1.0.0")
+    @app = Writable.pypi_server(Paquette::PypiServer::DirectoryPypiRepository.new(@dir))
+  end
+
+  def teardown
+    FileUtils.rm_rf(@dir)
+  end
+
+  def test_a_project_page_names_its_project
+    assert_equal({route: "GET /simple/:project/", package: "acme-widgets"}, served("/simple/acme-widgets/"))
+  end
+
+  def test_a_download_names_its_version
+    assert_equal({route: "GET /files/:project/:filename", package: "acme-widgets", version: "1.0.0"},
+      served("/files/acme-widgets/acme_widgets-1.0.0-py3-none-any.whl"))
+  end
+
+  def test_a_metadata_file_names_its_version
+    assert_equal "1.0.0", served("/files/acme-widgets/acme_widgets-1.0.0-py3-none-any.whl.metadata")[:version]
+  end
+
+  # A redirect is not a page served, and a made-up spelling is not a tag value
+  def test_a_misspelled_or_made_up_project_is_not_named
+    assert_equal({route: "GET /simple/:project/"}, served("/simple/Acme_Widgets/"))
+    assert_equal({route: "GET /simple/:project/"}, served("/simple/made-up/"))
+    assert_equal({route: "GET /files/:project/:filename"}, served("/files/made-up/made_up-1.0.0.tar.gz"))
+  end
+
+  def test_an_upload_names_what_it_wrote
+    body = "--B\r\nContent-Disposition: form-data; name=\":action\"\r\n\r\nfile_upload\r\n" \
+      "--B\r\nContent-Disposition: form-data; name=\"content\"; filename=\"gadgets-2.0.0-py3-none-any.whl\"\r\n" \
+      "Content-Type: application/octet-stream\r\n\r\n".b + wheel_bytes(name: "gadgets", version: "2.0.0") + "\r\n--B--\r\n".b
+    env = Rack::MockRequest.env_for("/legacy/", :method => "POST", :input => body,
+      "CONTENT_TYPE" => "multipart/form-data; boundary=B")
+    @app.call(env)
+
+    assert_equal({route: "POST /legacy/", package: "gadgets", version: "2.0.0"}, env[Paquette::Served::KEY])
+  end
+
+  private
+
+  def served(path)
+    env = Rack::MockRequest.env_for(path)
+    @app.call(env)
+    env[Paquette::Served::KEY]
+  end
+end

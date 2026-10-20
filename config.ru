@@ -7,6 +7,7 @@ packages_dir = ENV["PAQUETTE_PACKAGES_DIR"] || File.expand_path("packages", __di
 
 npm_dir = File.join(packages_dir, "npm")
 gems_dir = File.join(packages_dir, "gems")
+pypi_dir = File.join(packages_dir, "pypi")
 
 # Both servers take a repository, and the wrapper chain you build around it
 # decides what a caller may see and whether they may publish. Bare repositories
@@ -14,9 +15,10 @@ gems_dir = File.join(packages_dir, "gems")
 # calls this slightly unhinged.
 gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir)
 npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
+pypi_repo = Paquette::PypiServer::DirectoryPypiRepository.new(pypi_dir)
 
 # Open lets anyone push, as long as they send a one-time password - any will
-# do (`gem push --otp 000000`, `npm publish --otp 000000`). Swap it for an
+# do (`gem push --otp 000000`, `npm publish --otp 000000`, `twine upload -u 000000`). Swap it for an
 # authenticator of your own to require a token, and a real code on every
 # push. See the README's Authentication section.
 authenticator = Paquette::Authentication::Open.new
@@ -24,7 +26,8 @@ authenticator = Paquette::Authentication::Open.new
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
   router.map "gem", to: Paquette::GemServer.new(gems_repo, authenticator: authenticator)
   router.map "npm", to: Paquette::NpmServer.new(npm_repo, authenticator: authenticator)
-  router.fallback to: ->(*) { [404, {}, ["Need subdomain gem/npm"]] }
+  router.map "pypi", to: Paquette::PypiServer.new(pypi_repo, authenticator: authenticator)
+  router.fallback to: ->(*) { [404, {}, ["Need subdomain gem/npm/pypi"]] }
 end
 
 run subdomain_apps

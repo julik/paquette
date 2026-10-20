@@ -79,18 +79,39 @@ class SubdomainRouterIntegrationTest < Minitest::Test
     assert last_response.body.length > 0
   end
 
+  def test_pypi_subdomain_routing
+    get "/", {}, {"HTTP_HOST" => "pypi.example.com"}
+    assert_equal 200, last_response.status
+    assert_includes last_response.body, Paquette::PypiServer::DEFAULT_BLURB
+  end
+
+  # The fixture is a real setuptools build, not one of the test helpers' own
+  def test_pypi_subdomain_project_page_and_download
+    get "/simple/minuscule-test/", {}, {"HTTP_HOST" => "pypi.example.com", "HTTP_ACCEPT" => Paquette::PypiServer::JSON_TYPE}
+    assert_equal 200, last_response.status
+
+    files = JSON.parse(last_response.body)["files"]
+    assert_equal ["minuscule_test-0.1.0-py3-none-any.whl", "minuscule_test-0.1.0.tar.gz"], files.map { |file| file["filename"] }.sort
+    wheel = files.find { |file| file["filename"].end_with?(".whl") }
+    assert_equal ">=3.8", wheel["requires-python"]
+
+    get "/files/minuscule-test/minuscule_test-0.1.0-py3-none-any.whl", {}, {"HTTP_HOST" => "pypi.example.com"}
+    assert_equal 200, last_response.status
+    assert_equal wheel["hashes"]["sha256"], Digest::SHA256.hexdigest(last_response.body)
+  end
+
   def test_unknown_subdomain_fallback
     # Test that unknown subdomains get the fallback response
     get "/", {}, {"HTTP_HOST" => "api.example.com"}
     assert_equal 404, last_response.status
-    assert_equal "Need subdomain gem/npm", last_response.body
+    assert_equal "Need subdomain gem/npm/pypi", last_response.body
   end
 
   def test_no_subdomain_fallback
     # Test that requests without subdomain get the fallback response
     get "/", {}, {"HTTP_HOST" => "example.com"}
     assert_equal 404, last_response.status
-    assert_equal "Need subdomain gem/npm", last_response.body
+    assert_equal "Need subdomain gem/npm/pypi", last_response.body
   end
 
   def test_localhost_with_port_gem_subdomain

@@ -20,7 +20,8 @@ require "securerandom"
 #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
 #   run Paquette::GemServer.new(repo, authenticator: authenticator)
 #
-# Entries are keyed by the URL, the credential and `Accept-Encoding`, which only
+# Entries are keyed by the URL, the credential, `Accept` - the PyPI index answers
+# one URL in HTML or JSON - and `Accept-Encoding`, which only
 # matters with a compressor inside the cache. The key is not what keeps two
 # callers apart - the ETag is, since the stored one has to be current for the
 # caller asking - but it keeps each token from overwriting another's entry, and
@@ -45,7 +46,7 @@ class Paquette::ResponseCache
   # would only make each new one a miss
   #
   # @return [Array<String>]
-  KEYED_HEADERS = %w[HTTP_AUTHORIZATION HTTP_ACCEPT_ENCODING].freeze
+  KEYED_HEADERS = %w[HTTP_AUTHORIZATION HTTP_ACCEPT HTTP_ACCEPT_ENCODING].freeze
 
   # Headers that are about one response on the wire rather than the content.
   #

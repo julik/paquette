@@ -3,9 +3,9 @@
   <img src="img/paquette-wordmark-logo.png" alt="Paquette" width="420">
 </picture>
 
-Paquette is a (slightly unhinged) Rack-based server for libraries. At the moment it serves gems and NPM packages. It is designed to be small and embeddable in other Ruby web applications. You allocate a directory with packages and expose it through Paquette, all the while bringing your own authentication, limits, filtering and entitlements.
+Paquette is a (slightly unhinged) Rack-based server for libraries. At the moment it serves gems, NPM packages and Python packages. It is designed to be small and embeddable in other Ruby web applications. You allocate a directory with packages and expose it through Paquette, all the while bringing your own authentication, limits, filtering and entitlements.
 
-In essence, it is a gem/NPM server for distributing commercial packages. I use
+In essence, it is a gem/NPM/PyPI server for distributing commercial packages. I use
 it for https://shop.stanquette.nl and it is pretty neat!
 
 Things are somewhat in flux but Paquette is usable alright.
@@ -151,7 +151,7 @@ The NPM server is assembled exactly the same way, out of the same kind of parts 
 
 ## Authentication
 
-Both servers take an `authenticator:` - any object answering three questions about a token:
+All three servers take an `authenticator:` - any object answering three questions about a token:
 
 ```ruby
 class AcmeAuthenticator
@@ -174,9 +174,9 @@ Paquette::NpmServer.new(npm_repo, authenticator: AcmeAuthenticator.new)
 
 What each server does with it:
 
-- **The token.** Clients do not send it the same way, and `Paquette::AuthToken.from_env(env)` reads all of them: `Authorization: Bearer TOKEN` from npm, the bare key `gem push` sends as the whole header, and Basic auth from Bundler - the token as the username with any password (`https://TOKEN:x-oauth-basic@gem.example.com`), or as the password behind an empty username or one of `x-oauth-basic`, `x-access-token`, `x-oauth-token`. The token is `nil` when the request sent no credentials, a blank `Authorization` header included. A header that carries no token at all - `Bearer` with nothing after it, a scheme Paquette does not speak - is a 401 without asking the authenticator: a mangled header must not become an anonymous request.
+- **The token.** Clients do not send it the same way, and `Paquette::AuthToken.from_env(env)` reads all of them: `Authorization: Bearer TOKEN` from npm, the bare key `gem push` sends as the whole header, and Basic auth from Bundler - the token as the username with any password (`https://TOKEN:x-oauth-basic@gem.example.com`), or as the password behind an empty username or one of `x-oauth-basic`, `x-access-token`, `x-oauth-token`, `__token__` - the last being how pip and twine send one. The token is `nil` when the request sent no credentials, a blank `Authorization` header included. A header that carries no token at all - `Bearer` with nothing after it, a scheme Paquette does not speak - is a 401 without asking the authenticator: a mangled header must not become an anonymous request.
 - **Reads.** Every request asks `read_permitted?`, and a `false` is a 401. Return `true` for a `nil` token to let anonymous callers in. Which packages a caller sees is the repository stack's business - a `ReadGatedRepository` - not the authenticator's.
-- **Writes.** Every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag` - also asks `write_permitted?`, which is a yes or no for the whole registry: a 403 for a token that may not, a 401 when there was no token. Then the write has to carry a one-time password. Without one the server asks for it in each client's own dialect, so `gem` and `npm` prompt the way they do against rubygems.org and npmjs.com, and `--otp` works on both. With one, `check_otp!` gets it and raises `Paquette::OtpRejected` if it is no good. All of this happens before the handler runs, so a refused push is refused before its body is read.
+- **Writes.** Every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag`, `twine upload` - also asks `write_permitted?`, which is a yes or no for the whole registry: a 403 for a token that may not, a 401 when there was no token. Then the write has to carry a one-time password. Without one the server asks for it in each client's own dialect, so `gem` and `npm` prompt the way they do against rubygems.org and npmjs.com, and `--otp` works on both. twine can send nothing but a username and a password, so on the PyPI server the code goes in the username: `twine upload -u 123456 -p TOKEN` - six to eight digits there, next to a password, is read as the code and the password as the token. With one, `check_otp!` gets it and raises `Paquette::OtpRejected` if it is no good. All of this happens before the handler runs, so a refused push is refused before its body is read.
 - **One-time passwords.** `Paquette::Totp.verify!(secret, code, drift: 30)` checks a code against a base32 TOTP secret and raises `Paquette::OtpRejected` for you. Refusing a code that was already used once, or locking someone out after a few wrong guesses, needs state Paquette has nowhere to keep, so that stays with your `check_otp!`.
 - **The outcome** lands in `env["paquette.authentication"]` for your own log line: `authorized`, `credentials_unreadable`, `read_refused`, `write_refused`, `otp_missing` or `otp_rejected`.
 - **`npm whoami`** answers `paquette` for any accepted token, and 401 without one.
@@ -185,7 +185,7 @@ Without an authenticator, a server lets everyone read and refuses every write. `
 
 ## Hostname limitations
 
-The server will run on `http://localhost:9292` by default. Note that the NPM registry and the RubyGems registry have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.` or `npm.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
+The server will run on `http://localhost:9292` by default. Note that the three registries have to live on separate domains - so they will respond on whichever domain is passed in that has `gem.`, `npm.` or `pypi.` as first subdomain. If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond.
 
 ## Publishing gems into Paquette
 
@@ -198,7 +198,7 @@ Note that the default dev setup runs `Paquette::Authentication::Open`, which tak
 
 ### After a push
 
-Both servers take an `on_publish:` callable, called once a push or a publish has landed with a `Paquette::Published` (`name`, `version`, `released_at`) and the `Rack::Request` - to record the release, mail somebody, note the address it came from:
+All three servers take an `on_publish:` callable, called once a push, a publish or an upload has landed with a `Paquette::Published` (`name`, `version`, `released_at`) and the `Rack::Request` - to record the release, mail somebody, note the address it came from:
 
 ```ruby
 Paquette::GemServer.new(repo, authenticator: authenticator, on_publish: ->(published, request) {
@@ -206,7 +206,7 @@ Paquette::GemServer.new(repo, authenticator: authenticator, on_publish: ->(publi
 })
 ```
 
-`released_at` is the gemspec's date for a gem, and the moment of arrival for an npm package - `npm pack` stamps every tarball entry with 1985-10-26, so there is no better date in one. An exception from the callable is a 500 for a package that is already stored, so rescue what is allowed to fail.
+`released_at` is the gemspec's date for a gem, and the moment of arrival for an npm package or a Python file - `npm pack` stamps every tarball entry with 1985-10-26, and a wheel carries no date of its own, so there is no better one. A Python project is named by its PEP 503 normalized name, as the gate sees it. An exception from the callable is a 500 for a package that is already stored, so rescue what is allowed to fail.
 
 If anything downstream trusts a gem's date - a cooldown, a license window - make the date mean something: `DirectoryGemRepository.new(dir, require_release_date: true)` refuses a push dated with the RubyGems placeholder (1980-01-02, what a reproducible build stamps without `SOURCE_DATE_EPOCH`) or more than about three years from today, before anything is stored.
 
@@ -330,6 +330,66 @@ Point npm at it and provide auth for whichever mechanism you wrapped it with:
 - `DELETE /{package}/-rev/{rev}` - Unpublish a package
 - `DELETE /{package}/-/{name-version.tgz}/-rev/{rev}` - Unpublish one version
 
+## Usage for Python packages
+
+The PyPI server is built like the other two: a repository, as many wrappers as you want, and a Rack app around them.
+
+```ruby
+repo = Paquette::PypiServer::DirectoryPypiRepository.new(Rails.root.join("packages", "pypi").to_s)
+
+repo = Paquette::PypiServer::ReadGatedRepository.new(repo, gate_key: license.cache_key) do |name:, version: nil|
+  license.package_names.include?(name) # name is PEP 503 normalized: "acme-widgets"
+end
+
+repo = Paquette::PypiServer::Personalizer.new(repo,
+  license_key: license.key,
+  magic_comment_replacements: {"# paquette_license_info" => "licensed to #{license.holder}"},
+  files: {"acme_widgets/LICENSE.txt" => license.rendered_text})
+
+Paquette::PypiServer.new(repo, authenticator: AUTHENTICATOR)
+```
+
+`CooldownRepository` is there too, and means what it means for gems: an upload through it lands and stays out of view until it has cooled. As on the other two servers, the wrappers pass writes through - who may upload is the authenticator's to say. A few things are particular to Python:
+
+- **Files, not versions.** A version is a set of files - a wheel per platform, an sdist - and the index lists files. The gate's entitler is still asked about `name:` and `version:`, the version read out of each filename, and a cooldown withholds each file on its own: a wheel added to an old release is held back like any new arrival. By default the cooldown reads the file's mtime, because a wheel carries no date of its own; `published_at:` takes a block called with `name:`, `version:` and `filename:` when you keep a better one.
+- **Yanks.** `repo.yank_file(project, filename, reason: "")` is a PEP 592 yank: pip passes over the file unless a requirement pins that exact version, and the file stays downloadable for the lockfiles that already have it. There is no HTTP endpoint for it, since no client sends one.
+- **Filenames are forever**, as on pypi.org. Uploading a filename that was ever uploaded before is a 409, yanked or not.
+- **Personalization** rewrites the comment lines that consist of a marker, indentation kept, in `.py` and `.pyi` files - one line in, one line out, so traceback line numbers match the source the publisher saw. The license key lands in `paquette.json`, which `importlib.metadata.distribution("acme-widgets").read_text("paquette.json")` reads from the installed package. A wheel gets its RECORD rewritten and loses any `RECORD.jws` signature. METADATA is never touched, so its PEP 658 hash stays the repository's. The same checksum warning as for gems applies: pip checks the sha256 the index published, and `--require-hashes` lockfiles will notice a change in how you personalize.
+
+### Where packages live on disk
+
+One directory per PEP 503 normalized project name, with the files under the names their build tools gave them:
+
+```
+packages/pypi/acme-widgets/acme_widgets-1.0.0-py3-none-any.whl
+packages/pypi/acme-widgets/acme_widgets-1.0.0.tar.gz
+packages/pypi/acme-widgets/acme_widgets-0.9.0.tar.gz.yanked   # the reason, possibly empty
+```
+
+### Publishing Python packages into Paquette
+
+1. Place wheels and `.tar.gz` sdists in the layout above.
+2. Upload with twine: `twine upload --repository-url http://pypi.localhost:9292/legacy/ -u 000000 -p TOKEN dist/*`. The username is the one-time password - see [Authentication](#authentication). `uv publish` and `poetry publish` speak the same protocol.
+
+An upload is read before it is stored: the metadata inside has to name the project the filename does, and a `sha256_digest` twine sent has to match.
+
+### Consuming packages provided by a Paquette server
+
+```
+pip install acme-widgets --index-url https://__token__:tok_998218907784@pypi.paquette.acme.com/simple/
+```
+
+or in `pip.conf`, `uv`'s `[[tool.uv.index]]` or Poetry's `[[tool.poetry.source]]` - all of them speak the same Simple API.
+
+### PyPI API Endpoints
+
+- `GET /` - Repository info
+- `GET /simple/` - Every project, as HTML or PEP 691 JSON by `Accept` (or `?format=`)
+- `GET /simple/{project}/` - A project's files, with sha256, Requires-Python, yank status, size and upload time; any spelling of the name redirects to the normalized one
+- `GET /files/{project}/{filename}` - Download a file
+- `GET /files/{project}/{filename}.metadata` - A wheel's METADATA (PEP 658)
+- `POST /legacy/` - Upload, as twine sends it
+
 ## HTTP caching
 
 Paquette emits correct HTTP cache headers and answers conditional requests. For anonymous traffic, a shared cache in front of it does the rest - I usually use `Rack::Cache`, which is fairly reliable, and a CDN works if you know that it handles the `Vary: Authorization` bits correctly. Behind authentication, use `Paquette::ResponseCache` (see below).
@@ -358,7 +418,7 @@ On an open registry, anonymous downloads are then served out of the cache and in
 
 ### Caching behind authentication
 
-`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization` and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
+`Paquette::ResponseCache` keeps those. It stores whole 200s on disk, one entry per credential - keyed by the URL, `Authorization`, `Accept` (the PyPI index answers one URL in HTML or JSON) and `Accept-Encoding` - and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
 
 ```ruby
 use Paquette::ResponseCache, directory: "tmp/cache/gems"
@@ -388,7 +448,7 @@ Paquette::NpmServer.new(repo, placeholder_app: ->(_env) { [404, {}, []] })  # no
 
 ## Mounting under a path prefix (namespaces)
 
-Both servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/). In Rack only a `map` and nothing else:
+All three servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/). In Rack only a `map` and nothing else:
 
 ```ruby
 Rack::Builder.new do
@@ -415,7 +475,7 @@ For your own log line or monitoring transaction, each server says what a request
 env["paquette.served"] # => {route: "GET /gems/:gem_filename", package: "zip_kit", version: "6.2.1"}
 ```
 
-The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body. `env["paquette.authentication"]` and `env["paquette.response_cache"]` sit beside it.
+The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body, and an upload the Python project and version it wrote. `env["paquette.authentication"]` and `env["paquette.response_cache"]` sit beside it.
 
 ## Running the tests
 
@@ -423,7 +483,7 @@ The route is there whenever one matched, refused requests included, and makes a 
 bundle exec rake test
 ```
 
-Most of it is ordinary Ruby, but we also have a few end-to-end tests, that require Docker and Node. You don't need either for using Paquette though.
+Most of it is ordinary Ruby, but we also have a few end-to-end tests that require Docker, Node and Python 3. The Python ones build a venv with twine, build and setuptools in `tmp/test-python-venv` on first run, which needs the network once. You need none of these for using Paquette though.
 
 RubyGems' own compact-index conformance suite runs separately, because it shells out to the `gem_server_conformance` RSpec binary:
 

@@ -1,5 +1,9 @@
 ## Unreleased
 
+- Rebuild a gated npm packument's README, description, keywords, license, author, maintainers, repository, bugs and homepage from the newest version the caller may see (security). They came from the newest version on disk, so a lapsed licensee read the README of releases they were not entitled to. A repository that cannot describe one version gets none of them. New `NpmRepository#package_summary`
+- Stop storing anonymous requests and requests with a query string in `ResponseCache`, and key on whether `Accept` asks for JSON instead of the raw `Accept` and `Accept-Encoding` (security). Every distinct query string or header value used to be a new entry on disk that nothing evicts, so anybody could fill the disk
+- Refuse a token that is not valid UTF-8 in `AuthToken.from_env`, which now always returns a UTF-8 string, so an authenticator's regexps and lookups cannot raise on one
+- Take `after:` in `Totp.verify!` and return the time step the code belongs to, so an application can refuse a code that was already used
 - Take `on_publish:` on both servers, called with a `Paquette::Published` (name, version, release date) and the request once a push or publish has landed - instead of wrapping the repository to find out
 - Take `require_release_date: true` on `DirectoryGemRepository`, which refuses a push dated with the RubyGems placeholder or years from today, before it is stored
 - Leave `env["paquette.served"]` - the route, and the package and version a request served or wrote - for the application's log line and monitoring, so it does not have to recognize the route and split filenames itself. The package is only named for a 2xx, or a 304 on a validator the client held

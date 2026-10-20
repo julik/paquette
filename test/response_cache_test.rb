@@ -78,9 +78,38 @@ class ResponseCacheTest < Minitest::Test
   def test_each_credential_has_its_own_entry
     get("/versions", "HTTP_AUTHORIZATION" => "Bearer a")
     get("/versions", "HTTP_AUTHORIZATION" => "Bearer b")
-    get("/versions")
+
+    assert_equal [nil, nil], @origin.seen_etags
+  end
+
+  # The same for everybody, and a 304 away anyway - storing it would let a
+  # stranger write to the disk
+  def test_an_anonymous_request_is_not_stored
+    2.times { get("/versions", "HTTP_AUTHORIZATION" => nil) }
+    get("/versions", "HTTP_AUTHORIZATION" => "  ")
 
     assert_equal [nil, nil, nil], @origin.seen_etags
+    assert_empty stored_entries
+    assert_equal "bypass", @last_env[Paquette::ResponseCache::OUTCOME_KEY]
+  end
+
+  # Anybody's to vary, one entry per value
+  def test_a_request_with_a_query_string_is_not_stored
+    get("/versions?cachebust=1")
+    get("/versions?cachebust=1")
+
+    assert_equal [nil, nil], @origin.seen_etags
+    assert_empty stored_entries
+  end
+
+  # Only whether it asks for JSON is in the key
+  def test_varied_request_headers_do_not_mint_entries
+    50.times do |n|
+      get("/simple/widgets/", "HTTP_ACCEPT" => "x/#{n}", "HTTP_ACCEPT_ENCODING" => "x-#{n}", "HTTP_COOKIE" => "c=#{n}")
+      get("/simple/widgets/", "HTTP_ACCEPT" => "x/#{n}+json")
+    end
+
+    assert_equal 2, stored_entries.length
   end
 
   # Paquette never reads them, and Cloudflare and the like hand out new ones
@@ -92,12 +121,12 @@ class ResponseCacheTest < Minitest::Test
   end
 
   # npm package documents carry absolute tarball URLs built from the host
-  def test_each_host_and_encoding_has_its_own_entry
+  def test_each_host_has_its_own_entry
     get("http://npm.one.test/widget")
     get("http://npm.two.test/widget")
     get("http://npm.one.test/widget", "HTTP_ACCEPT_ENCODING" => "gzip")
 
-    assert_equal [nil, nil, nil], @origin.seen_etags
+    assert_equal [nil, nil, %("v1")], @origin.seen_etags
   end
 
   # The PyPI index answers one URL in HTML or JSON, so pip and a browser
@@ -116,7 +145,7 @@ class ResponseCacheTest < Minitest::Test
     packages = Dir.mktmpdir("paquette_response_cache_pypi")
     write_wheel(packages, name: "widgets", version: "1.0.0")
     cache = Paquette::ResponseCache.new(Paquette::PypiServer.new(packages), directory: @dir)
-    page = ->(accept) { cache.call(Rack::MockRequest.env_for("/simple/widgets/", "HTTP_ACCEPT" => accept)) }
+    page = ->(accept) { cache.call(Rack::MockRequest.env_for("/simple/widgets/", "HTTP_ACCEPT" => accept, "HTTP_AUTHORIZATION" => "Bearer a")) }
 
     2.times do
       json = page.call(Paquette::PypiServer::JSON_TYPE)
@@ -214,6 +243,13 @@ class ResponseCacheTest < Minitest::Test
     assert_equal [nil, nil], @origin.seen_etags
   end
 
+  # What Rack::MockRequest and some servers hand over: UTF-8 in name only
+  def test_a_utf8_tagged_header_that_is_not_utf8_does_not_raise
+    header = (+"Bearer \xFF\xE2").force_encoding("UTF-8")
+
+    assert_equal [200, 200], 2.times.map { get("/versions", "HTTP_AUTHORIZATION" => header)[0] }
+  end
+
   def test_keys_survive_header_bytes_that_are_not_utf8
     response = get("/versions", "HTTP_AUTHORIZATION" => "Bearer \xFF\xE2".b)
 
@@ -222,9 +258,15 @@ class ResponseCacheTest < Minitest::Test
 
   private
 
+  # With a credential unless told otherwise, since nothing anonymous is stored
   def get(url, headers = {})
+    headers = {"HTTP_AUTHORIZATION" => "Bearer a"}.merge(headers).compact
     @last_env = Rack::MockRequest.env_for(url, headers)
     @cache.call(@last_env)
+  end
+
+  def stored_entries
+    Dir.glob(File.join(@dir, "**", "*.json"))
   end
 
   def body_of(response)

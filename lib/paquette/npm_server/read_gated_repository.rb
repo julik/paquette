@@ -125,11 +125,23 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
     # A leaner custom repository is filtered, not crashed on.
     versions = metadata["versions"].is_a?(Hash) ? metadata["versions"].slice(*entitled) : {}
 
-    metadata.merge(
+    newest = Paquette::NpmServer::NpmRepository.max_release_version(entitled)
+    metadata.except(*Paquette::NpmServer::NpmRepository::SUMMARY_FIELDS).merge(summary_of(package_name, newest)).merge(
       "versions" => versions,
       "time" => entitled_times(metadata["time"], entitled),
       "dist-tags" => dist_tags(package_name)
     )
+  end
+
+  # A repository predating package_summary gets no summary at all rather than
+  # the newest release's.
+  #
+  # @param package_name [String]
+  # @param version [String]
+  # @return [Hash{String => Object}]
+  def summary_of(package_name, version)
+    inner = __getobj__
+    inner.respond_to?(:package_summary) ? inner.package_summary(package_name, version) : {}
   end
 
   # Recomputed so created/modified do not leak withheld publication dates.

@@ -103,8 +103,9 @@ class AuthTokenTest < Minitest::Test
     assert_nil token_for(%(Digest username="x"))
   end
 
-  def test_survives_a_basic_payload_that_is_not_utf8
-    assert_equal "\xFF\xE2".b, token_for("Basic #{["\xFF\xE2:".b].pack("m0")}")
+  def test_nil_for_a_basic_payload_that_is_not_utf8
+    assert_nil token_for("Basic #{["\xFF\xE2:".b].pack("m0")}")
+    assert_nil token_for("Basic #{[":\xE2".b].pack("m0")}")
   end
 
   # Refused as unreadable rather than raised out of `downcase`
@@ -113,9 +114,18 @@ class AuthTokenTest < Minitest::Test
     assert_nil token_for((+"\xFF").force_encoding("UTF-8"))
   end
 
-  # A Bearer token is passed on as sent, whatever its bytes
-  def test_passes_a_bearer_token_that_is_not_utf8_on_as_it_is
-    assert_equal "\xE2".b, token_for("Bearer \xE2".b)&.b
+  # What Puma hands over: binary, which is fine as long as it is UTF-8 inside
+  def test_a_binary_header_holding_utf8_gives_a_utf8_token
+    token = token_for("Bearer #{TOKEN}".b)
+
+    assert_equal TOKEN, token
+    assert_equal Encoding::UTF_8, token.encoding
+  end
+
+  def test_nil_for_a_bearer_or_bare_token_that_is_not_utf8
+    assert_nil token_for("Bearer \xE2".b)
+    assert_nil token_for("Bearer pqt_\xFFabc".b)
+    assert_nil token_for("pqt_\xFF".b)
   end
 
   private

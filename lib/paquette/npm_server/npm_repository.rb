@@ -57,6 +57,37 @@ class Paquette::NpmServer::NpmRepository
     raise NotImplementedError, "Subclasses must implement package_metadata"
   end
 
+  # The packument's top-level fields that describe the package as one version
+  # of it does - npm shows them on the package's page. A gate rebuilds them from
+  # the newest version the caller may see, or a lapsed licensee reads the
+  # README of a release they are not entitled to.
+  #
+  # @return [Array<String>]
+  SUMMARY_FIELDS = %w[description keywords license author maintainers repository bugs homepage readme].freeze
+
+  # Those fields, as `version` describes them.
+  #
+  # @param package_name [String]
+  # @param version [String, nil]
+  # @return [Hash{String => Object}]
+  def package_summary(package_name, version)
+    info = (version && package_info(package_name, version)) || {}
+    {
+      "description" => info["description"],
+      "keywords" => info["keywords"] || [],
+      "license" => info["license"],
+      "author" => info["author"],
+      "maintainers" => info["maintainers"] || [],
+      "repository" => info["repository"],
+      "bugs" => info["bugs"],
+      # Filtered, unlike its neighbours: this is the one field a reader
+      # treats as "the link for this package". `repository` and `bugs` are
+      # left alone on purpose — `git://` and `git+ssh://` are legitimate
+      # there.
+      "homepage" => Paquette::SafeUrl.http_url(info["homepage"])
+    }.compact
+  end
+
   # @param package_name [String]
   # @return [Hash{String => String}]
   def dist_tags(package_name)

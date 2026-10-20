@@ -20,14 +20,21 @@ require "securerandom"
 #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
 #   run Paquette::GemServer.new(repo, authenticator: authenticator)
 #
-# Entries are keyed by the URL, the credential, `Accept` - the PyPI index answers
-# one URL in HTML or JSON - and `Accept-Encoding`, which only
-# matters with a compressor inside the cache. The key is not what keeps two
-# callers apart - the ETag is, since the stored one has to be current for the
-# caller asking - but it keeps each token from overwriting another's entry, and
-# a gate_key that wrongly names two customers alike from serving one's body to
-# the other. Nothing is evicted: there are as many entries as credentials times
-# index URLs, and the directory can be emptied at any time.
+# Entries are keyed by the URL, the credential, and whether `Accept` asks for
+# JSON - the PyPI index answers one URL in HTML or JSON. The key is not what
+# keeps two callers apart - the ETag is, since the stored one has to be current
+# for the caller asking - but it keeps each token from overwriting another's
+# entry, and a gate_key that wrongly names two customers alike from serving one's
+# body to the other.
+#
+# Only requests with credentials and without a query string are stored, and
+# the client's own headers go into the key only as that one bit. So a stranger
+# puts nothing on disk, and a credential at most two entries per index URL it
+# may read: an anonymous response is the same for everybody and a 304 away
+# anyway, and a query string or a raw header is anybody's to vary. Nothing is
+# evicted beyond that, and the directory can be emptied at any time. Keep a
+# compressor such as Rack::Deflater outside the cache, since the encoding is not
+# in the key.
 class Paquette::ResponseCache
   prepend Paquette::RegexpTimeout
 
@@ -41,12 +48,6 @@ class Paquette::ResponseCache
   #
   # @return [String]
   OUTCOME_KEY = "paquette.response_cache"
-
-  # Paquette reads its token out of Authorization and nothing else, so a cookie
-  # would only make each new one a miss
-  #
-  # @return [Array<String>]
-  KEYED_HEADERS = %w[HTTP_AUTHORIZATION HTTP_ACCEPT HTTP_ACCEPT_ENCODING].freeze
 
   # Headers that are about one response on the wire rather than the content.
   #
@@ -65,11 +66,7 @@ class Paquette::ResponseCache
   # @param env [Hash] the Rack env
   # @return [Array] a Rack response triplet
   def call(env)
-    # A Range is a slice of a body the server builds anyway, and Bundler sends
-    # one only alongside an If-None-Match the server can answer by itself
-    unless env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE")
-      return record(env, "bypass") { @app.call(env) }
-    end
+    return record(env, "bypass") { @app.call(env) } unless cacheable_request?(env)
 
     key = key_for(env)
     entry = read(key)
@@ -77,6 +74,17 @@ class Paquette::ResponseCache
   end
 
   private
+
+  # A Range is a slice of a body the server builds anyway, and Bundler sends one
+  # only alongside an If-None-Match the server can answer by itself.
+  #
+  # @param env [Hash]
+  # @return [Boolean]
+  def cacheable_request?(env)
+    env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE") &&
+      # Binary: `strip` raises on a header that is not valid UTF-8
+      !env["HTTP_AUTHORIZATION"].to_s.b.strip.empty? && env["QUERY_STRING"].to_s.empty?
+  end
 
   # The env is the caller's own and is handed on, not copied: an application
   # that leaves notes in it for its log line has to find them afterwards.
@@ -189,16 +197,20 @@ class Paquette::ResponseCache
     yield
   end
 
-  # The URL whole, host and scheme included: npm package documents carry
-  # absolute tarball URLs built from them.
+  # The URL with its host and scheme: npm package documents carry absolute
+  # tarball URLs built from them. A request with a query string is not stored,
+  # so there is none to leave out.
   #
   # @param env [Hash]
   # @return [String]
   def key_for(env)
     request = Rack::Request.new(env)
     digest = Digest::SHA256.new
-    digest << request.url
-    KEYED_HEADERS.each { |name| digest << "\0" << env[name].to_s }
+    digest << request.base_url << request.script_name << request.path_info
+    # Paquette reads its token out of Authorization and nothing else, so a
+    # cookie would only make each new one a miss
+    digest << "\0" << env["HTTP_AUTHORIZATION"].to_s
+    digest << "\0" << (env["HTTP_ACCEPT"].to_s.include?("json") ? "json" : "")
     digest.hexdigest
   end
 

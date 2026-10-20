@@ -186,7 +186,6 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
     Measurometer.add_distribution_value("paquette.npm_repository.metadata_versions", versions.length)
 
     tags = dist_tags(package_name)
-    latest_info = package_info(package_name, tags["latest"]) || {}
 
     version_docs = versions.each_with_object({}) do |version, docs|
       info = package_info(package_name, version)
@@ -200,21 +199,17 @@ class Paquette::NpmServer::DirectoryNpmRepository < Paquette::NpmServer::NpmRepo
       "name" => package_name,
       "dist-tags" => tags,
       "versions" => version_docs,
-      "time" => times_for(package_name, versions),
-      "description" => latest_info["description"],
-      "keywords" => latest_info["keywords"] || [],
-      "license" => latest_info["license"],
-      "author" => latest_info["author"],
-      "maintainers" => latest_info["maintainers"] || [],
-      "repository" => latest_info["repository"],
-      "bugs" => latest_info["bugs"],
-      # Filtered, unlike its neighbours: this is the one field a reader
-      # treats as "the link for this package". `repository` and `bugs` are
-      # left alone on purpose — `git://` and `git+ssh://` are legitimate
-      # there.
-      "homepage" => Paquette::SafeUrl.http_url(latest_info["homepage"]),
-      "readme" => readme_for(package_name, tags["latest"]) || ""
-    }.compact
+      "time" => times_for(package_name, versions)
+    }.merge(package_summary(package_name, tags["latest"])).compact
+  end
+
+  # The base summary, plus the README out of that version's tarball.
+  #
+  # @param package_name [String]
+  # @param version [String, nil]
+  # @return [Hash{String => Object}]
+  def package_summary(package_name, version)
+    super.merge("readme" => (version && readme_for(package_name, version)) || "")
   end
 
   # Hashes are computed from the file, never taken from the publisher.

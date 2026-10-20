@@ -7,12 +7,25 @@ class TotpTest < Minitest::Test
     @totp = ROTP::TOTP.new(@secret)
   end
 
-  def test_a_live_code_passes
-    assert_nil Paquette::Totp.verify!(@secret, @totp.now)
+  def test_a_live_code_passes_and_names_its_time_step
+    assert_kind_of Integer, Paquette::Totp.verify!(@secret, @totp.now)
   end
 
   def test_a_code_from_one_period_ago_passes
-    assert_nil Paquette::Totp.verify!(@secret, @totp.at(Time.now - 30))
+    assert Paquette::Totp.verify!(@secret, @totp.at(Time.now - 30))
+  end
+
+  def test_a_code_already_used_is_refused_after_its_time_step
+    used = Paquette::Totp.verify!(@secret, @totp.now)
+
+    assert_raises(Paquette::OtpRejected) { Paquette::Totp.verify!(@secret, @totp.now, after: used) }
+    assert_raises(Paquette::OtpRejected) { Paquette::Totp.verify!(@secret, @totp.at(Time.now - 30), after: used) }
+  end
+
+  def test_the_next_code_passes_after_the_last_one
+    used = Paquette::Totp.verify!(@secret, @totp.at(Time.now - 30))
+
+    assert_operator Paquette::Totp.verify!(@secret, @totp.now, after: used), :>, used
   end
 
   def test_a_stale_code_is_rejected

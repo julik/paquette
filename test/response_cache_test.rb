@@ -1,11 +1,42 @@
 require_relative "test_helper"
 
+# Lets in what `permitted` says, and names the caller as `identities` does.
+class ResponseCacheAuthenticator
+  attr_accessor :permitted
+  attr_reader :identity_questions
+
+  def initialize(identities, &permitted)
+    @identities = identities
+    @permitted = permitted || ->(_token) { true }
+    @identity_questions = []
+  end
+
+  def read_permitted?(auth_token:)
+    @permitted.call(auth_token)
+  end
+
+  def write_permitted?(auth_token:)
+    false
+  end
+
+  def check_otp!(auth_token:, otp_code:)
+    raise Paquette::OtpRejected
+  end
+
+  def identity(auth_token:)
+    @identity_questions << auth_token
+    @identities.call(auth_token)
+  end
+end
+
 class ResponseCacheTest < Minitest::Test
   # Renders a body per call and answers 304 to its own ETag, the way a server
-  # with a named stack does. `etag:` nil leaves the ETag off.
+  # with a named stack does. `etag:` nil leaves the ETag off. Identifies the
+  # caller to the cache the way a server does once its authenticator said yes,
+  # which a refusal (any status but 200) never gets to.
   class Origin
     attr_reader :calls, :seen_etags
-    attr_accessor :etag, :status, :headers, :body
+    attr_accessor :etag, :status, :headers, :body, :identities
 
     def initialize
       @calls = 0
@@ -14,10 +45,18 @@ class ResponseCacheTest < Minitest::Test
       @status = 200
       @headers = {}
       @body = "the index"
+      # Tokens "a" and "a2" are the same user's, before and after a rotation
+      @identities = {"a" => "user-1", "a2" => "user-1", "b" => "user-2"}
     end
 
     def call(env)
       @calls += 1
+      lookup = env[Paquette::ResponseCache::LOOKUP_KEY]
+      token = Paquette::AuthToken.from_env(env)
+      if lookup && token && @status == 200
+        etag = lookup.identify(@identities[token])
+        env["HTTP_IF_NONE_MATCH"] = etag if etag
+      end
       @seen_etags << env["HTTP_IF_NONE_MATCH"]
       env["origin.note"] = "was here"
       headers = {"content-type" => "text/plain", "cache-control" => "private, no-cache"}.merge(@headers)
@@ -31,10 +70,7 @@ class ResponseCacheTest < Minitest::Test
   def setup
     @dir = Dir.mktmpdir("paquette_response_cache")
     @origin = Origin.new
-    # Tokens "a" and "a2" are the same user's, before and after a rotation
-    @identities = {"a" => "user-1", "a2" => "user-1", "b" => "user-2"}
-    @identity = ->(auth_token:) { @identities[auth_token] }
-    @cache = Paquette::ResponseCache.new(@origin, directory: @dir, identity: @identity)
+    @cache = Paquette::ResponseCache.new(@origin, directory: @dir)
   end
 
   def teardown
@@ -96,7 +132,7 @@ class ResponseCacheTest < Minitest::Test
   end
 
   def test_a_token_nobody_owns_is_not_stored
-    @identities["stray"] = ""
+    @origin.identities["stray"] = ""
     2.times { get("/versions", "HTTP_AUTHORIZATION" => "Bearer nobody") }
     2.times { get("/versions", "HTTP_AUTHORIZATION" => "Bearer stray") }
 
@@ -105,20 +141,28 @@ class ResponseCacheTest < Minitest::Test
     assert_equal "bypass", @last_env[Paquette::ResponseCache::OUTCOME_KEY]
   end
 
-  # Given the token the servers read, and only when there is one
-  def test_identity_is_asked_with_the_token_and_not_for_anonymous_callers
-    asked = []
-    identity = lambda do |auth_token:|
-      asked << auth_token
-      nil
+  # The server decides, from the authenticator; the client gets no say
+  def test_nothing_the_client_sends_names_an_identity
+    2.times do
+      get("/versions", "HTTP_AUTHORIZATION" => "Bearer nobody", "HTTP_X_PAQUETTE_USER" => "user-1",
+        "HTTP_PAQUETTE.RESPONSE_CACHE.LOOKUP" => "user-1")
     end
-    @cache = Paquette::ResponseCache.new(@origin, directory: @dir, identity: identity)
-    get("/versions", "HTTP_AUTHORIZATION" => "Basic #{["x-oauth-basic:tok"].pack("m0")}")
-    get("/versions", "HTTP_AUTHORIZATION" => nil)
-    get("/versions", "HTTP_AUTHORIZATION" => "Bearer")
-    get("/versions?x=1", "HTTP_AUTHORIZATION" => "Bearer tok")
 
-    assert_equal ["tok"], asked
+    assert_empty stored_entries
+  end
+
+  def test_a_server_that_never_identifies_the_caller_is_not_cached
+    plain = ->(_env) { [200, {"etag" => %("v1"), "cache-control" => "private, no-cache"}, ["body"]] }
+    cache = Paquette::ResponseCache.new(plain, directory: @dir)
+    2.times { cache.call(Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer a")) }
+
+    assert_empty stored_entries
+  end
+
+  def test_the_lookup_is_gone_from_the_env_afterwards
+    get("/versions")
+
+    refute @last_env.key?(Paquette::ResponseCache::LOOKUP_KEY)
   end
 
   # The same for everybody, and a 304 away anyway - storing it would let a
@@ -183,7 +227,8 @@ class ResponseCacheTest < Minitest::Test
   def test_the_pypi_index_is_replayed_in_the_format_asked_for
     packages = Dir.mktmpdir("paquette_response_cache_pypi")
     write_wheel(packages, name: "widgets", version: "1.0.0")
-    cache = Paquette::ResponseCache.new(Paquette::PypiServer.new(packages), directory: @dir, identity: @identity)
+    authenticator = ResponseCacheAuthenticator.new(->(_token) { "user-1" })
+    cache = Paquette::ResponseCache.new(Paquette::PypiServer.new(packages, authenticator: authenticator), directory: @dir)
     page = ->(accept) { cache.call(Rack::MockRequest.env_for("/simple/widgets/", "HTTP_ACCEPT" => accept, "HTTP_AUTHORIZATION" => "Bearer a")) }
 
     2.times do
@@ -198,18 +243,20 @@ class ResponseCacheTest < Minitest::Test
   end
 
   # The cache never answers on its own, so a credential refused later is
-  # refused with a body on disk for it
-  def test_a_refusal_on_revalidation_goes_out_and_drops_the_entry
+  # refused with a body on disk for it - and never told which one that is
+  def test_a_refusal_goes_out_without_being_shown_the_entry
     get("/versions", "HTTP_AUTHORIZATION" => "Bearer a")
     @origin.status = 401
     @origin.body = "Unauthorized"
 
-    assert_equal 401, get("/versions", "HTTP_AUTHORIZATION" => "Bearer a")[0]
+    refused = get("/versions", "HTTP_AUTHORIZATION" => "Bearer a")
+    assert_equal [401, "Unauthorized"], [refused[0], body_of(refused)]
+    assert_equal "bypass", @last_env[Paquette::ResponseCache::OUTCOME_KEY]
     @origin.status = 200
     @origin.body = "the index"
     get("/versions", "HTTP_AUTHORIZATION" => "Bearer a")
 
-    assert_equal [nil, %("v1"), nil], @origin.seen_etags
+    assert_equal [nil, nil, %("v1")], @origin.seen_etags
   end
 
   def test_a_response_without_an_etag_is_not_stored
@@ -234,7 +281,7 @@ class ResponseCacheTest < Minitest::Test
   end
 
   def test_a_body_past_the_limit_is_served_but_not_stored
-    small = Paquette::ResponseCache.new(@origin, directory: @dir, identity: @identity, max_body_bytes: 4)
+    small = Paquette::ResponseCache.new(@origin, directory: @dir, max_body_bytes: 4)
 
     assert_equal "the index", body_of(small.call(Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer a")))
     assert_empty Dir.glob(File.join(@dir, "**", "*.json"))
@@ -242,8 +289,11 @@ class ResponseCacheTest < Minitest::Test
 
   # Downloads are files on disk already
   def test_a_file_body_is_not_stored
-    file_origin = ->(_env) { [200, {"etag" => %("f")}, Rack::Files::Iterator.new(__FILE__, 0..10, 11)] }
-    Paquette::ResponseCache.new(file_origin, directory: @dir, identity: @identity)
+    file_origin = lambda do |env|
+      env[Paquette::ResponseCache::LOOKUP_KEY].identify("user-1")
+      [200, {"etag" => %("f")}, Rack::Files::Iterator.new(__FILE__, 0..10, 11)]
+    end
+    Paquette::ResponseCache.new(file_origin, directory: @dir)
       .call(Rack::MockRequest.env_for("/gems/x.gem", "HTTP_AUTHORIZATION" => "Bearer a"))
 
     assert_empty Dir.glob(File.join(@dir, "**", "*.json"))
@@ -328,11 +378,8 @@ class ResponseCacheGemServerTest < Minitest::Test
       @questions += 1
       true
     end
-    licensed = -> { @licensed }
-    authenticator = Object.new
-    authenticator.define_singleton_method(:read_permitted?) { |auth_token:| licensed.call }
-    @app = Paquette::ResponseCache.new(Paquette::GemServer.new(gated, authenticator: authenticator), directory: @dir,
-      identity: ->(auth_token:) { "licensee-1" if auth_token.start_with?("licensee-1") })
+    @authenticator = ResponseCacheAuthenticator.new(->(token) { "licensee-1" if token.start_with?("licensee-1") }) { @licensed }
+    @app = Paquette::ResponseCache.new(Paquette::GemServer.new(gated, authenticator: @authenticator), directory: @dir)
   end
 
   def teardown
@@ -355,6 +402,31 @@ class ResponseCacheGemServerTest < Minitest::Test
     @licensed = false
 
     assert_equal 401, get("/versions")[0]
+  end
+
+  # Asked only past read_permitted?, and only with a cache in front
+  def test_identity_is_asked_only_about_a_token_that_was_let_in
+    get("/versions")
+    @licensed = false
+    get("/versions", token: "licensee-1-revoked")
+    @licensed = true
+    get("/versions?x=1")
+    Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR), authenticator: @authenticator)
+      .call(Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer licensee-1-direct"))
+
+    assert_equal ["licensee-1"], @authenticator.identity_questions
+  end
+
+  def test_an_authenticator_without_identity_is_never_cached
+    authenticator = Object.new
+    authenticator.define_singleton_method(:read_permitted?) { |auth_token:| true }
+    app = Paquette::ResponseCache.new(Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
+      authenticator: authenticator), directory: @dir)
+    env = Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer licensee-1")
+    app.call(env)
+
+    assert_equal "bypass", env[Paquette::ResponseCache::OUTCOME_KEY]
+    assert_empty Dir.glob(File.join(@dir, "**", "*.json"))
   end
 
   # The authenticator still has the last word over a token the identity knows
@@ -382,7 +454,7 @@ end
 class ResponseCacheSharedTest < Minitest::Test
   def setup
     @dir = Dir.mktmpdir("paquette_response_cache_shared")
-    @identity = ->(auth_token:) { "user-1" }
+    @authenticator = ResponseCacheAuthenticator.new(->(_token) { "user-1" })
   end
 
   def teardown
@@ -393,11 +465,11 @@ class ResponseCacheSharedTest < Minitest::Test
     pypi_dir = Dir.mktmpdir("paquette_response_cache_shared_pypi")
     write_wheel(pypi_dir, name: "widgets", version: "1.0.0")
     router = Paquette::SubdomainRouter.new do |r|
-      r.map "gem", to: Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR))
-      r.map "npm", to: Paquette::NpmServer.new(FIXTURE_NPM_DIR)
-      r.map "pypi", to: Paquette::PypiServer.new(pypi_dir)
+      r.map "gem", to: Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR), authenticator: @authenticator)
+      r.map "npm", to: Paquette::NpmServer.new(FIXTURE_NPM_DIR, authenticator: @authenticator)
+      r.map "pypi", to: Paquette::PypiServer.new(pypi_dir, authenticator: @authenticator)
     end
-    cache = Paquette::ResponseCache.new(router, directory: @dir, identity: @identity)
+    cache = Paquette::ResponseCache.new(router, directory: @dir)
     urls = %w[http://gem.example.test/versions http://npm.example.test/react-dropzone http://pypi.example.test/simple/widgets/]
 
     first = urls.map { |url| get(cache, url) }
@@ -406,6 +478,7 @@ class ResponseCacheSharedTest < Minitest::Test
     assert_equal [200] * 3, second.map(&:first)
     assert_equal first.map { |r| body_of(r) }, second.map { |r| body_of(r) }
     assert_equal 3, Dir.glob(File.join(@dir, "**", "*.json")).length
+    assert_equal ["hit"] * 3, urls.map { |url| outcome_of(url, cache) }
   ensure
     FileUtils.rm_rf(pypi_dir)
   end
@@ -415,7 +488,7 @@ class ResponseCacheSharedTest < Minitest::Test
       r.map "gem", to: same_etag_origin("gem body")
       r.map "npm", to: same_etag_origin("npm body")
     end
-    cache = Paquette::ResponseCache.new(router, directory: @dir, identity: @identity)
+    cache = Paquette::ResponseCache.new(router, directory: @dir)
 
     get(cache, "http://gem.example.test/index")
     assert_equal "npm body", body_of(get(cache, "http://npm.example.test/index"))
@@ -430,7 +503,7 @@ class ResponseCacheSharedTest < Minitest::Test
       map("/gems") { run gem_origin }
       map("/npm") { run npm_origin }
     end
-    cache = Paquette::ResponseCache.new(app, directory: @dir, identity: @identity)
+    cache = Paquette::ResponseCache.new(app, directory: @dir)
 
     get(cache, "http://packages.example.test/gems/index")
     assert_equal "npm body", body_of(get(cache, "http://packages.example.test/npm/index"))
@@ -439,10 +512,18 @@ class ResponseCacheSharedTest < Minitest::Test
 
   private
 
+  def outcome_of(url, app)
+    env = Rack::MockRequest.env_for(url, "HTTP_AUTHORIZATION" => "Bearer a")
+    app.call(env)
+    env[Paquette::ResponseCache::OUTCOME_KEY]
+  end
+
   # Answers 304 to the one ETag both origins share, the worst case for a key
   # that left the server out
   def same_etag_origin(body)
     lambda do |env|
+      etag = env[Paquette::ResponseCache::LOOKUP_KEY]&.identify("user-1")
+      env["HTTP_IF_NONE_MATCH"] = etag if etag
       headers = {"etag" => %("same"), "cache-control" => "private, no-cache"}
       next [304, headers, []] if env["HTTP_IF_NONE_MATCH"] == %("same")
 

@@ -1,11 +1,16 @@
 require "measurometer"
 
-# What both servers ask of the authenticator they are built with. It is any
-# object answering three questions about a token:
+# What the servers ask of the authenticator they are built with. It is any
+# object answering three questions about a token, and optionally a fourth:
 #
 #   read_permitted?(auth_token:)        # => Boolean
 #   write_permitted?(auth_token:)       # => Boolean, for the whole registry
 #   check_otp!(auth_token:, otp_code:)  # raises Paquette::OtpRejected on a wrong code
+#   identity(auth_token:)               # => String or nil, who the token belongs to
+#
+# `identity` is only asked when a Paquette::ResponseCache in front wants to
+# know, and only about a token `read_permitted?` has just let in. It names a
+# user or a license rather than the token, so entries survive a rotation.
 #
 # The token is the one Paquette::AuthToken reads, and nil when the caller sent
 # no credentials - answering true to `read_permitted?` for nil is how a
@@ -91,13 +96,17 @@ module Paquette::Authentication
   #   the caller is still asked about, so an unknown path does not tell a
   #   stranger which paths exist
   # @param env [Hash] the Rack env
+  # @param request_env [Hash] the env the handler will read, which some
+  #   servers dup off the one they were given
   # @return [Array, nil] a Rack response triplet
-  def authentication_refusal(route, env)
+  def authentication_refusal(route, env, request_env = env)
     token = Paquette::AuthToken.from_env(env)
     outcome = authentication_outcome(route, token, env)
     env[OUTCOME_KEY] = outcome
     # A read let through is nearly every request, and not worth a counter
-    unless outcome == "authorized" && !route&.write?
+    if outcome == "authorized" && !route&.write?
+      identify_for_response_cache(env, request_env, token) if route
+    else
       Measurometer.increment_counter("paquette.authentication.#{outcome}")
     end
 
@@ -131,6 +140,22 @@ module Paquette::Authentication
     rescue Paquette::OtpRejected
       "otp_rejected"
     end
+  end
+
+  # Tells a ResponseCache in front who the caller is, and revalidates against
+  # what it holds for them. Only past the authenticator, so a stored body is
+  # never matched to a token that was not let in.
+  #
+  # @param env [Hash] the Rack env
+  # @param request_env [Hash]
+  # @param token [String, nil]
+  # @return [void]
+  def identify_for_response_cache(env, request_env, token)
+    lookup = env[Paquette::ResponseCache::LOOKUP_KEY]
+    return unless lookup && token && @authenticator.respond_to?(:identity)
+
+    etag = lookup.identify(ask_authenticator(:identity, auth_token: token))
+    request_env["HTTP_IF_NONE_MATCH"] = etag if etag
   end
 
   # The authenticator is the caller's, and it usually goes to a database to

@@ -163,7 +163,7 @@ The npm and PyPI servers are assembled exactly the same way, out of the same kin
 
 ## Authentication
 
-All three servers take an `authenticator:` - any object answering three questions about a token:
+All three servers take an `authenticator:` - any object answering three questions about a token, and optionally a fourth:
 
 ```ruby
 class AcmeAuthenticator
@@ -177,6 +177,11 @@ class AcmeAuthenticator
 
   def check_otp!(auth_token:, otp_code:)
     Paquette::Totp.verify!(Publisher.find_by!(token: auth_token).totp_secret, otp_code)
+  end
+
+  # Optional, for Paquette::ResponseCache - see Caching behind authentication
+  def identity(auth_token:)
+    AccessToken.find_by(secret: auth_token)&.license_id&.to_s
   end
 end
 
@@ -192,6 +197,7 @@ What each server does with it:
 - **Writes.** Every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag`, `twine upload` - also asks `write_permitted?`, which is a yes or no for the whole registry: a 403 for a token that may not, a 401 when there was no token. Then the write has to carry a one-time password. Without one the server asks for it in each client's own dialect, so `gem` and `npm` prompt the way they do against rubygems.org and npmjs.com, and `--otp` works on both. twine can send nothing but a username and a password, so on the PyPI server the code goes in the username: `twine upload -u 123456 -p TOKEN` - six to eight digits there, next to a password, is read as the code and the password as the token. With one, `check_otp!` gets it and raises `Paquette::OtpRejected` if it is no good. All of this happens before the handler runs, so a refused push is refused before its body is read.
 - **One-time passwords.** `Paquette::Totp.verify!(secret, code, drift: 30, after: nil)` checks a code against a base32 TOTP secret, raises `Paquette::OtpRejected` for you, and returns the time step the code belongs to. Keep that and hand it back as `after:` next time, and a code that was already used is refused. Keeping it, and throttling wrong guesses, needs state Paquette has nowhere to put, so both stay with your `check_otp!`.
 - **The outcome** lands in `env["paquette.authentication"]` for your own log line: `authorized`, `credentials_unreadable`, `read_refused`, `write_refused`, `otp_missing` or `otp_rejected`.
+- **Identity.** `identity` is only asked when a `Paquette::ResponseCache` sits in front, and only about a token `read_permitted?` has just let in. See [Caching behind authentication](#caching-behind-authentication).
 - **`npm whoami`** answers `paquette` for any accepted token, and 401 without one.
 
 Without an authenticator, a server lets everyone read and refuses every write. `Paquette::Authentication::Open` lets anyone read and write and takes any code as the one-time password - it is what the dev setup runs, and never what a server anyone else can reach should.
@@ -439,19 +445,20 @@ Behind authentication, which is what Paquette is for, a shared cache such as `Ra
 `Paquette::ResponseCache` stores whole 200s on disk, one entry per caller, and never answers on its own: every request still goes to the server, with `If-None-Match` set to the stored ETag. When the server answers that with a 304, the stored body goes out as the 200.
 
 ```ruby
-use Paquette::ResponseCache, directory: "tmp/cache/gems",
-  identity: ->(auth_token:) { AccessToken.find_by(secret: auth_token)&.license_id }
+use Paquette::ResponseCache, directory: "tmp/cache/gems"
 run gem_app
 ```
 
-`identity:` is asked with the token Paquette reads from the request, and returns who it belongs to - a license or a user ID, not the token. Entries are keyed by that, so a rotated token finds the entries its predecessor left. Return `nil` for a token you do not know, and the request goes straight through. Asking about a token is not letting it in: whether the request is served at all is still the authenticator's call, on every request.
+Which entry is the caller's is the server's to say, after the fact. The cache leaves a lookup in the Rack env; once the authenticator has let the read in, the server asks the same authenticator for `identity(auth_token:)` and hands the answer to the lookup, which gives back the ETag it holds for that identity. Return a license or user ID, not the token, and a rotated token finds the entries its predecessor left. Without an `identity` method, or with a `nil` from it, nothing is cached.
+
+So the identity always comes from the object that just authenticated the token, and never from the wire: an env key with a dot in it cannot be sent by a client, and no header names an identity in either direction. Anonymous and refused requests never get as far as being identified.
 
 That only pays off when the stack can name itself, so that Paquette answers the 304 _before_ rendering: give the `ReadGatedRepository` a `gate_key:`. The authenticator and the gate's cache key are still consulted on every request, so a revoked token is refused with a body on disk for it, and a stack without a validator is simply never stored. The ETag, not the identity, is what keeps two callers apart: a stored body only goes out when the server says it is current for the caller asking.
 
 Entries are keyed by the URL - host and mount point included - the identity, and whether `Accept` asks for JSON (the PyPI index answers one URL in HTML or JSON). So one cache can sit in front of all three servers, whether they are told apart by hostname or by path prefix:
 
 ```ruby
-use Paquette::ResponseCache, directory: "tmp/cache/paquette", identity: identity
+use Paquette::ResponseCache, directory: "tmp/cache/paquette"
 run Paquette::SubdomainRouter.new { |router|
   router.map "gem", to: gem_app
   router.map "npm", to: npm_app

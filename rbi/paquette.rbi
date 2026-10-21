@@ -1097,9 +1097,11 @@ module Paquette
     # 
     # _@param_ `env` — the Rack env
     # 
+    # _@param_ `request_env` — the env the handler will read, which some servers dup off the one they were given
+    # 
     # _@return_ — a Rack response triplet
-    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(route, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def authentication_refusal(route, env, request_env = env); end
 
     # _@param_ `route`
     # 
@@ -1108,6 +1110,18 @@ module Paquette
     # _@param_ `env` — the Rack env
     sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
     def authentication_outcome(route, token, env); end
+
+    # Tells a ResponseCache in front who the caller is, and revalidates against
+    # what it holds for them. Only past the authenticator, so a stored body is
+    # never matched to a token that was not let in.
+    # 
+    # _@param_ `env` — the Rack env
+    # 
+    # _@param_ `request_env`
+    # 
+    # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
+    def identify_for_response_cache(env, request_env, token); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
@@ -2757,9 +2771,11 @@ module Paquette
     # 
     # _@param_ `env` — the Rack env
     # 
+    # _@param_ `request_env` — the env the handler will read, which some servers dup off the one they were given
+    # 
     # _@return_ — a Rack response triplet
-    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(route, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def authentication_refusal(route, env, request_env = env); end
 
     # _@param_ `route`
     # 
@@ -2768,6 +2784,18 @@ module Paquette
     # _@param_ `env` — the Rack env
     sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
     def authentication_outcome(route, token, env); end
+
+    # Tells a ResponseCache in front who the caller is, and revalidates against
+    # what it holds for them. Only past the authenticator, so a stored body is
+    # never matched to a token that was not let in.
+    # 
+    # _@param_ `env` — the Rack env
+    # 
+    # _@param_ `request_env`
+    # 
+    # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
+    def identify_for_response_cache(env, request_env, token); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
@@ -3842,9 +3870,11 @@ module Paquette
     # 
     # _@param_ `env` — the Rack env
     # 
+    # _@param_ `request_env` — the env the handler will read, which some servers dup off the one they were given
+    # 
     # _@return_ — a Rack response triplet
-    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(route, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def authentication_refusal(route, env, request_env = env); end
 
     # _@param_ `route`
     # 
@@ -3853,6 +3883,18 @@ module Paquette
     # _@param_ `env` — the Rack env
     sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
     def authentication_outcome(route, token, env); end
+
+    # Tells a ResponseCache in front who the caller is, and revalidates against
+    # what it holds for them. Only past the authenticator, so a stored body is
+    # never matched to a token that was not let in.
+    # 
+    # _@param_ `env` — the Rack env
+    # 
+    # _@param_ `request_env`
+    # 
+    # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
+    def identify_for_response_cache(env, request_env, token); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
@@ -4942,12 +4984,17 @@ module Paquette
     def apply_magic_comment_replacements(content, relative_path); end
   end
 
-  # What both servers ask of the authenticator they are built with. It is any
-  # object answering three questions about a token:
+  # What the servers ask of the authenticator they are built with. It is any
+  # object answering three questions about a token, and optionally a fourth:
   # 
   #   read_permitted?(auth_token:)        # => Boolean
   #   write_permitted?(auth_token:)       # => Boolean, for the whole registry
   #   check_otp!(auth_token:, otp_code:)  # raises Paquette::OtpRejected on a wrong code
+  #   identity(auth_token:)               # => String or nil, who the token belongs to
+  # 
+  # `identity` is only asked when a Paquette::ResponseCache in front wants to
+  # know, and only about a token `read_permitted?` has just let in. It names a
+  # user or a license rather than the token, so entries survive a rotation.
   # 
   # The token is the one Paquette::AuthToken reads, and nil when the caller sent
   # no credentials - answering true to `read_permitted?` for nil is how a
@@ -4977,9 +5024,11 @@ module Paquette
     # 
     # _@param_ `env` — the Rack env
     # 
+    # _@param_ `request_env` — the env the handler will read, which some servers dup off the one they were given
+    # 
     # _@return_ — a Rack response triplet
-    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
-    def authentication_refusal(route, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
+    def authentication_refusal(route, env, request_env = env); end
 
     # _@param_ `route`
     # 
@@ -4988,6 +5037,18 @@ module Paquette
     # _@param_ `env` — the Rack env
     sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
     def authentication_outcome(route, token, env); end
+
+    # Tells a ResponseCache in front who the caller is, and revalidates against
+    # what it holds for them. Only past the authenticator, so a stored body is
+    # never matched to a token that was not let in.
+    # 
+    # _@param_ `env` — the Rack env
+    # 
+    # _@param_ `request_env`
+    # 
+    # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
+    def identify_for_response_cache(env, request_env, token); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
@@ -5089,14 +5150,17 @@ module Paquette
   # asked every time: a revoked token is refused even with a body on disk for it,
   # and a response without an ETag is never stored.
   # 
-  #   use Paquette::ResponseCache, directory: "tmp/cache/gems",
-  #     identity: ->(auth_token:) { AccessToken.find_by(secret: auth_token)&.user_id }
+  #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # `identity:` is asked with the token Paquette reads, and names who it belongs
-  # to - a user or a license, never the token itself, so a rotated token finds
-  # the entries the old one left. nil means nobody, and the request goes straight
-  # through.
+  # Which entry is the caller's is the server's to say, and only once its
+  # authenticator has let the read in: the cache leaves a Lookup in the env, and
+  # the server hands it what `identity(auth_token:)` on that same authenticator
+  # says the token belongs to - a user or a license, never the token itself, so a
+  # rotated token finds the entries the old one left. An env key with a dot in it
+  # cannot come from a client, so nothing on the wire can name an identity. A
+  # request the server never identifies - anonymous, refused, or behind an
+  # authenticator without `identity` - goes straight through.
   # 
   # Entries are keyed by the URL, that identity, and whether `Accept` asks for
   # JSON - the PyPI index answers one URL in HTML or JSON. The URL carries the
@@ -5107,7 +5171,7 @@ module Paquette
   # entry, and a gate_key that wrongly names two customers alike from serving one's
   # body to the other.
   # 
-  # Only requests with an identity and without a query string are stored, and
+  # Only identified requests without a query string are stored, and
   # the client's own headers go into the key only as that one bit. So a stranger
   # puts nothing on disk, and an identity at most two entries per index URL it
   # may read: an anonymous response is the same for everybody and a 304 away
@@ -5119,25 +5183,20 @@ module Paquette
     include Paquette::RegexpTimeout
     DEFAULT_MAX_BODY_BYTES = T.let(8 * 1024 * 1024, T.untyped)
     OUTCOME_KEY = T.let("paquette.response_cache", T.untyped)
+    LOOKUP_KEY = T.let("paquette.response_cache.lookup", T.untyped)
     UNSTORED_HEADERS = T.let(%w[connection keep-alive transfer-encoding date age content-length].freeze, T.untyped)
 
     # _@param_ `app` — the Rack app to cache
     # 
     # _@param_ `directory` — where entries live, created when missing
     # 
-    # _@param_ `identity` — called with `auth_token:`, returns who the token belongs to as a String, or nil
-    # 
     # _@param_ `max_body_bytes`
-    sig do
-      params(
-        app: T.untyped,
-        directory: String,
-        identity: T.untyped,
-        max_body_bytes: Integer
-      ).void
-    end
-    def initialize(app, directory:, identity:, max_body_bytes: DEFAULT_MAX_BODY_BYTES); end
+    sig { params(app: T.untyped, directory: String, max_body_bytes: Integer).void }
+    def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES); end
 
+    # The env is the caller's own and is handed on, not copied: an application
+    # that leaves notes in it for its log line has to find them afterwards.
+    # 
     # _@param_ `env` — the Rack env
     # 
     # _@return_ — a Rack response triplet
@@ -5151,15 +5210,8 @@ module Paquette
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Boolean) }
     def cacheable_request?(env); end
 
-    # Read the way the servers read it, so the entry and the authenticator's
-    # answer are about the same caller.
-    # 
-    # _@param_ `env`
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(String)) }
-    def identity_for(env); end
-
-    # The env is the caller's own and is handed on, not copied: an application
-    # that leaves notes in it for its log line has to find them afterwards.
+    # What the server said to the stored ETag: a 304 is a hit, anything else is
+    # the new answer.
     # 
     # _@param_ `env`
     # 
@@ -5167,17 +5219,18 @@ module Paquette
     # 
     # _@param_ `entry`
     # 
-    # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped], key: String, entry: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
-    def revalidate(env, key, entry); end
-
-    # _@param_ `env`
-    # 
-    # _@param_ `key`
+    # _@param_ `response` — a Rack response triplet
     # 
     # _@return_ — a Rack response triplet
-    sig { params(env: T::Hash[T.untyped, T.untyped], key: String).returns(T::Array[T.untyped]) }
-    def fetch(env, key); end
+    sig do
+      params(
+        env: T::Hash[T.untyped, T.untyped],
+        key: String,
+        entry: T::Hash[T.untyped, T.untyped],
+        response: T::Array[T.untyped]
+      ).returns(T::Array[T.untyped])
+    end
+    def answer(env, key, entry, response); end
 
     # _@param_ `env`
     # 
@@ -5253,6 +5306,29 @@ module Paquette
     # _@param_ `key`
     sig { params(key: String).returns(String) }
     def body_path(key); end
+
+    # What the cache leaves in the env for the server to fill in. The server calls
+    # {#identify} once its authenticator has let the read in, and puts the ETag it
+    # gets back into If-None-Match.
+    class Lookup
+      sig { params(find: T.untyped).void }
+      def initialize(&find); end
+
+      # Only the first identity counts, should two servers see one request.
+      # 
+      # _@param_ `identity` — who the authenticator says the caller is
+      # 
+      # _@return_ — the stored ETag to revalidate with
+      sig { params(identity: String).returns(T.nilable(String)) }
+      def identify(identity); end
+
+      sig { returns(T.nilable(String)) }
+      attr_reader :key
+
+      # _@return_ — the stored entry, when there is one
+      sig { returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
+      attr_reader :entry
+    end
   end
 
   # Conditional GET and cache directives, shared by both servers so the

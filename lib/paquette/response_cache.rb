@@ -17,14 +17,17 @@ require "securerandom"
 # asked every time: a revoked token is refused even with a body on disk for it,
 # and a response without an ETag is never stored.
 #
-#   use Paquette::ResponseCache, directory: "tmp/cache/gems",
-#     identity: ->(auth_token:) { AccessToken.find_by(secret: auth_token)&.user_id }
+#   use Paquette::ResponseCache, directory: "tmp/cache/gems"
 #   run Paquette::GemServer.new(repo, authenticator: authenticator)
 #
-# `identity:` is asked with the token Paquette reads, and names who it belongs
-# to - a user or a license, never the token itself, so a rotated token finds
-# the entries the old one left. nil means nobody, and the request goes straight
-# through.
+# Which entry is the caller's is the server's to say, and only once its
+# authenticator has let the read in: the cache leaves a Lookup in the env, and
+# the server hands it what `identity(auth_token:)` on that same authenticator
+# says the token belongs to - a user or a license, never the token itself, so a
+# rotated token finds the entries the old one left. An env key with a dot in it
+# cannot come from a client, so nothing on the wire can name an identity. A
+# request the server never identifies - anonymous, refused, or behind an
+# authenticator without `identity` - goes straight through.
 #
 # Entries are keyed by the URL, that identity, and whether `Accept` asks for
 # JSON - the PyPI index answers one URL in HTML or JSON. The URL carries the
@@ -35,7 +38,7 @@ require "securerandom"
 # entry, and a gate_key that wrongly names two customers alike from serving one's
 # body to the other.
 #
-# Only requests with an identity and without a query string are stored, and
+# Only identified requests without a query string are stored, and
 # the client's own headers go into the key only as that one bit. So a stranger
 # puts nothing on disk, and an identity at most two entries per index URL it
 # may read: an anonymous response is the same for everybody and a 304 away
@@ -57,6 +60,11 @@ class Paquette::ResponseCache
   # @return [String]
   OUTCOME_KEY = "paquette.response_cache"
 
+  # Where the Lookup waits for the server to identify the caller.
+  #
+  # @return [String]
+  LOOKUP_KEY = "paquette.response_cache.lookup"
+
   # Headers that are about one response on the wire rather than the content.
   #
   # @return [Array<String>]
@@ -64,25 +72,39 @@ class Paquette::ResponseCache
 
   # @param app [#call] the Rack app to cache
   # @param directory [String] where entries live, created when missing
-  # @param identity [#call] called with `auth_token:`, returns who the token
-  #   belongs to as a String, or nil
   # @param max_body_bytes [Integer]
-  def initialize(app, directory:, identity:, max_body_bytes: DEFAULT_MAX_BODY_BYTES)
+  def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES)
     @app = app
     @directory = directory.to_s
-    @identity = identity
     @max_body_bytes = max_body_bytes
   end
 
+  # The env is the caller's own and is handed on, not copied: an application
+  # that leaves notes in it for its log line has to find them afterwards.
+  #
   # @param env [Hash] the Rack env
   # @return [Array] a Rack response triplet
   def call(env)
-    identity = identity_for(env) if cacheable_request?(env)
-    return record(env, "bypass") { @app.call(env) } unless identity
+    return record(env, "bypass") { @app.call(env) } unless cacheable_request?(env)
 
-    key = key_for(env, identity)
-    entry = read(key)
-    entry ? revalidate(env, key, entry) : record(env, "miss") { fetch(env, key) }
+    client_etags = env["HTTP_IF_NONE_MATCH"]
+    lookup = Paquette::ResponseCache::Lookup.new do |identity|
+      key = key_for(env, identity)
+      [key, read(key)]
+    end
+    env[LOOKUP_KEY] = lookup
+    response = begin
+      @app.call(env)
+    ensure
+      env.delete(LOOKUP_KEY)
+      # The server swapped in the stored ETag
+      client_etags.nil? ? env.delete("HTTP_IF_NONE_MATCH") : env["HTTP_IF_NONE_MATCH"] = client_etags
+    end
+
+    return record(env, "bypass") { response } unless lookup.key
+    return record(env, "miss") { store_and_answer(env, lookup.key, response) } unless lookup.entry
+
+    answer(env, lookup.key, lookup.entry, response)
   end
 
   private
@@ -96,46 +118,25 @@ class Paquette::ResponseCache
     env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE") && env["QUERY_STRING"].to_s.empty?
   end
 
-  # Read the way the servers read it, so the entry and the authenticator's
-  # answer are about the same caller.
-  #
-  # @param env [Hash]
-  # @return [String, nil]
-  def identity_for(env)
-    token = Paquette::AuthToken.from_env(env)
-    return nil unless token
-
-    identity = Measurometer.instrument("paquette.response_cache.identity") { @identity.call(auth_token: token) }
-    identity.to_s unless identity.nil? || identity.to_s.empty?
-  end
-
-  # The env is the caller's own and is handed on, not copied: an application
-  # that leaves notes in it for its log line has to find them afterwards.
+  # What the server said to the stored ETag: a 304 is a hit, anything else is
+  # the new answer.
   #
   # @param env [Hash]
   # @param key [String]
   # @param entry [Hash]
+  # @param response [Array] a Rack response triplet
   # @return [Array] a Rack response triplet
-  def revalidate(env, key, entry)
-    client_etags = env["HTTP_IF_NONE_MATCH"]
-    env["HTTP_IF_NONE_MATCH"] = entry.fetch("etag")
-    status, headers, body = begin
-      @app.call(env)
-    ensure
-      client_etags.nil? ? env.delete("HTTP_IF_NONE_MATCH") : env["HTTP_IF_NONE_MATCH"] = client_etags
-    end
-
+  def answer(env, key, entry, response)
+    status, headers, body = response
     unless status == 304
-      # A refusal must not leave a body behind for when the credential is
-      # good again
       delete(key) if (400..499).cover?(status)
-      return record(env, "miss") { store_and_answer(env, key, [status, headers, body]) }
+      return record(env, "miss") { store_and_answer(env, key, response) }
     end
 
     body.close if body.respond_to?(:close)
     record(env, "hit") do
       fresh = Rack::Headers[entry.fetch("headers")].merge!(Rack::Headers[headers].except("content-length"))
-      if etag_matches?(client_etags, entry.fetch("etag"))
+      if etag_matches?(env["HTTP_IF_NONE_MATCH"], entry.fetch("etag"))
         [304, Rack::Headers[headers], []]
       else
         [200, fresh, [File.binread(body_path(key))]]
@@ -143,14 +144,8 @@ class Paquette::ResponseCache
     end
   rescue Errno::ENOENT # the body went missing between the read and now
     delete(key)
-    record(env, "miss") { fetch(env, key) }
-  end
-
-  # @param env [Hash]
-  # @param key [String]
-  # @return [Array] a Rack response triplet
-  def fetch(env, key)
-    store_and_answer(env, key, @app.call(env))
+    # Asked again without a Lookup, so the server renders in full
+    record(env, "miss") { store_and_answer(env, key, @app.call(env)) }
   end
 
   # @param env [Hash]
@@ -285,5 +280,32 @@ class Paquette::ResponseCache
   # @return [String]
   def body_path(key)
     File.join(@directory, key[0, 2], "#{key}.body")
+  end
+end
+
+# What the cache leaves in the env for the server to fill in. The server calls
+# {#identify} once its authenticator has let the read in, and puts the ETag it
+# gets back into If-None-Match.
+class Paquette::ResponseCache::Lookup
+  # @return [String, nil]
+  attr_reader :key
+
+  # @return [Hash, nil] the stored entry, when there is one
+  attr_reader :entry
+
+  # @yield [identity] returns the key and the stored entry for that identity
+  def initialize(&find)
+    @find = find
+  end
+
+  # Only the first identity counts, should two servers see one request.
+  #
+  # @param identity [String] who the authenticator says the caller is
+  # @return [String, nil] the stored ETag to revalidate with
+  def identify(identity)
+    return nil if @key || identity.to_s.empty?
+
+    @key, @entry = @find.call(identity.to_s)
+    @entry&.fetch("etag")
   end
 end

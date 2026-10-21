@@ -152,7 +152,7 @@ class Paquette::PypiServer
       route = @@routes.match(request)
       # Outcomes go into the env the application holds, not the dup
       Paquette::Served.route(env, route) if route
-      refusal = authentication_refusal(route, env)
+      refusal = authentication_refusal(route, env, request_env)
       next refusal if refusal
       next not_found("Not Found") unless route
 

@@ -417,6 +417,23 @@ class ResponseCacheGemServerTest < Minitest::Test
     assert_equal ["licensee-1"], @authenticator.identity_questions
   end
 
+  # A nil identity is "serve them, but do not cache for them", not a refusal
+  def test_a_nil_identity_is_served_in_full_and_not_stored
+    authenticator = ResponseCacheAuthenticator.new(->(_token) {})
+    app = Paquette::ResponseCache.new(Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
+      authenticator: authenticator), directory: @dir)
+    responses = 2.times.map do
+      env = Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer licensee-1")
+      [app.call(env), env]
+    end
+
+    assert_equal [200, 200], responses.map { |response, _| response[0] }
+    refute_empty responses.first[0][2].to_a.join
+    assert_equal %w[bypass bypass], responses.map { |_, env| env[Paquette::ResponseCache::OUTCOME_KEY] }
+    assert_equal ["licensee-1", "licensee-1"], authenticator.identity_questions
+    assert_empty Dir.glob(File.join(@dir, "**", "*.json"))
+  end
+
   def test_an_authenticator_without_identity_is_never_cached
     authenticator = Object.new
     authenticator.define_singleton_method(:read_permitted?) { |auth_token:| true }

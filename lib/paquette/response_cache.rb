@@ -4,7 +4,7 @@ require "json"
 require "measurometer"
 require "securerandom"
 
-# Keeps whole 200s of either server on disk, one entry per credential, and
+# Keeps whole 200s of either server on disk, one entry per caller, and
 # replays one only when the server says it is still current. Rack::Cache cannot
 # do this here: a response to a request with credentials is `private`, and a
 # shared cache refuses to store those, so behind authentication it stores
@@ -17,19 +17,27 @@ require "securerandom"
 # asked every time: a revoked token is refused even with a body on disk for it,
 # and a response without an ETag is never stored.
 #
-#   use Paquette::ResponseCache, directory: "tmp/cache/gems"
+#   use Paquette::ResponseCache, directory: "tmp/cache/gems",
+#     identity: ->(auth_token:) { AccessToken.find_by(secret: auth_token)&.user_id }
 #   run Paquette::GemServer.new(repo, authenticator: authenticator)
 #
-# Entries are keyed by the URL, the credential, and whether `Accept` asks for
-# JSON - the PyPI index answers one URL in HTML or JSON. The key is not what
+# `identity:` is asked with the token Paquette reads, and names who it belongs
+# to - a user or a license, never the token itself, so a rotated token finds
+# the entries the old one left. nil means nobody, and the request goes straight
+# through.
+#
+# Entries are keyed by the URL, that identity, and whether `Accept` asks for
+# JSON - the PyPI index answers one URL in HTML or JSON. The URL carries the
+# host and the mount point, so one cache can sit in front of all three servers,
+# told apart by subdomain or by path prefix. The key is not what
 # keeps two callers apart - the ETag is, since the stored one has to be current
-# for the caller asking - but it keeps each token from overwriting another's
+# for the caller asking - but it keeps each caller from overwriting another's
 # entry, and a gate_key that wrongly names two customers alike from serving one's
 # body to the other.
 #
-# Only requests with credentials and without a query string are stored, and
+# Only requests with an identity and without a query string are stored, and
 # the client's own headers go into the key only as that one bit. So a stranger
-# puts nothing on disk, and a credential at most two entries per index URL it
+# puts nothing on disk, and an identity at most two entries per index URL it
 # may read: an anonymous response is the same for everybody and a 304 away
 # anyway, and a query string or a raw header is anybody's to vary. Nothing is
 # evicted beyond that, and the directory can be emptied at any time. Keep a
@@ -56,19 +64,23 @@ class Paquette::ResponseCache
 
   # @param app [#call] the Rack app to cache
   # @param directory [String] where entries live, created when missing
+  # @param identity [#call] called with `auth_token:`, returns who the token
+  #   belongs to as a String, or nil
   # @param max_body_bytes [Integer]
-  def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES)
+  def initialize(app, directory:, identity:, max_body_bytes: DEFAULT_MAX_BODY_BYTES)
     @app = app
     @directory = directory.to_s
+    @identity = identity
     @max_body_bytes = max_body_bytes
   end
 
   # @param env [Hash] the Rack env
   # @return [Array] a Rack response triplet
   def call(env)
-    return record(env, "bypass") { @app.call(env) } unless cacheable_request?(env)
+    identity = identity_for(env) if cacheable_request?(env)
+    return record(env, "bypass") { @app.call(env) } unless identity
 
-    key = key_for(env)
+    key = key_for(env, identity)
     entry = read(key)
     entry ? revalidate(env, key, entry) : record(env, "miss") { fetch(env, key) }
   end
@@ -81,9 +93,20 @@ class Paquette::ResponseCache
   # @param env [Hash]
   # @return [Boolean]
   def cacheable_request?(env)
-    env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE") &&
-      # Binary: `strip` raises on a header that is not valid UTF-8
-      !env["HTTP_AUTHORIZATION"].to_s.b.strip.empty? && env["QUERY_STRING"].to_s.empty?
+    env["REQUEST_METHOD"] == "GET" && !env.key?("HTTP_RANGE") && env["QUERY_STRING"].to_s.empty?
+  end
+
+  # Read the way the servers read it, so the entry and the authenticator's
+  # answer are about the same caller.
+  #
+  # @param env [Hash]
+  # @return [String, nil]
+  def identity_for(env)
+    token = Paquette::AuthToken.from_env(env)
+    return nil unless token
+
+    identity = Measurometer.instrument("paquette.response_cache.identity") { @identity.call(auth_token: token) }
+    identity.to_s unless identity.nil? || identity.to_s.empty?
   end
 
   # The env is the caller's own and is handed on, not copied: an application
@@ -202,14 +225,13 @@ class Paquette::ResponseCache
   # so there is none to leave out.
   #
   # @param env [Hash]
+  # @param identity [String]
   # @return [String]
-  def key_for(env)
+  def key_for(env, identity)
     request = Rack::Request.new(env)
     digest = Digest::SHA256.new
     digest << request.base_url << request.script_name << request.path_info
-    # Paquette reads its token out of Authorization and nothing else, so a
-    # cookie would only make each new one a miss
-    digest << "\0" << env["HTTP_AUTHORIZATION"].to_s
+    digest << "\0" << identity
     digest << "\0" << (env["HTTP_ACCEPT"].to_s.include?("json") ? "json" : "")
     digest.hexdigest
   end

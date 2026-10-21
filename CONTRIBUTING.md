@@ -38,7 +38,7 @@ a client picked, and it has to come with tests that try to break it.
 
 Run `bundle exec rake` and `bundle exec standardrb` before you submit. The default task
 runs the tests and regenerates the type signatures in `rbi/` and `sig/`; commit those.
-See [Running the tests](README.md#running-the-tests) for the parts that need Docker, Node
+See [Running the tests](MANUAL.md#running-the-tests) for the parts that need Docker, Node
 or Python.
 
 ## Basic expectations

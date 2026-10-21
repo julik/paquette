@@ -5076,7 +5076,7 @@ module Paquette
     def call(env); end
   end
 
-  # Keeps whole 200s of either server on disk, one entry per credential, and
+  # Keeps whole 200s of either server on disk, one entry per caller, and
   # replays one only when the server says it is still current. Rack::Cache cannot
   # do this here: a response to a request with credentials is `private`, and a
   # shared cache refuses to store those, so behind authentication it stores
@@ -5089,19 +5089,27 @@ module Paquette
   # asked every time: a revoked token is refused even with a body on disk for it,
   # and a response without an ETag is never stored.
   # 
-  #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
+  #   use Paquette::ResponseCache, directory: "tmp/cache/gems",
+  #     identity: ->(auth_token:) { AccessToken.find_by(secret: auth_token)&.user_id }
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # Entries are keyed by the URL, the credential, and whether `Accept` asks for
-  # JSON - the PyPI index answers one URL in HTML or JSON. The key is not what
+  # `identity:` is asked with the token Paquette reads, and names who it belongs
+  # to - a user or a license, never the token itself, so a rotated token finds
+  # the entries the old one left. nil means nobody, and the request goes straight
+  # through.
+  # 
+  # Entries are keyed by the URL, that identity, and whether `Accept` asks for
+  # JSON - the PyPI index answers one URL in HTML or JSON. The URL carries the
+  # host and the mount point, so one cache can sit in front of all three servers,
+  # told apart by subdomain or by path prefix. The key is not what
   # keeps two callers apart - the ETag is, since the stored one has to be current
-  # for the caller asking - but it keeps each token from overwriting another's
+  # for the caller asking - but it keeps each caller from overwriting another's
   # entry, and a gate_key that wrongly names two customers alike from serving one's
   # body to the other.
   # 
-  # Only requests with credentials and without a query string are stored, and
+  # Only requests with an identity and without a query string are stored, and
   # the client's own headers go into the key only as that one bit. So a stranger
-  # puts nothing on disk, and a credential at most two entries per index URL it
+  # puts nothing on disk, and an identity at most two entries per index URL it
   # may read: an anonymous response is the same for everybody and a 304 away
   # anyway, and a query string or a raw header is anybody's to vary. Nothing is
   # evicted beyond that, and the directory can be emptied at any time. Keep a
@@ -5117,9 +5125,18 @@ module Paquette
     # 
     # _@param_ `directory` — where entries live, created when missing
     # 
+    # _@param_ `identity` — called with `auth_token:`, returns who the token belongs to as a String, or nil
+    # 
     # _@param_ `max_body_bytes`
-    sig { params(app: T.untyped, directory: String, max_body_bytes: Integer).void }
-    def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES); end
+    sig do
+      params(
+        app: T.untyped,
+        directory: String,
+        identity: T.untyped,
+        max_body_bytes: Integer
+      ).void
+    end
+    def initialize(app, directory:, identity:, max_body_bytes: DEFAULT_MAX_BODY_BYTES); end
 
     # _@param_ `env` — the Rack env
     # 
@@ -5133,6 +5150,13 @@ module Paquette
     # _@param_ `env`
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Boolean) }
     def cacheable_request?(env); end
+
+    # Read the way the servers read it, so the entry and the authenticator's
+    # answer are about the same caller.
+    # 
+    # _@param_ `env`
+    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(String)) }
+    def identity_for(env); end
 
     # The env is the caller's own and is handed on, not copied: an application
     # that leaves notes in it for its log line has to find them afterwards.
@@ -5194,8 +5218,10 @@ module Paquette
     # so there is none to leave out.
     # 
     # _@param_ `env`
-    sig { params(env: T::Hash[T.untyped, T.untyped]).returns(String) }
-    def key_for(env); end
+    # 
+    # _@param_ `identity`
+    sig { params(env: T::Hash[T.untyped, T.untyped], identity: String).returns(String) }
+    def key_for(env, identity); end
 
     # _@param_ `key`
     sig { params(key: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }

@@ -38,14 +38,19 @@ require "securerandom"
 # entry, and a gate_key that wrongly names two customers alike from serving one's
 # body to the other.
 #
-# Only identified requests without a query string are stored, and
-# the client's own headers go into the key only as that one bit. So a stranger
-# puts nothing on disk, and an identity at most two entries per index URL it
-# may read: an anonymous response is the same for everybody and a 304 away
-# anyway, and a query string or a raw header is anybody's to vary. Nothing is
-# evicted beyond that, and the directory can be emptied at any time. Keep a
+# Only identified requests without a query string are stored, and the
+# client's own headers go into the key only as that one bit, so a stranger puts
+# nothing on disk: an anonymous response is the same for everybody and a 304
+# away anyway, and a query string is anybody's to vary. An identified caller can
+# still spell one URL many ways - percent-escapes, X-Forwarded-Host - so each
+# identity keeps at most `max_entries_per_identity:` entries, the least recently
+# written going first. The directory can be emptied at any time. Keep a
 # compressor such as Rack::Deflater outside the cache, since the encoding is not
 # in the key.
+#
+# A body is filed under its ETag as well as its key, so a request revalidated
+# against one ETag can never read the body another request has just written
+# for the same key.
 class Paquette::ResponseCache
   prepend Paquette::RegexpTimeout
 
@@ -54,6 +59,11 @@ class Paquette::ResponseCache
   #
   # @return [Integer]
   DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
+
+  # Enough for every index URL of a sizeable licence on a couple of hosts.
+  #
+  # @return [Integer]
+  DEFAULT_MAX_ENTRIES_PER_IDENTITY = 128
 
   # What happened, for the application's own log line: "hit", "miss" or "bypass".
   #
@@ -73,10 +83,13 @@ class Paquette::ResponseCache
   # @param app [#call] the Rack app to cache
   # @param directory [String] where entries live, created when missing
   # @param max_body_bytes [Integer]
-  def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES)
+  # @param max_entries_per_identity [Integer]
+  def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+    max_entries_per_identity: DEFAULT_MAX_ENTRIES_PER_IDENTITY)
     @app = app
     @directory = directory.to_s
     @max_body_bytes = max_body_bytes
+    @max_entries_per_identity = max_entries_per_identity
   end
 
   # The env is the caller's own and is handed on, not copied: an application
@@ -134,18 +147,18 @@ class Paquette::ResponseCache
     end
 
     body.close if body.respond_to?(:close)
-    record(env, "hit") do
-      fresh = Rack::Headers[entry.fetch("headers")].merge!(Rack::Headers[headers].except("content-length"))
-      if etag_matches?(env["HTTP_IF_NONE_MATCH"], entry.fetch("etag"))
-        [304, Rack::Headers[headers], []]
-      else
-        [200, fresh, [File.binread(body_path(key))]]
-      end
+    etag = entry.fetch("etag")
+    return record(env, "hit") { [304, Rack::Headers[headers], []] } if etag_matches?(env["HTTP_IF_NONE_MATCH"], etag)
+
+    stored = begin
+      File.binread(body_path(key, etag))
+    rescue Errno::ENOENT
+      # Replaced or emptied since the read. Asked again without a Lookup, so
+      # the server authenticates and renders in full
+      return record(env, "miss") { store_and_answer(env, key, @app.call(env)) }
     end
-  rescue Errno::ENOENT # the body went missing between the read and now
-    delete(key)
-    # Asked again without a Lookup, so the server renders in full
-    record(env, "miss") { store_and_answer(env, key, @app.call(env)) }
+    fresh = Rack::Headers[entry.fetch("headers")].merge!(Rack::Headers[headers].except("content-length"))
+    record(env, "hit") { [200, fresh, [stored]] }
   end
 
   # @param env [Hash]
@@ -165,10 +178,7 @@ class Paquette::ResponseCache
     end
     body.close if body.respond_to?(:close)
 
-    if size <= @max_body_bytes
-      write(key, headers, chunks)
-      Measurometer.increment_counter("paquette.response_cache.stored")
-    end
+    store(key, headers, chunks) if size <= @max_body_bytes
 
     if etag_matches?(env["HTTP_IF_NONE_MATCH"], headers["etag"])
       [304, headers.except("content-length"), []]
@@ -215,29 +225,67 @@ class Paquette::ResponseCache
     yield
   end
 
-  # The URL with its host and scheme: npm package documents carry absolute
-  # tarball URLs built from them. A request with a query string is not stored,
-  # so there is none to leave out.
+  # The identity's directory, then the URL with its host and scheme: npm
+  # package documents carry absolute tarball URLs built from them. A request
+  # with a query string is not stored, so there is none to leave out.
   #
   # @param env [Hash]
   # @param identity [String]
-  # @return [String]
+  # @return [String] "identity digest/entry digest"
   def key_for(env, identity)
     request = Rack::Request.new(env)
     digest = Digest::SHA256.new
-    digest << request.base_url << request.script_name << request.path_info
-    digest << "\0" << identity
+    digest << request.base_url << "\0" << request.script_name << "\0" << request.path_info
     digest << "\0" << (env["HTTP_ACCEPT"].to_s.include?("json") ? "json" : "")
-    digest.hexdigest
+    "#{Digest::SHA256.hexdigest(identity)}/#{digest.hexdigest}"
   end
 
   # @param key [String]
   # @return [Hash, nil]
   def read(key)
+    entry = read_meta(key)
+    entry if entry && File.exist?(body_path(key, entry["etag"]))
+  end
+
+  # @param key [String]
+  # @return [Hash, nil]
+  def read_meta(key)
     entry = JSON.parse(File.read(meta_path(key)))
-    entry if entry["etag"].is_a?(String) && entry["headers"].is_a?(Hash) && File.exist?(body_path(key))
-  rescue Errno::ENOENT, JSON::ParserError
+    entry if entry["etag"].is_a?(String) && entry["headers"].is_a?(Hash)
+  # Missing is the common case; a directory that cannot be read is a miss too
+  rescue SystemCallError, JSON::ParserError
     nil
+  end
+
+  # A cache that cannot write still answers: the response is in hand.
+  #
+  # @param key [String]
+  # @param headers [Rack::Headers]
+  # @param chunks [Array<String>]
+  # @return [void]
+  def store(key, headers, chunks)
+    previous = read_meta(key)
+    make_room(key) unless previous
+    write(key, headers, chunks)
+    # Only once the metadata points elsewhere, so a reader of the old one
+    # finds its body or nothing
+    FileUtils.rm_f(body_path(key, previous["etag"])) if previous && previous["etag"] != headers["etag"]
+    Measurometer.increment_counter("paquette.response_cache.stored")
+  rescue SystemCallError
+    Measurometer.increment_counter("paquette.response_cache.write_failed")
+  end
+
+  # @param key [String] the entry about to be added
+  # @return [void]
+  def make_room(key)
+    entries = Dir.glob(File.join(identity_dir(key), "*.json"))
+    excess = entries.length - @max_entries_per_identity + 1
+    return unless excess > 0
+
+    entries.sort_by { |path| File.mtime(path) }.first(excess).each do |path|
+      delete("#{key.split("/").first}/#{File.basename(path, ".json")}")
+    rescue Errno::ENOENT # another request got there first
+    end
   end
 
   # Body first and the metadata last, each renamed into place, so a reader
@@ -248,9 +296,9 @@ class Paquette::ResponseCache
   # @param chunks [Array<String>]
   # @return [void]
   def write(key, headers, chunks)
-    FileUtils.mkdir_p(File.dirname(meta_path(key)))
+    FileUtils.mkdir_p(identity_dir(key))
     kept = headers.to_h.except(*UNSTORED_HEADERS)
-    atomically(body_path(key)) { |io| chunks.each { |chunk| io.write(chunk) } }
+    atomically(body_path(key, headers["etag"])) { |io| chunks.each { |chunk| io.write(chunk) } }
     atomically(meta_path(key)) { |io| io.write(JSON.dump("etag" => headers["etag"], "headers" => kept)) }
   end
 
@@ -267,19 +315,28 @@ class Paquette::ResponseCache
   # @param key [String]
   # @return [void]
   def delete(key)
-    FileUtils.rm_f([meta_path(key), body_path(key)])
+    entry = read_meta(key)
+    FileUtils.rm_f(meta_path(key))
+    FileUtils.rm_f(body_path(key, entry["etag"])) if entry
+  end
+
+  # @param key [String]
+  # @return [String]
+  def identity_dir(key)
+    File.join(@directory, key[0, 2], key.split("/").first)
   end
 
   # @param key [String]
   # @return [String]
   def meta_path(key)
-    File.join(@directory, key[0, 2], "#{key}.json")
+    File.join(identity_dir(key), "#{key.split("/").last}.json")
   end
 
   # @param key [String]
+  # @param etag [String]
   # @return [String]
-  def body_path(key)
-    File.join(@directory, key[0, 2], "#{key}.body")
+  def body_path(key, etag)
+    File.join(identity_dir(key), "#{key.split("/").last}.#{Digest::SHA256.hexdigest(etag)[0, 16]}.body")
   end
 end
 
@@ -298,12 +355,20 @@ class Paquette::ResponseCache::Lookup
     @find = find
   end
 
-  # Only the first identity counts, should two servers see one request.
+  # Only the first identity counts, should two servers see one request. A
+  # String or an Integer, because anything else - a model object, say -
+  # stringifies differently on every request and would never hit.
   #
-  # @param identity [String] who the authenticator says the caller is
+  # @param identity [String, Integer, nil] who the authenticator says the
+  #   caller is; nil or blank for nobody
+  # @raise [TypeError] for anything else
   # @return [String, nil] the stored ETag to revalidate with
   def identify(identity)
-    return nil if @key || identity.to_s.empty?
+    unless identity.nil? || identity.is_a?(String) || identity.is_a?(Integer)
+      raise TypeError, "identity(auth_token:) must return a String, an Integer or nil, not a #{identity.class}"
+    end
+    # Binary: `strip` raises on a String that is not valid UTF-8
+    return nil if @key || identity.to_s.b.strip.empty?
 
     @key, @entry = @find.call(identity.to_s)
     @entry&.fetch("etag")

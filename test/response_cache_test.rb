@@ -36,7 +36,7 @@ class ResponseCacheTest < Minitest::Test
   # which a refusal (any status but 200) never gets to.
   class Origin
     attr_reader :calls, :seen_etags
-    attr_accessor :etag, :status, :headers, :body, :identities
+    attr_accessor :etag, :status, :headers, :body, :identities, :during_call
 
     def initialize
       @calls = 0
@@ -57,6 +57,7 @@ class ResponseCacheTest < Minitest::Test
         etag = lookup.identify(@identities[token])
         env["HTTP_IF_NONE_MATCH"] = etag if etag
       end
+      @during_call&.call
       @seen_etags << env["HTTP_IF_NONE_MATCH"]
       env["origin.note"] = "was here"
       headers = {"content-type" => "text/plain", "cache-control" => "private, no-cache"}.merge(@headers)
@@ -157,6 +158,72 @@ class ResponseCacheTest < Minitest::Test
     2.times { cache.call(Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer a")) }
 
     assert_empty stored_entries
+  end
+
+  # Another request for the same entry writes a new body between this one's
+  # read of the ETag and its read of the body - which, for one identity with two
+  # licences, would be another licence's body under this one's headers
+  def test_a_body_replaced_during_revalidation_is_never_served_under_the_old_etag
+    get("/versions")
+    racing = true
+    @origin.during_call = lambda do
+      next unless racing
+
+      racing = false
+      @origin.etag, @origin.body = %("v2"), "the other licence's index"
+      @cache.call(Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer a"))
+      @origin.etag, @origin.body = %("v1"), "the index"
+    end
+    response = get("/versions")
+
+    assert_equal [200, %("v1"), "the index"], [response[0], response[1]["etag"], body_of(response)]
+  end
+
+  # One URL spelled many ways is many entries; the cap keeps that the caller's
+  # own problem
+  def test_an_identity_keeps_at_most_its_share_of_entries
+    @cache = Paquette::ResponseCache.new(@origin, directory: @dir, max_entries_per_identity: 3)
+    3.times { |n| get("/other/#{n}", "HTTP_AUTHORIZATION" => "Bearer b") }
+    %w[/versions /v%65rsions /%76ersions /ve%72sions /ver%73ions].each { |path| get(path) }
+
+    assert_equal 6, stored_entries.length
+    get("/ver%73ions")
+    assert_equal "hit", @last_env[Paquette::ResponseCache::OUTCOME_KEY], "the newest stays"
+    get("/other/0", "HTTP_AUTHORIZATION" => "Bearer b")
+    assert_equal "hit", @last_env[Paquette::ResponseCache::OUTCOME_KEY], "another identity's entries are its own"
+  end
+
+  def test_an_integer_identity_is_cached
+    @origin.identities["a"] = 42
+    get("/versions")
+    get("/versions")
+
+    assert_equal "hit", @last_env[Paquette::ResponseCache::OUTCOME_KEY]
+  end
+
+  def test_a_blank_identity_is_nobody
+    @origin.identities["a"] = "  "
+    2.times { get("/versions") }
+
+    assert_empty stored_entries
+  end
+
+  # Stringifies differently on every request, so it would fill the disk and
+  # never hit
+  def test_an_identity_that_is_not_a_string_or_an_integer_raises
+    @origin.identities["a"] = Object.new
+
+    assert_raises(TypeError) { get("/versions") }
+    refute @last_env.key?(Paquette::ResponseCache::LOOKUP_KEY)
+  end
+
+  def test_a_cache_that_cannot_write_still_answers
+    blocked = File.join(@dir, "blocked")
+    File.write(blocked, "a file where the directory should be")
+    cache = Paquette::ResponseCache.new(@origin, directory: blocked)
+    response = cache.call(Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer a"))
+
+    assert_equal [200, "the index"], [response[0], body_of(response)]
   end
 
   def test_the_lookup_is_gone_from_the_env_afterwards

@@ -5171,17 +5171,23 @@ module Paquette
   # entry, and a gate_key that wrongly names two customers alike from serving one's
   # body to the other.
   # 
-  # Only identified requests without a query string are stored, and
-  # the client's own headers go into the key only as that one bit. So a stranger
-  # puts nothing on disk, and an identity at most two entries per index URL it
-  # may read: an anonymous response is the same for everybody and a 304 away
-  # anyway, and a query string or a raw header is anybody's to vary. Nothing is
-  # evicted beyond that, and the directory can be emptied at any time. Keep a
+  # Only identified requests without a query string are stored, and the
+  # client's own headers go into the key only as that one bit, so a stranger puts
+  # nothing on disk: an anonymous response is the same for everybody and a 304
+  # away anyway, and a query string is anybody's to vary. An identified caller can
+  # still spell one URL many ways - percent-escapes, X-Forwarded-Host - so each
+  # identity keeps at most `max_entries_per_identity:` entries, the least recently
+  # written going first. The directory can be emptied at any time. Keep a
   # compressor such as Rack::Deflater outside the cache, since the encoding is not
   # in the key.
+  # 
+  # A body is filed under its ETag as well as its key, so a request revalidated
+  # against one ETag can never read the body another request has just written
+  # for the same key.
   class ResponseCache
     include Paquette::RegexpTimeout
     DEFAULT_MAX_BODY_BYTES = T.let(8 * 1024 * 1024, T.untyped)
+    DEFAULT_MAX_ENTRIES_PER_IDENTITY = T.let(128, T.untyped)
     OUTCOME_KEY = T.let("paquette.response_cache", T.untyped)
     LOOKUP_KEY = T.let("paquette.response_cache.lookup", T.untyped)
     UNSTORED_HEADERS = T.let(%w[connection keep-alive transfer-encoding date age content-length].freeze, T.untyped)
@@ -5191,8 +5197,17 @@ module Paquette
     # _@param_ `directory` — where entries live, created when missing
     # 
     # _@param_ `max_body_bytes`
-    sig { params(app: T.untyped, directory: String, max_body_bytes: Integer).void }
-    def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES); end
+    # 
+    # _@param_ `max_entries_per_identity`
+    sig do
+      params(
+        app: T.untyped,
+        directory: String,
+        max_body_bytes: Integer,
+        max_entries_per_identity: Integer
+      ).void
+    end
+    def initialize(app, directory:, max_body_bytes: DEFAULT_MAX_BODY_BYTES, max_entries_per_identity: DEFAULT_MAX_ENTRIES_PER_IDENTITY); end
 
     # The env is the caller's own and is handed on, not copied: an application
     # that leaves notes in it for its log line has to find them afterwards.
@@ -5266,19 +5281,39 @@ module Paquette
     sig { params(env: T::Hash[T.untyped, T.untyped], outcome: String).returns(T::Array[T.untyped]) }
     def record(env, outcome); end
 
-    # The URL with its host and scheme: npm package documents carry absolute
-    # tarball URLs built from them. A request with a query string is not stored,
-    # so there is none to leave out.
+    # The identity's directory, then the URL with its host and scheme: npm
+    # package documents carry absolute tarball URLs built from them. A request
+    # with a query string is not stored, so there is none to leave out.
     # 
     # _@param_ `env`
     # 
     # _@param_ `identity`
+    # 
+    # _@return_ — "identity digest/entry digest"
     sig { params(env: T::Hash[T.untyped, T.untyped], identity: String).returns(String) }
     def key_for(env, identity); end
 
     # _@param_ `key`
     sig { params(key: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
     def read(key); end
+
+    # _@param_ `key`
+    sig { params(key: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
+    def read_meta(key); end
+
+    # A cache that cannot write still answers: the response is in hand.
+    # 
+    # _@param_ `key`
+    # 
+    # _@param_ `headers`
+    # 
+    # _@param_ `chunks`
+    sig { params(key: String, headers: Rack::Headers, chunks: T::Array[String]).void }
+    def store(key, headers, chunks); end
+
+    # _@param_ `key` — the entry about to be added
+    sig { params(key: String).void }
+    def make_room(key); end
 
     # Body first and the metadata last, each renamed into place, so a reader
     # never finds metadata pointing at half a body.
@@ -5301,11 +5336,17 @@ module Paquette
 
     # _@param_ `key`
     sig { params(key: String).returns(String) }
-    def meta_path(key); end
+    def identity_dir(key); end
 
     # _@param_ `key`
     sig { params(key: String).returns(String) }
-    def body_path(key); end
+    def meta_path(key); end
+
+    # _@param_ `key`
+    # 
+    # _@param_ `etag`
+    sig { params(key: String, etag: String).returns(String) }
+    def body_path(key, etag); end
 
     # What the cache leaves in the env for the server to fill in. The server calls
     # {#identify} once its authenticator has let the read in, and puts the ETag it
@@ -5314,12 +5355,14 @@ module Paquette
       sig { params(find: T.untyped).void }
       def initialize(&find); end
 
-      # Only the first identity counts, should two servers see one request.
+      # Only the first identity counts, should two servers see one request. A
+      # String or an Integer, because anything else - a model object, say -
+      # stringifies differently on every request and would never hit.
       # 
-      # _@param_ `identity` — who the authenticator says the caller is
+      # _@param_ `identity` — who the authenticator says the caller is; nil or blank for nobody
       # 
       # _@return_ — the stored ETag to revalidate with
-      sig { params(identity: String).returns(T.nilable(String)) }
+      sig { params(identity: T.nilable(T.any(String, Integer))).returns(T.nilable(String)) }
       def identify(identity); end
 
       sig { returns(T.nilable(String)) }

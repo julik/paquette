@@ -33,9 +33,10 @@ class Paquette::PypiServer::CooldownRepository < SimpleDelegator
   # Named by how many known publish times have cooled - see the gem side,
   # whose reasoning this is.
   #
+  # @param scope [String, nil] forwarded to the wrapped repository
   # @return [String, nil]
-  def cache_validator
-    inner = Paquette::CacheValidation.validator_of(__getobj__)
+  def cache_validator(scope = nil)
+    inner = Paquette::CacheValidation.validator_of(__getobj__, scope)
     return nil if inner.nil?
 
     source_state = @published_at_source ? @published_at_validator&.call : "repository"

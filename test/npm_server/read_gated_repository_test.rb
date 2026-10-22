@@ -15,8 +15,8 @@ class NpmReadGatedRepositoryTest < Minitest::Test
     FileUtils.rm_rf(@dir) if @dir
   end
 
-  def gated(&entitler)
-    Paquette::NpmServer::ReadGatedRepository.new(@repository, &entitler)
+  def gated(repository = @repository, &entitler)
+    Paquette::NpmServer::ReadGatedRepository.new(repository, EntitlingAuthenticator.new(&entitler))
   end
 
   def allowing_everything
@@ -36,7 +36,7 @@ class NpmReadGatedRepositoryTest < Minitest::Test
       write_npm_package(dir, name: "helpers", version: "1.1.0", description: "Withheld",
         homepage: "https://withheld.example", keywords: ["withheld"], files: {"README.md" => "# Helpers 1.1.0, withheld\n"})
       repository = Paquette::NpmServer::DirectoryNpmRepository.new(dir)
-      lapsed = Paquette::NpmServer::ReadGatedRepository.new(repository) { |name:, version: nil| version.nil? || version == "1.0.0" }
+      lapsed = gated(repository) { |name:, version: nil| version.nil? || version == "1.0.0" }
 
       metadata = lapsed.package_metadata("helpers")
 
@@ -54,7 +54,7 @@ class NpmReadGatedRepositoryTest < Minitest::Test
     def inner.package_metadata(_) = {"versions" => {"1.0.0" => {}, "2.0.0" => {}}, "time" => {}, "readme" => "2.0.0 secrets", "description" => "2.0.0"}
     def inner.versions_for_package(_) = ["1.0.0", "2.0.0"]
     def inner.dist_tags(_) = {"latest" => "2.0.0"}
-    gate = Paquette::NpmServer::ReadGatedRepository.new(inner) { |name:, version: nil| version.nil? || version == "1.0.0" }
+    gate = gated(inner) { |name:, version: nil| version.nil? || version == "1.0.0" }
 
     metadata = gate.package_metadata("helpers")
 
@@ -133,8 +133,28 @@ class NpmReadGatedRepositoryTest < Minitest::Test
     refute repo.package_exists?("new", "1.0.0")
   end
 
-  def test_the_former_name_still_builds_a_stack
-    repo = Paquette::NpmServer::GatedNpmRepository.new(@repository) { |name:, version: nil| name == "allowed" }
-    assert_equal ["allowed"], repo.package_names
+  # The server puts the gate on for every caller whose authenticator answers
+  # entitled?, so nothing has to be wired for one.
+  def test_the_server_gates_by_the_caller_s_authenticator
+    app = Paquette::NpmServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |name:, version: nil| name == "allowed" })
+    request = Rack::MockRequest.new(app)
+
+    assert_equal 200, request.get("/allowed").status
+    assert_equal 404, request.get("/denied").status
+  end
+
+  # The validator is what the caller can see, so it moves when and only when
+  # that does, and a caller who sees nothing in scope gets none.
+  def test_the_validator_names_what_the_caller_can_see
+    everything = allowing_everything.cache_validator("allowed")
+    ones = gated { |name:, version: nil| version.nil? || version.start_with?("1.") }.cache_validator("allowed")
+
+    refute_nil everything
+    refute_nil ones
+    refute_equal everything, ones
+    assert_equal everything, allowing_everything.cache_validator("allowed")
+    assert_nil allowing_nothing.cache_validator("allowed")
+    assert_nil allowing_nothing.cache_validator
+    refute_equal allowing_everything.cache_validator, allowing_everything.cache_validator("allowed")
   end
 end

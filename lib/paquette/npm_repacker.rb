@@ -5,81 +5,59 @@ require "stringio"
 require "json"
 require "measurometer"
 
-# Rewrites the contents of an npm tarball into a new one; counterpart of
-# GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
-# Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
+# Rewrites the contents of an npm tarball into a new one for one caller: every
+# marker line filled with the caller's value (see Paquette::Markers), the
+# values stamped into package.json under "paquette", files injected.
+# Counterpart of GemServer::GemRepacker. Byte-reproducible — see
+# Paquette::Tarball for why that is load-bearing.
 class Paquette::NpmRepacker
-  # Raised when a marker survives the pass — see #verify_markers_applied.
-  class MarkerNotApplied < StandardError; end
-
-  # Raised for a marker or replacement spanning several lines.
-  class MultilineReplacement < StandardError; end
-
   # Bumped whenever the same source tarball and the same arguments would
   # repack into different bytes, so a cache keyed on the inputs can include
   # it — the counterpart of GemServer::GemRepacker::FORMAT_VERSION.
   # 2: a file that replaces a shipped one keeps that file's mode.
+  # 3: markers, in every text entry; values stamped under "paquette".
   #
   # @return [Integer]
-  FORMAT_VERSION = 2
+  FORMAT_VERSION = 3
 
-  # Binary assets and sourcemaps are copied through untouched.
+  # The package.json key the values land under.
   #
-  # @return [Array<String>]
-  SOURCE_EXTENSIONS = %w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze
-
-  # One line in, one line out — the rule the whole personalization scheme
-  # rests on (a changed line count shifts every sourcemap mapping below it),
-  # so a pair that cannot honour it is refused rather than bent to fit.
-  #
-  # @param replacements [Hash{String => String}]
-  # @return [void]
-  # @raise [MultilineReplacement]
-  def self.check_replacements!(replacements)
-    replacements.each do |marker, replacement|
-      if marker.to_s.match?(/[\r\n]/)
-        raise MultilineReplacement, "Marker #{marker.inspect} spans several lines; a marker must be one whole line"
-      end
-
-      if replacement.to_s.match?(/[\r\n]/)
-        raise MultilineReplacement,
-          "Replacement for #{marker.inspect} spans several lines. Changing the line count shifts every sourcemap " \
-          "mapping below it, so a replacement must be a single line"
-      end
-    end
-  end
+  # @return [String]
+  STAMP_KEY = "paquette"
 
   # One-shot convenience for {#initialize} + {#repack}.
   #
   # @param npm_path [String]
-  # @param package_json_extras [Hash{String => Object}]
-  # @param magic_comment_replacements [Hash{String => String}]
+  # @param values [Hash{String => String}]
   # @param files [Hash{String => String}]
   # @param into [String, nil]
   # @return [String] the path of the repacked tarball
-  def self.repack(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block)
-    new(
-      npm_path,
-      package_json_extras: package_json_extras,
-      magic_comment_replacements: magic_comment_replacements,
-      files: files,
-      into: into
-    ).repack(&block)
+  def self.repack(npm_path, values:, files: {}, into: nil, &block)
+    new(npm_path, values: values, files: files, into: into).repack(&block)
+  end
+
+  # The keys of every marker in the tarball. Empty for a package that asks
+  # for nothing, which is how a personalizer knows to serve it as it is.
+  #
+  # @param npm_path [String]
+  # @return [Array<String>]
+  def self.marker_keys(npm_path)
+    Measurometer.instrument("paquette.npm_repacker.marker_keys") do
+      Paquette::Tarball.entries(npm_path).flat_map { |entry| Paquette::Markers.keys_in(entry.content.to_s) }.uniq
+    end
   end
 
   # @param npm_path [String] path of the source tarball
-  # @param package_json_extras [Hash{String => Object}] keys merged into
-  #   package.json
-  # @param magic_comment_replacements [Hash{String => String}] whole comment
-  #   lines to replace, marker => replacement
+  # @param values [Hash{String => String}] the caller's values: each marker
+  #   line for a key is filled with its value, and all of them land in
+  #   package.json under "paquette"
   # @param files [Hash{String => String}] files to inject, path relative to
-  #   the package root => content
+  #   the package root => content, with markers in the content filled in too
   # @param into [String, nil] destination path; a tmpdir when nil
-  def initialize(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil)
-    self.class.check_replacements!(magic_comment_replacements)
+  def initialize(npm_path, values:, files: {}, into: nil)
+    Paquette::Markers.check_values!(values)
     @npm_path = npm_path
-    @package_json_extras = package_json_extras
-    @magic_comment_replacements = magic_comment_replacements
+    @values = values
     @files = files
     @into = into
   end
@@ -100,7 +78,7 @@ class Paquette::NpmRepacker
       rewritten = Measurometer.instrument("paquette.npm_repacker.rewrite_entries") do
         entries.map { |entry| rewrite(entry, root, &block) }
       end
-      rewritten = apply_package_json_extras(rewritten, root)
+      rewritten = stamp(rewritten, root)
       rewritten = inject_files(rewritten, root)
 
       Paquette::Tarball.write(destination, rewritten)
@@ -116,6 +94,9 @@ class Paquette::NpmRepacker
     path
   end
 
+  # Every entry, not only the source files: a LICENSE carries a marker as
+  # readily as a module does. Binaries are left alone by Markers itself.
+  #
   # @param entry [Paquette::Tarball::Entry]
   # @param root [String]
   # @return [Paquette::Tarball::Entry]
@@ -136,68 +117,18 @@ class Paquette::NpmRepacker
       entry.content
     end
 
-    content = apply_magic_comment_replacements(content, relative_path) if replaceable?(relative_path)
+    content = Measurometer.instrument("paquette.npm_repacker.replace_magic_comments") do
+      Paquette::Markers.substitute(content, @values, described_as: relative_path)
+    end
 
     with_content(entry, content)
-  end
-
-  # @param relative_path [String]
-  # @return [Boolean]
-  def replaceable?(relative_path)
-    @magic_comment_replacements.any? && SOURCE_EXTENSIONS.include?(File.extname(relative_path))
-  end
-
-  # A whole comment line is replaced by a whole comment line: sourcemaps
-  # restart their column counter at every line, so rewriting one line cannot
-  # disturb the mappings on any other.
-  #
-  # @param content [String]
-  # @param relative_path [String]
-  # @return [String]
-  def apply_magic_comment_replacements(content, relative_path)
-    text = content.dup.force_encoding(Encoding::UTF_8)
-    return content unless text.valid_encoding?
-
-    Measurometer.instrument("paquette.npm_repacker.replace_magic_comments") do
-      replaced = text.lines.map do |line|
-        stripped = line.chomp
-        replacement = @magic_comment_replacements.find { |marker, _| stripped == marker }
-        next line unless replacement
-
-        ending = line.end_with?("\n") ? "\n" : ""
-        "// #{replacement[1]}#{ending}"
-      end.join
-
-      verify_markers_applied(replaced, relative_path)
-      replaced.b
-    end
-  end
-
-  # A marker still present after the pass was one the line-wise match could
-  # not reach — `esbuild --minify` pulls a legal comment onto the end of a
-  # code line — and the package would then be served with no license key in
-  # it and nothing to say so. Replacing it mid-line instead would shift
-  # sourcemap columns, which is exactly what the line-wise rule avoids.
-  #
-  # @param text [String]
-  # @param relative_path [String]
-  # @return [void]
-  # @raise [MarkerNotApplied]
-  def verify_markers_applied(text, relative_path)
-    @magic_comment_replacements.each_key do |marker|
-      next unless text.include?(marker)
-
-      raise MarkerNotApplied,
-        "#{relative_path} still contains #{marker.inspect} after personalization: it is not alone on its line " \
-        "(minified?), so the license key would have been left out of the served package"
-    end
   end
 
   # @param entries [Array<Paquette::Tarball::Entry>]
   # @param root [String]
   # @return [Array<Paquette::Tarball::Entry>]
-  def apply_package_json_extras(entries, root)
-    return entries if @package_json_extras.empty?
+  def stamp(entries, root)
+    return entries if @values.empty?
 
     Measurometer.instrument("paquette.npm_repacker.package_json_extras") do
       package_json_name = "#{root}/package.json"
@@ -205,7 +136,7 @@ class Paquette::NpmRepacker
         next entry unless entry.name == package_json_name
 
         parsed = JSON.parse(entry.content)
-        with_content(entry, JSON.pretty_generate(parsed.merge(@package_json_extras)))
+        with_content(entry, JSON.pretty_generate(parsed.merge(STAMP_KEY => @values)))
       end
     end
   end
@@ -213,6 +144,7 @@ class Paquette::NpmRepacker
   # Injected files inherit the package's oldest mtime, keeping the tarball
   # independent of when they were added. One that replaces a shipped file
   # keeps that file's mode, so replacing a bin script leaves it executable.
+  # Markers in the injected content are filled in like any other.
   #
   # @param entries [Array<Paquette::Tarball::Entry>]
   # @param root [String]
@@ -226,7 +158,8 @@ class Paquette::NpmRepacker
     @files.each do |relative_path, content|
       name = "#{root}/#{relative_path}"
       mode = by_name[name]&.mode || 0o644
-      by_name[name] = Paquette::Tarball::Entry.new(name: name, mode: mode, mtime: mtime, content: content.to_s)
+      filled = Paquette::Markers.substitute(content.to_s, @values, described_as: relative_path)
+      by_name[name] = Paquette::Tarball::Entry.new(name: name, mode: mode, mtime: mtime, content: filled)
     end
 
     by_name.values

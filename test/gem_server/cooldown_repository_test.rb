@@ -329,8 +329,8 @@ class CooldownRepositoryTest < Minitest::Test
   end
 
   def test_validator_is_nil_when_the_inner_one_is
-    keyless = Paquette::GemServer::ReadGatedRepository.new(@repository) { |name:, version: nil| true }
-    assert_nil cooldown(keyless).cache_validator
+    blind = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |**| false })
+    assert_nil cooldown(blind).cache_validator
   end
 
   def test_a_different_interval_gives_a_different_validator
@@ -485,20 +485,20 @@ class CooldownRepositoryTest < Minitest::Test
   # --- Stacking with the other wrappers, in both orders ---
 
   def test_stacks_with_read_gating_outside
-    gated = Paquette::GemServer::ReadGatedRepository.new(cooldown) { |name:, version: nil| name == "aged_gem" }
+    gated = Paquette::GemServer::ReadGatedRepository.new(cooldown, EntitlingAuthenticator.new { |name:, version: nil| name == "aged_gem" })
     assert_stack_is_consistent(gated, expect: {"aged_gem" => ["1.0.0"]})
   end
 
   def test_stacks_with_read_gating_inside
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "aged_gem" }
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name:, version: nil| name == "aged_gem" })
     assert_stack_is_consistent(cooldown(gated), expect: {"aged_gem" => ["1.0.0"]})
   end
 
   def test_read_gating_and_cooldown_intersect_rather_than_override
     # Gating allows 1.1.0 only; cooldown withholds it. Nothing is left.
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository) do |name:, version: nil|
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name:, version: nil|
       name == "aged_gem" && (version.nil? || version == "1.1.0")
-    end
+    })
     assert_stack_is_consistent(cooldown(gated), expect: {})
   end
 
@@ -512,7 +512,7 @@ class CooldownRepositoryTest < Minitest::Test
   end
 
   def test_stacks_with_both_wrappers
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository) { |name:, version: nil| true }
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |**| true })
     assert_stack_is_consistent(personalizer(cooldown(gated)), expect: {"aged_gem" => ["1.0.0"]})
   end
 
@@ -538,18 +538,20 @@ class CooldownRepositoryTest < Minitest::Test
   end
 
   def personalizer(repository)
-    Paquette::GemServer::Personalizer.new(repository,
-      license_key: "COOLDOWN-TEST",
-      personalization_key: "cooldown-test",
-      cache_dir: File.join(@tmpdir, "personalized"),
-      magic_comment_replacements: {"# paquette_license_info" => "COOLDOWN-TEST"})
+    Paquette::GemServer::Personalizer.new(repository, cache_dir: File.join(@tmpdir, "personalized"))
+  end
+
+  # Open, so the stack tests can write, and personalizing, so a personalizer
+  # in the stack has somebody to personalize for
+  class PersonalizingOpen < Paquette::Authentication::Open
+    def personalization = {"licensee" => "COOLDOWN-TEST"}
   end
 
   # Everything a client can ask this repository has to tell the same
   # story: the names, the info files, what downloads, and the /versions
   # checksums Bundler re-fetches on.
   def assert_stack_is_consistent(repository, expect:)
-    @app = Writable.gem_server(repository)
+    @app = Writable::WithOtp.new(Paquette::GemServer.new(repository, authenticator: PersonalizingOpen))
 
     get "/names"
     # Past the format's "---" marker, which /names carries like every other
@@ -616,7 +618,7 @@ class CooldownRepositoryTest < Minitest::Test
   def build_gem(name, version, date:)
     source_dir = File.join(@tmpdir, "src", "#{name}-#{version}")
     FileUtils.mkdir_p(File.join(source_dir, "lib"))
-    File.write(File.join(source_dir, "lib", "#{name}.rb"), "# paquette_license_info\nmodule #{name.split("_").map(&:capitalize).join}; end\n")
+    File.write(File.join(source_dir, "lib", "#{name}.rb"), "# paquette:licensee\nmodule #{name.split("_").map(&:capitalize).join}; end\n")
 
     spec = Gem::Specification.new do |s|
       s.name = name

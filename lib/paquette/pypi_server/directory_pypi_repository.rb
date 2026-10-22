@@ -43,8 +43,9 @@ class Paquette::PypiServer::DirectoryPypiRepository < Paquette::PypiServer::Pypi
     end
   end
 
+  # @param scope [String, nil]
   # @return [String]
-  def cache_validator
+  def cache_validator(scope = nil)
     fingerprint
   end
 

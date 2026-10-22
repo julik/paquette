@@ -134,9 +134,7 @@ class GemServerPrereleaseSpecsTest < Minitest::Test
   # The wrappers are the point of this codebase, and a new whole-index
   # endpoint is exactly where a withheld version leaks back out.
   def test_a_gated_version_is_absent_from_prerelease_specs
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository) do |name: nil, **|
-      name != "only_pre"
-    end
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name: nil, **| name != "only_pre" })
     session = session_over(gated)
 
     session.get "/prerelease_specs.4.8"
@@ -146,7 +144,7 @@ class GemServerPrereleaseSpecsTest < Minitest::Test
   end
 
   def test_a_fully_gated_repository_serves_an_empty_prerelease_document
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository) { |**| false }
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |**| false })
     session = session_over(gated)
 
     session.get "/prerelease_specs.4.8"

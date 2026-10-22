@@ -89,9 +89,9 @@ class PypiRepositoryStackTest < Minitest::Test
     write_wheel(@dir, name: "widgets", version: "1.0.0")
     write_wheel(@dir, name: "widgets", version: "2.0.0")
     write_wheel(@dir, name: "secret", version: "1.0.0")
-    gated = Paquette::PypiServer::ReadGatedRepository.new(@repository) do |name:, version: nil|
+    gated = Paquette::PypiServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new do |name:, version: nil|
       name == "widgets" && (version.nil? || version.start_with?("1."))
-    end
+    end)
 
     assert_equal ["widgets"], gated.project_names
     assert_equal ["widgets-1.0.0-py3-none-any.whl"], gated.filenames_for_project("widgets")
@@ -103,7 +103,7 @@ class PypiRepositoryStackTest < Minitest::Test
 
   def test_a_gated_download_outside_the_entitlement_is_a_404
     write_wheel(@dir, name: "secret", version: "1.0.0")
-    self.app = Paquette::PypiServer.new(Paquette::PypiServer::ReadGatedRepository.new(@repository) { |**| false })
+    self.app = Paquette::PypiServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |**| false })
 
     get "/files/secret/secret-1.0.0-py3-none-any.whl"
     assert_equal 404, last_response.status
@@ -113,21 +113,33 @@ class PypiRepositoryStackTest < Minitest::Test
     assert_equal 404, last_response.status
   end
 
-  # Nothing that differs per caller may be stored `public`, and a gate
-  # without a key names no ETag at all
-  def test_a_keyless_gate_emits_no_etag_and_stays_private
+  # Nothing that differs per caller may be stored `public`, and the ETag of a
+  # gated page is derived from what the caller can see
+  def test_a_gated_page_has_an_etag_and_stays_private
     write_wheel(@dir, name: "widgets", version: "1.0.0")
-    self.app = Paquette::PypiServer.new(Paquette::PypiServer::ReadGatedRepository.new(@repository) { |**| true })
+    self.app = Paquette::PypiServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |**| true })
     get "/simple/widgets/"
 
-    assert_nil last_response.headers["etag"]
+    refute_nil last_response.headers["etag"]
     assert_includes last_response.headers["cache-control"], "private"
   end
 
-  def test_two_gate_keys_name_two_etags
+  # An ETag over an empty page would still move with the corpus beneath the
+  # gate, telling a stranger when files they cannot see are uploaded
+  def test_a_caller_who_sees_nothing_gets_no_etag
     write_wheel(@dir, name: "widgets", version: "1.0.0")
-    etags = ["alice", "bob"].map do |key|
-      server = Paquette::PypiServer.new(Paquette::PypiServer::ReadGatedRepository.new(@repository, gate_key: key) { |**| true })
+    server = Paquette::PypiServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |**| false })
+    response = Rack::MockRequest.new(server).get("/simple/")
+
+    assert_equal 200, response.status
+    assert_nil response.headers["etag"]
+  end
+
+  def test_two_callers_who_see_different_files_get_two_etags
+    write_wheel(@dir, name: "widgets", version: "1.0.0")
+    write_wheel(@dir, name: "widgets", version: "2.0.0")
+    etags = ["1.0.0", nil].map do |only|
+      server = Paquette::PypiServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |name:, version: nil| only.nil? || version.nil? || version == only })
       Rack::MockRequest.new(server).get("/simple/widgets/").headers["etag"]
     end
 
@@ -190,12 +202,12 @@ class PypiRepositoryStackTest < Minitest::Test
 
   def test_the_personalizer_repacks_a_wheel_with_a_record_that_checks_out
     write_wheel(@dir, name: "widgets", version: "1.0.0",
-      files: {"widgets/__init__.py" => "# paquette_license_info\nVERSION = '1.0.0'\n"})
-    path = personalizer.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
+      files: {"widgets/__init__.py" => "# paquette:licensee\nVERSION = '1.0.0'\n"})
+    path = personalized { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") }
 
     assert_includes wheel_file(path, "widgets/__init__.py"), "# licensed to LIC-1"
-    assert_equal "Licensed.", wheel_file(path, "widgets/LICENSE.txt")
-    assert_equal({"license_key" => "LIC-1"}, JSON.parse(wheel_file(path, "widgets-1.0.0.dist-info/paquette.json")))
+    assert_equal "Licensed to:\n  licensed to LIC-1\n", wheel_file(path, "widgets/LICENSE.txt")
+    assert_equal({"licensee" => "licensed to LIC-1"}, JSON.parse(wheel_file(path, "widgets-1.0.0.dist-info/paquette.json")))
 
     record = wheel_file(path, "widgets-1.0.0.dist-info/RECORD").lines.map { |line| line.chomp.split(",") }
     names = Paquette::Wheel.entry_names(path)
@@ -211,18 +223,18 @@ class PypiRepositoryStackTest < Minitest::Test
   # pip checks the sha256 the page published, and a second process has to
   # land on the same bytes the first one hashed
   def test_the_personalized_wheel_is_byte_reproducible
-    write_wheel(@dir, name: "widgets", version: "1.0.0")
-    first = File.binread(personalizer.file_path("widgets", "widgets-1.0.0-py3-none-any.whl"))
-    second = File.binread(personalizer(cache_dir: Dir.mktmpdir("paquette_second_cache")).file_path("widgets", "widgets-1.0.0-py3-none-any.whl"))
+    write_marked_wheel(name: "widgets", version: "1.0.0")
+    first = File.binread(personalized { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") })
+    second = File.binread(personalized(cache_dir: Dir.mktmpdir("paquette_second_cache")) { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") })
 
     assert_equal Digest::SHA256.hexdigest(first), Digest::SHA256.hexdigest(second)
   end
 
   def test_the_personalized_page_describes_the_personalized_file
-    write_wheel(@dir, name: "widgets", version: "1.0.0")
-    stack = personalizer
-    info = stack.file_info("widgets", "widgets-1.0.0-py3-none-any.whl")
-    served = stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
+    write_marked_wheel(name: "widgets", version: "1.0.0")
+    info, served = personalized do |stack|
+      [stack.file_info("widgets", "widgets-1.0.0-py3-none-any.whl"), stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")]
+    end
 
     assert_equal Digest::SHA256.file(served).hexdigest, info.sha256
     assert_equal File.size(served), info.size
@@ -232,66 +244,107 @@ class PypiRepositoryStackTest < Minitest::Test
       info.core_metadata_sha256
   end
 
+  # One stack, two callers: the authenticator is what tells them apart
   def test_two_licensees_never_share_a_file_or_an_etag
-    write_wheel(@dir, name: "widgets", version: "1.0.0")
-    alice = personalizer(license_key: "LIC-A")
-    bob = personalizer(license_key: "LIC-B")
+    write_marked_wheel(name: "widgets", version: "1.0.0")
+    stack = personalizer
+    alice, bob = ["LIC-A", "LIC-B"].map do |key|
+      Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, {"licensee" => key})) do
+        [stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl"), stack.cache_validator]
+      end
+    end
 
-    refute_equal alice.file_path("widgets", "widgets-1.0.0-py3-none-any.whl"), bob.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
-    refute_equal alice.cache_validator, bob.cache_validator
+    refute_equal alice[0], bob[0]
+    refute_equal alice[1], bob[1]
+  end
+
+  def test_a_caller_with_no_personalization_gets_the_file_and_the_validator_as_they_are
+    path = write_marked_wheel(name: "widgets", version: "1.0.0")
+    stack = personalizer
+
+    assert_equal path, stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
+    assert_equal @repository.cache_validator, stack.cache_validator
+    Paquette::Authenticator.with(Paquette::Authenticator.new("token")) do
+      assert_equal path, stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
+    end
   end
 
   def test_signatures_over_the_old_record_are_dropped
     signed = wheel_bytes(name: "widgets", version: "1.0.0",
-      files: {"widgets/__init__.py" => "", "widgets-1.0.0.dist-info/RECORD.jws" => "signature"})
+      files: {"widgets/__init__.py" => "# paquette:licensee\n", "widgets-1.0.0.dist-info/RECORD.jws" => "signature"})
     write_distribution(@dir, "widgets", "widgets-1.0.0-py3-none-any.whl", signed)
-    path = personalizer.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
+    path = personalized { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") }
 
     refute_includes Paquette::Wheel.entry_names(path), "widgets-1.0.0.dist-info/RECORD.jws"
   end
 
   def test_the_personalizer_repacks_an_sdist
     write_sdist(@dir, name: "widgets", version: "1.0.0",
-      files: {"widgets/__init__.py" => "  # paquette_license_info\n"})
-    path = personalizer.file_path("widgets", "widgets-1.0.0.tar.gz")
+      files: {"widgets/__init__.py" => "  # paquette:licensee\n"})
+    path = personalized { |stack| stack.file_path("widgets", "widgets-1.0.0.tar.gz") }
 
     assert_equal "  # licensed to LIC-1\n", tarball_file(path, "widgets-1.0.0/widgets/__init__.py")
-    assert_equal({"license_key" => "LIC-1"}, JSON.parse(tarball_file(path, "widgets-1.0.0/paquette.json")))
+    assert_equal({"licensee" => "licensed to LIC-1"}, JSON.parse(tarball_file(path, "widgets-1.0.0/paquette.json")))
+  end
+
+  # A marker is a marker in any text file, comment leader or none
+  def test_a_marker_in_a_text_file_is_filled_in_too
+    write_wheel(@dir, name: "widgets", version: "1.0.0",
+      files: {"widgets/__init__.py" => "", "widgets/NOTICE" => "Licensed to:\n  paquette:licensee\n"})
+    path = personalized { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") }
+
+    assert_equal "Licensed to:\n  licensed to LIC-1\n", wheel_file(path, "widgets/NOTICE")
   end
 
   # A marker the line-wise pass cannot reach would have shipped the file
   # with no key in it and nothing to say so
   def test_a_marker_not_alone_on_its_line_refuses_the_repack
     write_wheel(@dir, name: "widgets", version: "1.0.0",
-      files: {"widgets/__init__.py" => "VERSION = 1  # paquette_license_info\n"})
+      files: {"widgets/__init__.py" => "# paquette:licensee\nVERSION = 1  # paquette:licensee\n"})
 
-    assert_raises(Paquette::NpmRepacker::MarkerNotApplied) do
-      personalizer.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
+    assert_raises(Paquette::Markers::NotApplied) do
+      personalized { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") }
     end
   end
 
-  def test_a_multiline_replacement_is_refused_up_front
-    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
-      Paquette::PypiServer::Personalizer.new(@repository, license_key: "x", magic_comment_replacements: {"# x" => "a\nb"})
+  def test_a_multiline_value_is_refused
+    write_marked_wheel(name: "widgets", version: "1.0.0")
+
+    assert_raises(Paquette::Markers::MultilineValue) do
+      personalized({"licensee" => "a\nb"}) { |stack| stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") }
     end
   end
 
-  def test_files_for_returning_nil_serves_the_file_as_it_is
+  # Whether a file asks to be personalized is a fact about the file, found
+  # out once and written down
+  def test_a_file_without_a_marker_is_served_as_it_is_and_remembered
     path = write_wheel(@dir, name: "widgets", version: "1.0.0")
-    stack = personalizer(files_for: ->(_project, _filename, _path) {})
+    stack = personalizer
+    served, info = personalized(stack: stack) do |personalizer|
+      2.times { personalizer.file_path("widgets", "widgets-1.0.0-py3-none-any.whl") }
+      [personalizer.file_path("widgets", "widgets-1.0.0-py3-none-any.whl"), personalizer.file_info("widgets", "widgets-1.0.0-py3-none-any.whl")]
+    end
 
-    assert_equal path, stack.file_path("widgets", "widgets-1.0.0-py3-none-any.whl")
-    assert_equal @repository.file_info("widgets", "widgets-1.0.0-py3-none-any.whl").sha256,
-      stack.file_info("widgets", "widgets-1.0.0-py3-none-any.whl").sha256
+    assert_equal path, served
+    assert_equal @repository.file_info("widgets", "widgets-1.0.0-py3-none-any.whl").sha256, info.sha256
+    assert_equal 1, Dir.glob(File.join(@cache_dir, "plain", "*.plain")).length
+    assert_empty Dir.glob(File.join(@cache_dir, "*", "*.whl"))
   end
 
   private
 
-  def personalizer(license_key: "LIC-1", cache_dir: @cache_dir, **options)
+  def write_marked_wheel(name:, version:)
+    write_wheel(@dir, name: name, version: version, files: {"#{name}/__init__.py" => "# paquette:licensee\nVERSION = #{version.inspect}\n"})
+  end
+
+  def personalizer(cache_dir: @cache_dir)
     Paquette::PypiServer::Personalizer.new(@repository,
-      license_key: license_key,
-      magic_comment_replacements: {"# paquette_license_info" => "licensed to #{license_key}"},
-      files: {"widgets/LICENSE.txt" => "Licensed."},
-      cache_dir: cache_dir, **options)
+      files: {"widgets/LICENSE.txt" => "Licensed to:\n  paquette:licensee\n"},
+      cache_dir: cache_dir)
+  end
+
+  # The stack as one caller sees it
+  def personalized(values = {"licensee" => "licensed to LIC-1"}, cache_dir: @cache_dir, stack: personalizer(cache_dir: cache_dir))
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, values)) { yield stack }
   end
 end

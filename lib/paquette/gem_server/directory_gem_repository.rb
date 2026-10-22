@@ -45,7 +45,7 @@ class Paquette::GemServer::DirectoryGemRepository < Paquette::GemServer::GemRepo
   end
 
   # @return [String]
-  def cache_validator
+  def cache_validator(scope = nil)
     fingerprint
   end
 

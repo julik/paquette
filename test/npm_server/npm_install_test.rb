@@ -56,21 +56,19 @@ class NpmInstallTest < Minitest::Test
   # Were the repack not reproducible, npm would refuse this install.
   def test_npm_installs_a_personalized_package
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0",
-      files: {"index.js" => "// paquette_license_info\nmodule.exports = 1;\n"})
+      files: {"index.js" => "// paquette:licensee\nmodule.exports = 1;\n"})
 
     repository = Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir)
-    serve(Paquette::NpmServer::Personalizer.new(repository,
-      license_key: "LIC-ABC-123",
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme Inc (LIC-ABC-123)"},
-      files: {"LICENSE.txt" => "Licensed to Acme Inc."}))
+    serve(Paquette::NpmServer::Personalizer.new(repository, files: {"LICENSE.txt" => "Licensed to Acme Inc."}),
+      authenticator: PersonalizingAuthenticator.with({"licensee" => "licensed to Acme Inc (LIC-ABC-123)"}))
 
     assert npm_install("widget@1.0.0"), "npm install failed:\n#{@npm_output}"
 
     installed_dir = File.join(@project_dir, "node_modules", "widget")
     assert_includes File.read(File.join(installed_dir, "index.js")), "LIC-ABC-123"
     assert_equal "Licensed to Acme Inc.", File.read(File.join(installed_dir, "LICENSE.txt"))
-    assert_equal "LIC-ABC-123",
-      JSON.parse(File.read(File.join(installed_dir, "package.json")))["paquette"]["licenseKey"]
+    assert_equal "licensed to Acme Inc (LIC-ABC-123)",
+      JSON.parse(File.read(File.join(installed_dir, "package.json")))["paquette"]["licensee"]
   end
 
   # The install itself has to fail, not merely the listing hide the package.
@@ -79,7 +77,7 @@ class NpmInstallTest < Minitest::Test
     write_npm_package(@packages_dir, name: "secret", version: "1.0.0")
 
     repository = Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir)
-    serve(Paquette::NpmServer::ReadGatedRepository.new(repository) { |name:, version: nil| name == "widget" })
+    serve(repository, authenticator: EntitlingAuthenticator.gating { |name:, version: nil| name == "widget" })
 
     assert npm_install("widget@1.0.0"), "npm install failed:\n#{@npm_output}"
     refute npm_install("secret@1.0.0"), "a gated package was installable:\n#{@npm_output}"
@@ -87,8 +85,8 @@ class NpmInstallTest < Minitest::Test
 
   private
 
-  def serve(repository)
-    app = Paquette::NpmServer.new(repository)
+  def serve(repository, **options)
+    app = Paquette::NpmServer.new(repository, **options)
     @port = find_free_port
 
     # A real Rack server: how the response reaches npm is part of the test.

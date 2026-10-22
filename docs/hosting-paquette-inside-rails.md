@@ -9,56 +9,37 @@ The simplest approach is to mount Paquette as a Rack app in your Rails routes:
 ```ruby
 # config/routes.rb
 
-gems_dir = Rails.root.join("packages/gems")
-gems_repo = Paquette::GemServer::DirectoryGemRepository.new(gems_dir.to_s)
+# One instance per request, built by the server from the token. Everything
+# the token resolves to is looked up once and remembered on it.
+class GemAuthenticator < Paquette::Authenticator
+  def user = @user ||= token && User.find_by(api_key: token)
 
-class GemAuthenticator
-  def read_permitted?(auth_token:)
-    !user_for(auth_token).nil?
-  end
+  def read_permitted? = !user.nil?
 
-  def write_permitted?(auth_token:)
-    !!user_for(auth_token)&.publisher?
-  end
+  def write_permitted? = !!user&.publisher?
 
-  def check_otp!(auth_token:, otp_code:)
-    Paquette::Totp.verify!(user_for(auth_token).totp_secret, otp_code)
-  end
+  def check_otp!(code) = Paquette::Totp.verify!(user.totp_secret, code)
 
-  private
+  # Which gems this caller sees. A publisher sees everything
+  def entitled?(name:, version: nil) = user.publisher? || user.entitlements.exists?(gem_name: name)
 
-  # Asked up to three times per push - remember the answer for the request
-  def user_for(token)
-    return nil unless token
-    return Current.user if Current.user&.api_key == token
-
-    Current.user = User.find_by(api_key: token)
-  end
+  # For Paquette::ResponseCache, if one sits in front
+  def identity = user.cache_key
 end
 
-authenticator = GemAuthenticator.new
-
-gem_app = ->(env) {
-  token = Paquette::AuthToken.from_env(env)
-  user = token && User.find_by(api_key: token)
-  repo = if user&.publisher?
-    gems_repo
-  else
-    Paquette::GemServer::ReadGatedRepository.new(gems_repo, gate_key: user&.cache_key_with_version) do |name:, version: nil|
-      user&.entitlements&.exists?(gem_name: name)
-    end
-  end
-  Paquette::GemServer.new(repo, authenticator: authenticator).call(env)
-}
+gems_repo = Paquette::GemServer::DirectoryGemRepository.new(Rails.root.join("packages/gems").to_s)
+gem_server = Paquette::GemServer.new(gems_repo, authenticator: GemAuthenticator)
 
 Rails.application.routes.draw do
-  mount gem_app, at: "/gems"
+  constraints(->(req) { req.host.start_with?("gem.") }) do
+    mount gem_server, at: "/"
+  end
 end
 ```
 
-The server reads the token however the client sent it - Bundler puts it in Basic auth, `gem push` sends it bare - and `Paquette::AuthToken.from_env` reads it the same way, so the stack built here and the answers `GemAuthenticator` gives are about the same caller. Every push and yank has to carry a one-time password. See [Authentication](../README.md#authentication).
+The server reads the token however the client sent it - Bundler puts it in Basic auth, `gem push` sends it bare - and hands it to `GemAuthenticator.new`. Every push and yank has to carry a one-time password. See [Authentication](../MANUAL.md#authentication).
 
-The `DirectoryGemRepository` and the authenticator are built once and shared across requests: the repository just does file I/O, and the authenticator keeps what it learns about a caller in `Current`. What is per-user - the `ReadGatedRepository` and the closure it holds - is built per request, and so is the server around it, which is cheap.
+The repository and the server are built once and shared across requests. What is per-caller - the authenticator, and the gate the server puts around the repository when the authenticator answers `entitled?` - is built per request, which is cheap.
 
 ## Rails execution context
 
@@ -68,21 +49,19 @@ When you use `mount` in `routes.rb`, your Rack app runs inside the full Rails mi
 - **Code reloading** — the reloader is engaged in development, so changes to your app code are picked up without restarting the server.
 - **`CurrentAttributes` reset** — `ActiveSupport::CurrentAttributes` instances are cleared at the start of each request, just as they would be for a normal controller action.
 
-In short, mounting via `routes.rb` gives you the same execution context as any Rails controller action, minus the `ActionController` layer itself. You are free to use ActiveRecord, `Current`, and any other framework facility that depends on the executor.
+In short, mounting via `routes.rb` gives you the same execution context as any Rails controller action, minus the `ActionController` layer itself. You are free to use ActiveRecord and any other framework facility that depends on the executor from inside your authenticator.
 
-## Setting up Current
+## Who the caller was, after the request
 
-Because the request does not pass through a Rails controller, `CurrentAttributes` will be reset but not populated — controllers typically set `Current` in a `before_action`. You need to set the attributes yourself - the authenticator is a good place, as shown in the example above.
+The authenticator the server built is left in `env["paquette.authenticator"]`, so an `on_publish:` hook, which gets the `Rack::Request`, can read `request.env["paquette.authenticator"].user` to record who published - and a log line can say who was served.
 
 ## Mounting outside of Rails routes
 
-If for some reason you mount Paquette in `config.ru` before the Rails application, the request will not pass through the Rails middleware stack. In that case ActiveRecord connections will leak and `CurrentAttributes` will not be managed. You would need to wrap the call yourself:
+If for some reason you mount Paquette in `config.ru` before the Rails application, the request will not pass through the Rails middleware stack. In that case ActiveRecord connections will leak. You would need to wrap the call yourself:
 
 ```ruby
 gem_app = ->(env) {
-  Rails.application.executor.wrap do
-    # safe to use ActiveRecord and Current here
-  end
+  Rails.application.executor.wrap { gem_server.call(env) }
 }
 ```
 

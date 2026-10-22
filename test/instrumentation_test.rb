@@ -70,24 +70,21 @@ class InstrumentationTest < Minitest::Test
     end
   end
 
-  # The block a caller hands to `files_for:` is the personalizer's hot spot on
-  # a cold cache: it is asked per version of every gem an index covers, and it
-  # is somebody else's code, so how long it takes is not something this library
-  # can reason about — only report. It went unreported for a while, and what
-  # that cost was a 145-second /versions whose profile had a large unexplained
-  # gap in the middle of it and no span to hang the blame on.
-  def test_the_callers_files_for_block_is_timed
-    Dir.mktmpdir("paquette_files_for") do |cache_dir|
+  # Finding out whether a gem carries a marker at all is the personalizer's hot
+  # spot on a cold cache: it is asked per version of every gem an index covers,
+  # and it reads the whole data tarball. It went unreported for a while, and
+  # what that cost was a 145-second /versions whose profile had a large
+  # unexplained gap in the middle of it and no span to hang the blame on.
+  def test_the_marker_scan_is_timed
+    Dir.mktmpdir("paquette_marker_scan") do |cache_dir|
       personalizer = Paquette::GemServer::Personalizer.new(
         Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
-        license_key: "L-1",
-        files_for: ->(_name, _version, _path) { {"NOTE.txt" => "for one licensee\n"} },
         cache_dir: cache_dir
       )
 
-      personalizer.gem_file_path("minuscule_test", "0.1.0")
+      personalizing { personalizer.gem_file_path("minuscule_test", "0.1.0") }
 
-      assert_includes @driver.spans, "paquette.gem_personalizer.files_for"
+      assert_includes @driver.spans, "paquette.gem_repacker.marker_keys"
     end
   end
 
@@ -101,20 +98,29 @@ class InstrumentationTest < Minitest::Test
       personalizer = lambda do
         Paquette::GemServer::Personalizer.new(
           Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
-          license_key: "L-1",
-          files_for: ->(_name, _version, _path) { {"NOTE.txt" => "for one licensee\n"} },
           cache_dir: cache_dir
         )
       end
 
-      personalizer.call.compact_info("minuscule_test")
+      personalizing { personalizer.call.compact_info("minuscule_test") }
       assert_includes @driver.spans, "paquette.gem_personalizer.checksum"
       assert_includes counter_paths, "paquette.gem_personalizer.checksum_miss"
       refute_includes counter_paths, "paquette.gem_personalizer.checksum_hit"
 
-      personalizer.call.compact_info("minuscule_test")
+      personalizing { personalizer.call.compact_info("minuscule_test") }
       assert_includes counter_paths, "paquette.gem_personalizer.checksum_hit"
     end
+  end
+
+  # Building the caller's authenticator usually goes to a database, before any
+  # of the work the request asked for, so it gets a span of its own next to
+  # the questions it is then asked.
+  def test_resolving_the_caller_is_timed
+    repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
+    Writable.gem_server(repo).call(Rack::MockRequest.env_for("/versions"))
+
+    assert_includes @driver.spans, "paquette.authentication.resolve"
+    assert_includes @driver.spans, "paquette.authentication.read_permitted"
   end
 
   def test_npm_metadata_request_is_instrumented_down_to_the_tarball
@@ -132,25 +138,28 @@ class InstrumentationTest < Minitest::Test
   # The expensive one: serving a personalized tarball repacks it, and a second
   # request for the same licensee must come out of the cache instead.
   def test_npm_personalization_records_a_repack_and_then_a_cache_hit
+    write_npm_package(@packages_dir, name: "marked", version: "1.0.0",
+      files: {"index.js" => "// paquette:licensee\nmodule.exports = 1;\n"})
     repository = Paquette::NpmServer::Personalizer.new(
       Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir),
-      license_key: "key-for-one-licensee"
+      cache_dir: File.join(@packages_dir, "cache")
     )
 
-    repository.package_file_path("widgets", "1.0.0")
+    personalizing { repository.package_file_path("marked", "1.0.0") }
     assert_includes @driver.spans, "paquette.npm_personalizer.repack"
     assert_includes @driver.spans, "paquette.npm_repacker.repack"
     assert_includes @driver.spans, "paquette.tarball.write"
     assert_includes counter_paths, "paquette.npm_personalizer.cache_miss"
 
-    repository.package_file_path("widgets", "1.0.0")
+    personalizing { repository.package_file_path("marked", "1.0.0") }
     assert_includes counter_paths, "paquette.npm_personalizer.cache_hit"
   end
 
   def test_the_entitler_of_a_read_gated_repository_is_timed
     gated = Paquette::NpmServer::ReadGatedRepository.new(
-      Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir)
-    ) { |name:, version: nil| true }
+      Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir),
+      EntitlingAuthenticator.new { |name:, version: nil| true }
+    )
 
     gated.package_names
 
@@ -179,6 +188,11 @@ class InstrumentationTest < Minitest::Test
   end
 
   private
+
+  # With a caller who gets personalized bytes, the way the server sets one
+  def personalizing(&block)
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new("t", {"licensee" => "One Licensee"}), &block)
+  end
 
   def counter_paths
     @driver.counters.map(&:first)

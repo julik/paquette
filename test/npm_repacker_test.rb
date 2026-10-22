@@ -23,7 +23,7 @@ class NpmRepackerTest < Minitest::Test
   def test_repack_with_text_replacement
     skip "Test package not found" unless File.exist?(@test_package_path)
 
-    new_package_path = Paquette::NpmRepacker.repack(@test_package_path, into: into) do |input_file, output_file, file_path|
+    new_package_path = Paquette::NpmRepacker.repack(@test_package_path, values: {}, into: into) do |input_file, output_file, file_path|
       unless File.extname(file_path).match?(/\.(ts|js|mjs|jsx|tsx)$/)
         IO.copy_stream(input_file, output_file)
         next
@@ -44,7 +44,7 @@ class NpmRepackerTest < Minitest::Test
 
   def test_the_block_sees_paths_relative_to_the_package_root
     seen = []
-    Paquette::NpmRepacker.repack(fixture_package, into: into) do |input_file, output_file, file_path|
+    Paquette::NpmRepacker.repack(fixture_package, values: {}, into: into) do |input_file, output_file, file_path|
       seen << file_path
       IO.copy_stream(input_file, output_file)
     end
@@ -56,67 +56,73 @@ class NpmRepackerTest < Minitest::Test
 
   def test_repack_with_nonexistent_package
     assert_raises(ArgumentError) do
-      Paquette::NpmRepacker.repack("/nonexistent/path.tgz") { |input_file, output_file, file_path| }
+      Paquette::NpmRepacker.repack("/nonexistent/path.tgz", values: {}) { |input_file, output_file, file_path| }
     end
   end
 
-  def test_repack_without_a_block
-    path = Paquette::NpmRepacker.repack(fixture_package,
-      package_json_extras: {"paquette" => {"licenseKey" => "LIC-1"}}, into: into)
+  def test_the_values_are_stamped_into_package_json
+    path = Paquette::NpmRepacker.repack(fixture_package, values: {"licensee" => "LIC-1"}, into: into)
 
     package_json = JSON.parse(tarball_file(path, "package/package.json"))
-    assert_equal({"licenseKey" => "LIC-1"}, package_json["paquette"])
+    assert_equal({"licensee" => "LIC-1"}, package_json["paquette"])
     assert_equal "widget", package_json["name"]
   end
 
-  def test_magic_comment_replacement
-    source = fixture_package(files: {"index.js" => "// paquette_license_info\nexport const x = 1;\n"})
-    path = Paquette::NpmRepacker.repack(source,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+  def test_no_values_leaves_package_json_alone
+    path = Paquette::NpmRepacker.repack(fixture_package, values: {}, into: into)
+
+    assert_nil JSON.parse(tarball_file(path, "package/package.json"))["paquette"]
+  end
+
+  def test_a_marker_line_is_filled_in
+    source = fixture_package(files: {"index.js" => "// paquette:licensee\nexport const x = 1;\n"})
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "licensed to Acme"}, into: into)
 
     content = tarball_file(path, "package/index.js")
     assert_equal "// licensed to Acme\nexport const x = 1;\n", content
+  end
+
+  # A marker for a key the caller did not supply is a comment, and stays one.
+  def test_a_marker_for_an_unknown_key_is_left_alone
+    source = fixture_package(files: {"index.js" => "// paquette:other\nexport const x = 1;\n"})
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "licensed to Acme"}, into: into)
+
+    assert_equal "// paquette:other\nexport const x = 1;\n", tarball_file(path, "package/index.js")
   end
 
   # `esbuild --minify` pulls a legal comment onto the end of a code line. The
   # whole-line match then misses it and the package would be served with no
   # license key in it and nothing to say so.
   def test_a_marker_the_line_match_cannot_reach_is_refused
-    source = fixture_package(files: {"index.js" => "function e(o,r){return o+r}// paquette_license_info\n"})
+    source = fixture_package(files: {"index.js" => "function e(o,r){return o+r}// paquette:licensee\n"})
 
-    error = assert_raises(Paquette::NpmRepacker::MarkerNotApplied) do
-      Paquette::NpmRepacker.repack(source,
-        magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+    error = assert_raises(Paquette::Markers::NotApplied) do
+      Paquette::NpmRepacker.repack(source, values: {"licensee" => "licensed to Acme"}, into: into)
     end
 
     assert_includes error.message, "index.js"
   end
 
-  # A multi-line replacement used to have its newlines flattened to spaces,
+  # A multi-line value used to have its newlines flattened to spaces,
   # publishing something other than what the caller wrote.
-  def test_a_replacement_spanning_several_lines_is_refused
-    error = assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
+  def test_a_value_spanning_several_lines_is_refused
+    error = assert_raises(Paquette::Markers::MultilineValue) do
       Paquette::NpmRepacker.repack(fixture_package,
-        magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme\nand a second line"},
-        into: into)
+        values: {"licensee" => "licensed to Acme\nand a second line"}, into: into)
     end
 
-    assert_includes error.message, "single line"
+    assert_includes error.message, "one line"
   end
 
-  # A marker spanning lines could never match, and would look like a package
-  # that simply had no marker in it.
-  def test_a_marker_spanning_several_lines_is_refused
-    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
-      Paquette::NpmRepacker.repack(fixture_package,
-        magic_comment_replacements: {"// first\n// second" => "licensed"}, into: into)
+  def test_a_value_with_a_bare_carriage_return_is_refused
+    assert_raises(Paquette::Markers::MultilineValue) do
+      Paquette::NpmRepacker.repack(fixture_package, values: {"licensee" => "licensed\rto Acme"}, into: into)
     end
   end
 
-  def test_a_replacement_with_a_bare_carriage_return_is_refused
-    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
-      Paquette::NpmRepacker.repack(fixture_package,
-        magic_comment_replacements: {"// paquette_license_info" => "licensed\rto Acme"}, into: into)
+  def test_a_key_that_is_not_a_marker_key_is_refused
+    assert_raises(ArgumentError) do
+      Paquette::NpmRepacker.repack(fixture_package, values: {"Licensee Name" => "Acme"}, into: into)
     end
   end
 
@@ -124,20 +130,42 @@ class NpmRepackerTest < Minitest::Test
   def test_a_package_without_the_marker_repacks_normally
     source = fixture_package(files: {"index.js" => "export const x = 1;\n"})
 
-    path = Paquette::NpmRepacker.repack(source,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "licensed to Acme"}, into: into)
 
     assert_equal "export const x = 1;\n", tarball_file(path, "package/index.js")
   end
 
-  # A marker inside a file type we never rewrite is not a missed replacement.
-  def test_a_marker_in_an_unprocessed_file_is_left_alone
-    source = fixture_package(files: {"styles.css" => "/* // paquette_license_info */\n"})
+  # Not alone on its line means not a marker, whatever the file.
+  def test_a_marker_inside_other_text_on_its_line_is_left_alone
+    source = fixture_package(files: {"styles.css" => "/* paquette:licensee */\n"})
 
-    path = Paquette::NpmRepacker.repack(source,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme"}, into: into)
+    path = Paquette::NpmRepacker.repack(source, values: {"other" => "x"}, into: into)
 
-    assert_equal "/* // paquette_license_info */\n", tarball_file(path, "package/styles.css")
+    assert_equal "/* paquette:licensee */\n", tarball_file(path, "package/styles.css")
+  end
+
+  # Every text entry is a candidate, not only the sources: a LICENSE carries a
+  # marker as readily as a module does, and keeps its own comment leader.
+  def test_markers_in_any_text_file_are_filled_in
+    source = fixture_package(files: {
+      "LICENSE.txt" => "Licensed to:\n    paquette:licensee\n",
+      "styles.css" => "/* unrelated */\n"
+    })
+
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "Acme Inc."}, into: into)
+
+    assert_equal "Licensed to:\n    Acme Inc.\n", tarball_file(path, "package/LICENSE.txt")
+    assert_equal "/* unrelated */\n", tarball_file(path, "package/styles.css")
+  end
+
+  def test_marker_keys_lists_what_the_package_asks_for
+    assert_empty Paquette::NpmRepacker.marker_keys(fixture_package)
+
+    source = fixture_package(files: {
+      "index.js" => "// paquette:licensee\n// paquette:licensee\n",
+      "LICENSE.txt" => "paquette:customer\n"
+    })
+    assert_equal %w[customer licensee], Paquette::NpmRepacker.marker_keys(source).sort
   end
 
   # The line count is what sourcemaps are sensitive to: a mapping's generated
@@ -145,13 +173,11 @@ class NpmRepackerTest < Minitest::Test
   # an extra line shifts every mapping after it. The map rides along untouched.
   def test_replacement_preserves_the_line_count_and_the_sourcemap
     source = fixture_package(files: {
-      "index.js" => "// paquette_license_info\nexport const x = 1;\n//# sourceMappingURL=index.js.map\n",
+      "index.js" => "// paquette:licensee\nexport const x = 1;\n//# sourceMappingURL=index.js.map\n",
       "index.js.map" => JSON.generate({"version" => 3, "sources" => ["index.ts"], "mappings" => "AAAA"})
     })
 
-    path = Paquette::NpmRepacker.repack(source,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme, at some length"},
-      into: into)
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "licensed to Acme, at some length"}, into: into)
 
     content = tarball_file(path, "package/index.js")
     assert_equal 3, content.lines.length
@@ -165,14 +191,13 @@ class NpmRepackerTest < Minitest::Test
     png = "\x89PNG\r\n\x1a\n\x00\x01\x02\xff".b
     source = fixture_package(files: {"logo.png" => png})
 
-    path = Paquette::NpmRepacker.repack(source,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed"}, into: into)
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "licensed"}, into: into)
 
     assert_equal png, tarball_file(path, "package/logo.png").b
   end
 
   def test_injected_files
-    path = Paquette::NpmRepacker.repack(fixture_package,
+    path = Paquette::NpmRepacker.repack(fixture_package, values: {},
       files: {"LICENSE.txt" => "Licensed to Acme", "docs/USAGE.md" => "# Usage"}, into: into)
 
     assert_equal "Licensed to Acme", tarball_file(path, "package/LICENSE.txt")
@@ -180,7 +205,7 @@ class NpmRepackerTest < Minitest::Test
   end
 
   def test_an_injected_file_replaces_one_already_there
-    path = Paquette::NpmRepacker.repack(fixture_package,
+    path = Paquette::NpmRepacker.repack(fixture_package, values: {},
       files: {"README.md" => "replaced"}, into: into)
 
     assert_equal "replaced", tarball_file(path, "package/README.md")
@@ -194,7 +219,7 @@ class NpmRepackerTest < Minitest::Test
       Paquette::Tarball::Entry.new(name: "package/bin/cli.js", mode: 0o755, mtime: NPM_EPOCH, content: "#!/usr/bin/env node\n")
     ])
 
-    path = Paquette::NpmRepacker.repack(source,
+    path = Paquette::NpmRepacker.repack(source, values: {},
       files: {"bin/cli.js" => "#!/usr/bin/env node\n// licensed\n", "LICENSE.txt" => "Licensed to Acme"}, into: into)
 
     modes = Paquette::Tarball.entries(path).to_h { |entry| [entry.name, entry.mode] }
@@ -216,7 +241,7 @@ class NpmRepackerTest < Minitest::Test
     digests = [0o022, 0o002, 0o077].map do |umask|
       previous = File.umask(umask)
       begin
-        path = Paquette::NpmRepacker.repack(source,
+        path = Paquette::NpmRepacker.repack(source, values: {},
           files: {"LICENSE.txt" => "Licensed to Acme"}, into: into("umask-#{umask.to_s(8)}.tgz"))
         Digest::SHA256.file(path).hexdigest
       ensure
@@ -231,7 +256,7 @@ class NpmRepackerTest < Minitest::Test
     source = fixture_package
     original = Digest::SHA256.file(source).hexdigest
 
-    path = Paquette::NpmRepacker.repack(source, package_json_extras: {"paquette" => {}}, into: into)
+    path = Paquette::NpmRepacker.repack(source, values: {"licensee" => "L"}, into: into)
 
     refute_equal original, Digest::SHA256.file(path).hexdigest
   end
@@ -240,8 +265,7 @@ class NpmRepackerTest < Minitest::Test
   def test_repacking_is_reproducible
     source = fixture_package
     options = {
-      package_json_extras: {"paquette" => {"licenseKey" => "LIC-1"}},
-      magic_comment_replacements: {"// paquette_license_info" => "licensed"},
+      values: {"licensee" => "LIC-1"},
       files: {"LICENSE.txt" => "Licensed to Acme"}
     }
 
@@ -254,14 +278,14 @@ class NpmRepackerTest < Minitest::Test
 
   def test_into_places_the_result_where_the_caller_asked
     destination = File.join(@work_dir, "nested", "here.tgz")
-    path = Paquette::NpmRepacker.repack(fixture_package, into: destination)
+    path = Paquette::NpmRepacker.repack(fixture_package, values: {}, into: destination)
 
     assert_equal destination, path
     assert_path_exists destination
   end
 
   def test_without_into_the_result_lands_somewhere_of_ours
-    path = Paquette::NpmRepacker.repack(fixture_package)
+    path = Paquette::NpmRepacker.repack(fixture_package, values: {})
 
     assert_path_exists path
     assert path.end_with?("-repacked.tgz")

@@ -62,8 +62,8 @@ class NpmRegressionTest < Minitest::Test
 
   # Basename-keyed caching answered @alpha/util with @bravo/util's code.
   def test_two_scopes_sharing_a_basename_do_not_share_a_personalized_file
-    write_npm_package(@dir, name: "@alpha/util", version: "1.0.0", files: {"index.js" => "ALPHA_SECRET\n"})
-    write_npm_package(@dir, name: "@bravo/util", version: "1.0.0", files: {"index.js" => "BRAVO_SECRET\n"})
+    write_npm_package(@dir, name: "@alpha/util", version: "1.0.0", files: {"index.js" => "// paquette:licensee\nALPHA_SECRET\n"})
+    write_npm_package(@dir, name: "@bravo/util", version: "1.0.0", files: {"index.js" => "// paquette:licensee\nBRAVO_SECRET\n"})
 
     # Equal mtimes: the rest of the old cache key was mtime and size.
     stamp = Time.at(1_000_000_000)
@@ -71,19 +71,20 @@ class NpmRegressionTest < Minitest::Test
       File.utime(stamp, stamp, @repository.package_file_path("#{scope}/util", "1.0.0"))
     end
 
-    personalizer = Paquette::NpmServer::Personalizer.new(@repository, license_key: "LIC")
-    alpha = personalizer.package_file_path("@alpha/util", "1.0.0")
-    bravo = personalizer.package_file_path("@bravo/util", "1.0.0")
+    personalizer = Paquette::NpmServer::Personalizer.new(@repository)
+    alpha, bravo = licensed do
+      [personalizer.package_file_path("@alpha/util", "1.0.0"), personalizer.package_file_path("@bravo/util", "1.0.0")]
+    end
 
     refute_equal alpha, bravo
     assert_equal "@bravo/util", JSON.parse(tarball_file(bravo, "package/package.json"))["name"]
-    assert_equal "BRAVO_SECRET\n", tarball_file(bravo, "package/index.js")
-    assert_equal "ALPHA_SECRET\n", tarball_file(alpha, "package/index.js")
+    assert_equal "// LIC\nBRAVO_SECRET\n", tarball_file(bravo, "package/index.js")
+    assert_equal "// LIC\nALPHA_SECRET\n", tarball_file(alpha, "package/index.js")
   end
 
   # Byte-identical tarballs at identical mtimes; only the name differs.
   def test_the_personalized_cache_path_depends_on_the_full_package_name
-    write_npm_package(@dir, name: "@alpha/util", version: "1.0.0")
+    write_npm_package(@dir, name: "@alpha/util", version: "1.0.0", files: {"index.js" => "// paquette:licensee\n"})
     FileUtils.mkdir_p(File.join(@dir, "@bravo", "util"))
     FileUtils.cp(@repository.package_file_path("@alpha/util", "1.0.0"),
       File.join(@dir, "@bravo", "util", "util-1.0.0.tgz"))
@@ -92,10 +93,12 @@ class NpmRegressionTest < Minitest::Test
       File.utime(stamp, stamp, @repository.package_file_path("#{scope}/util", "1.0.0"))
     end
 
-    personalizer = Paquette::NpmServer::Personalizer.new(@repository, license_key: "LIC")
+    personalizer = Paquette::NpmServer::Personalizer.new(@repository)
 
-    refute_equal personalizer.package_file_path("@alpha/util", "1.0.0"),
-      personalizer.package_file_path("@bravo/util", "1.0.0")
+    licensed do
+      refute_equal personalizer.package_file_path("@alpha/util", "1.0.0"),
+        personalizer.package_file_path("@bravo/util", "1.0.0")
+    end
   end
 
   # `npm dist-tag add pkg@1.0.0 latest` escaped as an exception, not a 400.
@@ -144,9 +147,9 @@ class NpmRegressionTest < Minitest::Test
     File.utime(old, old, @repository.package_file_path("widgets", "1.0.0"))
     File.utime(recent, recent, @repository.package_file_path("widgets", "2.0.0"))
 
-    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) do |name:, version: nil|
+    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new do |name:, version: nil|
       version.nil? || version == "1.0.0"
-    end
+    end)
     times = gated.package_metadata("widgets")["time"]
 
     assert_equal old.iso8601, times["created"]
@@ -164,7 +167,7 @@ class NpmRegressionTest < Minitest::Test
       def dist_tags(name) = {}
     end
 
-    gated = Paquette::NpmServer::ReadGatedRepository.new(lean.new) { |name:, version: nil| true }
+    gated = Paquette::NpmServer::ReadGatedRepository.new(lean.new, EntitlingAuthenticator.new { |name:, version: nil| true })
     metadata = gated.package_metadata("widgets")
 
     assert_equal({}, metadata["versions"])
@@ -175,12 +178,12 @@ class NpmRegressionTest < Minitest::Test
   def test_a_path_too_long_for_ustar_survives_a_repack
     long_name = "src/" + ("deeply-generated-component-name" * 4) + ".js"
     write_npm_package(@dir, name: "widgets", version: "1.0.0",
-      files: {long_name => "// long\n"})
+      files: {long_name => "// long\n", "index.js" => "// paquette:licensee\n"})
 
     assert_operator File.basename(long_name).bytesize, :>, 100
 
-    personalizer = Paquette::NpmServer::Personalizer.new(@repository, license_key: "LIC")
-    path = personalizer.package_file_path("widgets", "1.0.0")
+    personalizer = Paquette::NpmServer::Personalizer.new(@repository)
+    path = licensed { personalizer.package_file_path("widgets", "1.0.0") }
 
     assert_equal "// long\n", tarball_file(path, "package/#{long_name}")
   end
@@ -220,5 +223,12 @@ class NpmRegressionTest < Minitest::Test
     hosts.each do |host|
       assert_includes results, "http://#{host}/widgets/-/widgets-1.0.0.tgz"
     end
+  end
+
+  private
+
+  # The personalizer asks the current authenticator who the caller is
+  def licensed(&block)
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, {"licensee" => "LIC"}), &block)
   end
 end

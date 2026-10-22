@@ -23,35 +23,35 @@ To kick the tyres, `bundle install` and start `bin/dev`. It serves `packages/` w
 ## How it fits together
 
 - A **repository** is your packages - the basic one is a directory.
-- **Wrappers** go around a repository and change what a caller gets: `ReadGatedRepository` decides which packages and versions they may see, `Personalizer` repacks each package for them.
-- A **server** is a Rack app around the wrapped repository, plus an **authenticator** that says who may read and who may publish - see [Authentication](MANUAL.md#authentication).
+- An **authenticator** is who is asking, one object per request built from the token: may they read, may they publish, which packages they see, what gets written into their copies. You write one class - see [Authentication](MANUAL.md#authentication).
+- **Wrappers** go around a repository and change what a caller gets: the server gates on the authenticator's `entitled?`, and a `Personalizer` repacks each package with the values the authenticator gives.
+- A **server** is a Rack app around the wrapped repository, built once.
 
-Building a server is cheap, so you build the stack per request, for the license the token belongs to. A publisher gets the bare repository, since a gate would hide from them whatever no license covers. The examples below assume a `License` model and an `AUTHENTICATOR`.
+The examples below assume a `License` model, and this authenticator:
+
+```ruby
+class AcmeAuthenticator < Paquette::Authenticator
+  def license = @license ||= License.find_by(token: token) # once per request, for every question below
+
+  def read_permitted? = !license.nil?
+  def write_permitted? = !!license&.publisher?
+  def check_otp!(code) = Paquette::Totp.verify!(license.totp_secret, code)
+  def entitled?(name:, version: nil) = license.publisher? || license.package_names.include?(name)
+  def personalization = {"licensee" => license.holder_name}
+end
+```
+
+A publisher sees the whole repository ungated; everyone else sees what their license covers.
 
 ## Gems
 
 ```ruby
-GEMS = Paquette::GemServer::DirectoryGemRepository.new("packages/gems")
-
-gem_app = ->(env) {
-  token = Paquette::AuthToken.from_env(env)
-  next Paquette::GemServer.new(GEMS, authenticator: AUTHENTICATOR).call(env) if AUTHENTICATOR.write_permitted?(auth_token: token)
-
-  license = token && License.find_by(token: token)
-  repo = Paquette::GemServer::ReadGatedRepository.new(GEMS, gate_key: license&.cache_key) do |name:, version: nil|
-    license&.package_names&.include?(name)
-  end
-  if license
-    repo = Paquette::GemServer::Personalizer.new(repo,
-      license_key: license.key, # lands in the gemspec metadata as "paquette.license_key"
-      magic_comment_replacements: {"# paquette_license_info" => "Licensed to #{license.holder_name}"},
-      files: {"LICENSE.txt" => license.rendered_text})
-  end
-  Paquette::GemServer.new(repo, authenticator: AUTHENTICATOR).call(env)
-}
+gems = Paquette::GemServer::DirectoryGemRepository.new("packages/gems")
+gems = Paquette::GemServer::Personalizer.new(gems, files: {"LICENSE.txt" => File.read("license_template.txt")})
+gem_server = Paquette::GemServer.new(gems, authenticator: AcmeAuthenticator)
 ```
 
-A line that is exactly `# paquette_license_info` in any `.rb` file comes out as `# Licensed to Acme Inc`. Customers point Bundler at it:
+A line that is exactly `# paquette:licensee` in any file of the gem comes out as `# Acme Inc`, the licensee lands in the gemspec metadata as `paquette.licensee`, and a gem with no marker in it goes out untouched. Customers point Bundler at it:
 
 ```ruby
 gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gem.example.com"
@@ -60,27 +60,12 @@ gem "private_algos", source: "https://tok_998218907784:x-oauth-basic@gem.example
 ## npm
 
 ```ruby
-NPM = Paquette::NpmServer::DirectoryNpmRepository.new("packages/npm")
-
-npm_app = ->(env) {
-  token = Paquette::AuthToken.from_env(env)
-  next Paquette::NpmServer.new(NPM, authenticator: AUTHENTICATOR).call(env) if AUTHENTICATOR.write_permitted?(auth_token: token)
-
-  license = token && License.find_by(token: token)
-  repo = Paquette::NpmServer::ReadGatedRepository.new(NPM, gate_key: license&.cache_key) do |name:, version: nil|
-    license&.package_names&.include?(name) # scoped names arrive whole: "@acme/widgets"
-  end
-  if license
-    repo = Paquette::NpmServer::Personalizer.new(repo,
-      license_key: license.key, # lands in package.json as "paquette": {"licenseKey": ...}
-      magic_comment_replacements: {"// paquette_license_info" => "Licensed to #{license.holder_name}"},
-      files: {"LICENSE.txt" => license.rendered_text})
-  end
-  Paquette::NpmServer.new(repo, authenticator: AUTHENTICATOR).call(env)
-}
+npm = Paquette::NpmServer::DirectoryNpmRepository.new("packages/npm")
+npm = Paquette::NpmServer::Personalizer.new(npm, files: {"LICENSE.txt" => File.read("license_template.txt")})
+npm_server = Paquette::NpmServer.new(npm, authenticator: AcmeAuthenticator)
 ```
 
-A replacement has to stay on one line, so sourcemaps keep pointing at the right place. Customers point npm at it:
+The marker is `// paquette:licensee`, and the values land in package.json under `"paquette"`. Scoped names reach `entitled?` whole: `"@acme/widgets"`. A marker line is replaced by one line, so sourcemaps keep pointing at the right place. Customers point npm at it:
 
 ```
 # .npmrc
@@ -91,27 +76,12 @@ A replacement has to stay on one line, so sourcemaps keep pointing at the right 
 ## Python
 
 ```ruby
-PYPI = Paquette::PypiServer::DirectoryPypiRepository.new("packages/pypi")
-
-pypi_app = ->(env) {
-  token = Paquette::AuthToken.from_env(env)
-  next Paquette::PypiServer.new(PYPI, authenticator: AUTHENTICATOR).call(env) if AUTHENTICATOR.write_permitted?(auth_token: token)
-
-  license = token && License.find_by(token: token)
-  repo = Paquette::PypiServer::ReadGatedRepository.new(PYPI, gate_key: license&.cache_key) do |name:, version: nil|
-    license&.package_names&.include?(name) # PEP 503 normalized: "acme-widgets"
-  end
-  if license
-    repo = Paquette::PypiServer::Personalizer.new(repo,
-      license_key: license.key, # lands in paquette.json in the .dist-info
-      magic_comment_replacements: {"# paquette_license_info" => "Licensed to #{license.holder_name}"},
-      files: {"acme_widgets/LICENSE.txt" => license.rendered_text}) # relative to site-packages
-  end
-  Paquette::PypiServer.new(repo, authenticator: AUTHENTICATOR).call(env)
-}
+pypi = Paquette::PypiServer::DirectoryPypiRepository.new("packages/pypi")
+pypi = Paquette::PypiServer::Personalizer.new(pypi, files: {"acme_widgets/LICENSE.txt" => File.read("license_template.txt")}) # relative to site-packages
+pypi_server = Paquette::PypiServer.new(pypi, authenticator: AcmeAuthenticator)
 ```
 
-Customers point pip (or uv, or Poetry) at it:
+The marker is `# paquette:licensee`, the values land in `paquette.json` in the `.dist-info`, and `entitled?` gets the PEP 503 normalized name: `"acme-widgets"`. Customers point pip (or uv, or Poetry) at it:
 
 ```
 pip install acme-widgets --index-url https://__token__:tok_998218907784@pypi.example.com/simple/
@@ -123,9 +93,9 @@ The registries need a hostname each. `SubdomainRouter` picks one by the first la
 
 ```ruby
 run Paquette::SubdomainRouter.new { |router|
-  router.map "gem", to: gem_app
-  router.map "npm", to: npm_app
-  router.map "pypi", to: pypi_app
+  router.map "gem", to: gem_server
+  router.map "npm", to: npm_server
+  router.map "pypi", to: pypi_server
 }
 ```
 

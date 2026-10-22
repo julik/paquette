@@ -39,10 +39,12 @@ module Paquette
   # lib/ on the load path.
   autoload :AuthToken, "#{__dir__}/paquette/auth_token"
   autoload :Authentication, "#{__dir__}/paquette/authentication"
+  autoload :Authenticator, "#{__dir__}/paquette/authenticator"
   autoload :CacheValidation, "#{__dir__}/paquette/cache_validation"
   autoload :ConditionalGet, "#{__dir__}/paquette/conditional_get"
   autoload :GemServer, "#{__dir__}/paquette/gem_server"
   autoload :IndexPage, "#{__dir__}/paquette/index_page"
+  autoload :Markers, "#{__dir__}/paquette/markers"
   autoload :NpmRepacker, "#{__dir__}/paquette/npm_repacker"
   autoload :NpmServer, "#{__dir__}/paquette/npm_server"
   autoload :Published, "#{__dir__}/paquette/published"

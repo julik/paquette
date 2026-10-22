@@ -83,8 +83,13 @@ module HostileGemHelpers
   # "../../pwned" has a file_name that escapes the build directory — the
   # test would land the payload outside tmp before the code under test
   # ever saw it.
-  def gem_bytes_for(spec)
+  def gem_bytes_for(spec, files: {})
     Dir.mktmpdir("paquette_hostile_gem") do |dir|
+      files.each do |relative_path, content|
+        path = File.join(dir, relative_path)
+        FileUtils.mkdir_p(File.dirname(path))
+        File.binwrite(path, content)
+      end
       built = Gem::DefaultUserInteraction.use_ui(Gem::SilentUI.new) do
         Dir.chdir(dir) do
           Gem::Package.build(spec, true, false, "hostile.gem")
@@ -179,7 +184,7 @@ module PlatformGemHelpers
   # The spec is built with a real Gem::Platform, so `file_name` and
   # `full_name` are RubyGems' own: "a-1.0.0.gem" for ruby, and
   # "a-1.0.0-java.gem" for anything else.
-  def platform_gem_spec(name:, version:, platform: "ruby", dependencies: {})
+  def platform_gem_spec(name:, version:, platform: "ruby", dependencies: {}, files: {})
     spec = Gem::Specification.new
     spec.name = name
     spec.version = Gem::Version.new(version)
@@ -188,20 +193,21 @@ module PlatformGemHelpers
     spec.description = "A #{platform} build of #{name}"
     spec.authors = ["Platform Fixture"]
     spec.homepage = "https://example.com/#{name}"
-    spec.files = []
+    spec.files = files.keys
     dependencies.each { |dep_name, requirement| spec.add_runtime_dependency(dep_name.to_s, requirement) }
     spec
   end
 
   # Writes the gem into `gems_dir` under the layout DirectoryGemRepository
   # expects, and returns its path.
-  def write_platform_gem(gems_dir, name:, version:, platform: "ruby", dependencies: {})
-    spec = platform_gem_spec(name: name, version: version, platform: platform, dependencies: dependencies)
+  # `files:` are written into the gem, so a build can carry a marker line
+  def write_platform_gem(gems_dir, name:, version:, platform: "ruby", dependencies: {}, files: {})
+    spec = platform_gem_spec(name: name, version: version, platform: platform, dependencies: dependencies, files: files)
     package_dir = File.join(gems_dir, name)
     FileUtils.mkdir_p(package_dir)
 
     path = File.join(package_dir, spec.file_name)
-    File.binwrite(path, gem_bytes_for(spec))
+    File.binwrite(path, gem_bytes_for(spec, files: files))
     path
   end
 end
@@ -277,39 +283,116 @@ module NpmTarballHelpers
   end
 end
 
-# An authenticator in the shape both servers take. `readers:` and `writers:`
-# are tokens (a writer reads too, nil among the readers lets anonymous callers
-# in), and a code checks out when it is good for `otp_secret:`. Every question
-# lands in `questions`.
+# An authenticator factory in the shape the servers take, and the instances it
+# hands out. `readers:` and `writers:` are tokens (a writer reads too, nil among
+# the readers lets anonymous callers in), a code checks out when it is good for
+# `otp_secret:`, `identity:` and `entitled:` are callables given the token, and
+# `personalization:` is given the token too. Every question any instance was
+# asked lands in `questions`, with the token it was asked about.
 class TestAuthenticator
   attr_reader :questions
 
-  def initialize(readers: [], writers: [], otp_secret: nil)
+  def initialize(readers: [], writers: [], otp_secret: nil, identity: nil, entitled: nil, personalization: nil)
     @readers = readers
     @writers = writers
     @otp_secret = otp_secret
+    @identity = identity
+    @entitled = entitled
+    @personalization = personalization
     @questions = []
   end
 
-  def read_permitted?(auth_token:)
-    @questions << [:read_permitted?, auth_token]
-    @readers.include?(auth_token) || (!auth_token.nil? && @writers.include?(auth_token))
+  def call(token)
+    instance = Class.new(Instance)
+    instance.define_method(:identity) { factory.identity_for(token) } if @identity
+    instance.define_method(:entitled?) { |name:, version: nil| factory.entitled_for(token, name: name, version: version) } if @entitled
+    instance.define_method(:personalization) { factory.personalization_for(token) } if @personalization
+    instance.new(token, self)
   end
 
-  def write_permitted?(auth_token:)
-    @questions << [:write_permitted?, auth_token]
-    !auth_token.nil? && @writers.include?(auth_token)
+  def read_permitted?(token)
+    @questions << [:read_permitted?, token]
+    @readers.include?(token) || (!token.nil? && @writers.include?(token))
   end
 
-  def check_otp!(auth_token:, otp_code:)
-    @questions << [:check_otp!, auth_token, otp_code]
-    Paquette::Totp.verify!(@otp_secret, otp_code)
+  def write_permitted?(token)
+    @questions << [:write_permitted?, token]
+    !token.nil? && @writers.include?(token)
+  end
+
+  def check_otp!(token, code)
+    @questions << [:check_otp!, token, code]
+    Paquette::Totp.verify!(@otp_secret, code)
+  end
+
+  def identity_for(token)
+    @questions << [:identity, token]
+    @identity.call(token)
+  end
+
+  def entitled_for(token, name:, version:)
+    @entitled.call(name: name, version: version)
+  end
+
+  def personalization_for(token)
+    @personalization.call(token)
+  end
+
+  class Instance < Paquette::Authenticator
+    attr_reader :factory
+
+    def initialize(token, factory)
+      super(token)
+      @factory = factory
+    end
+
+    def read_permitted? = factory.read_permitted?(token)
+
+    def write_permitted? = factory.write_permitted?(token)
+
+    def check_otp!(code) = factory.check_otp!(token, code)
+  end
+end
+
+# An authenticator that gates by a block, for tests about what a caller may
+# see: `EntitlingAuthenticator.gating { |name:, version: nil| ... }` is a
+# factory, and `.new(token) { ... }` one instance.
+class EntitlingAuthenticator < Paquette::Authenticator
+  def self.gating(&entitler)
+    ->(token) { new(token, &entitler) }
+  end
+
+  def initialize(token = nil, &entitler)
+    super(token)
+    @entitler = entitler
+  end
+
+  def entitled?(name:, version: nil)
+    @entitler.call(name: name, version: version)
+  end
+end
+
+# An authenticator that personalizes with fixed values, for tests about what
+# gets written into a package. `PersonalizingAuthenticator.with(values)` is a
+# factory, and `.new(token, values)` one instance.
+class PersonalizingAuthenticator < Paquette::Authenticator
+  def self.with(values)
+    ->(token) { new(token, values) }
+  end
+
+  def initialize(token, values)
+    super(token)
+    @values = values
+  end
+
+  def personalization
+    @values
   end
 end
 
 # What a server takes when its test writes: any code goes, but there has to
 # be one - send it with `header "OTP", ANY_OTP` or in the env.
-OPEN_AUTHENTICATOR = Paquette::Authentication::Open.new
+OPEN_AUTHENTICATOR = Paquette::Authentication::Open
 ANY_OTP = "123456"
 
 # Servers for tests that write and are not about authentication: an Open

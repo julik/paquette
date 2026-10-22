@@ -502,7 +502,7 @@ class GemServerTest < Minitest::Test
 
   def test_compact_info_returns_404_for_gated_gem
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }
+    gated = Paquette::GemServer::ReadGatedRepository.new(repo, EntitlingAuthenticator.new { |**| false })
     gated_app = Writable.gem_server(gated)
     session = Rack::Test::Session.new(Rack::MockSession.new(gated_app))
 
@@ -512,7 +512,7 @@ class GemServerTest < Minitest::Test
 
   def test_gem_download_returns_404_for_gated_gem
     repo = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repo) { |**| false }
+    gated = Paquette::GemServer::ReadGatedRepository.new(repo, EntitlingAuthenticator.new { |**| false })
     gated_app = Writable.gem_server(gated)
     session = Rack::Test::Session.new(Rack::MockSession.new(gated_app))
 

@@ -117,30 +117,28 @@ class PipInstallTest < Minitest::Test
   # describes the repacked file and not the one on disk
   def test_pip_installs_a_personalized_wheel
     write_wheel(@packages_dir, name: "widgets", version: "1.0.0",
-      files: {"widgets/__init__.py" => "    # paquette_license_info\nVERSION = '1.0.0'\n"})
+      files: {"widgets/__init__.py" => "    # paquette:notice\nVERSION = '1.0.0'\n"})
     personalized = Paquette::PypiServer::Personalizer.new(@repository,
-      license_key: "LIC-ABC-123",
-      magic_comment_replacements: {"# paquette_license_info" => "licensed to Acme Inc (LIC-ABC-123)"},
-      files: {"widgets/LICENSE.txt" => "Licensed to Acme Inc."},
+      files: {"widgets/LICENSE.txt" => "paquette:notice"},
       cache_dir: File.join(@work_dir, "cache"))
-    serve(Writable.pypi_server(personalized))
+    values = {"notice" => "licensed to Acme Inc (LIC-ABC-123)", "license_key" => "LIC-ABC-123"}
+    serve(Paquette::PypiServer.new(personalized, authenticator: PersonalizingAuthenticator.with(values)))
+    sha256 = Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, values)) do
+      personalized.file_info("widgets", "widgets-1.0.0-py3-none-any.whl").sha256
+    end
 
-    assert pip_install("--require-hashes", "widgets==1.0.0 --hash=sha256:#{personalized.file_info("widgets", "widgets-1.0.0-py3-none-any.whl").sha256}"),
-      "pip install failed:\n#{@output}"
+    assert pip_install("--require-hashes", "widgets==1.0.0 --hash=sha256:#{sha256}"), "pip install failed:\n#{@output}"
     assert_includes File.read(File.join(@target_dir, "widgets", "__init__.py")), "    # licensed to Acme Inc (LIC-ABC-123)"
-    assert_equal "Licensed to Acme Inc.", File.read(File.join(@target_dir, "widgets", "LICENSE.txt"))
+    assert_equal "licensed to Acme Inc (LIC-ABC-123)", File.read(File.join(@target_dir, "widgets", "LICENSE.txt"))
     stamp = python_eval("import importlib.metadata as m, json; print(json.loads(m.distribution('widgets').read_text('paquette.json'))['license_key'])")
     assert_equal "LIC-ABC-123", stamp
   end
 
   def test_pip_installs_a_personalized_sdist
     write_sdist(@packages_dir, name: "widgets", version: "1.0.0",
-      files: {"widgets/__init__.py" => "# paquette_license_info\nVERSION = '1.0.0'\n"})
-    personalized = Paquette::PypiServer::Personalizer.new(@repository,
-      license_key: "LIC-ABC-123",
-      magic_comment_replacements: {"# paquette_license_info" => "licensed to LIC-ABC-123"},
-      cache_dir: File.join(@work_dir, "cache"))
-    serve(Writable.pypi_server(personalized))
+      files: {"widgets/__init__.py" => "# paquette:notice\nVERSION = '1.0.0'\n"})
+    personalized = Paquette::PypiServer::Personalizer.new(@repository, cache_dir: File.join(@work_dir, "cache"))
+    serve(Paquette::PypiServer.new(personalized, authenticator: PersonalizingAuthenticator.with({"notice" => "licensed to LIC-ABC-123"})))
 
     assert pip_install("widgets==1.0.0"), "pip install failed:\n#{@output}"
     assert_includes File.read(File.join(@target_dir, "widgets", "__init__.py")), "# licensed to LIC-ABC-123"
@@ -150,8 +148,7 @@ class PipInstallTest < Minitest::Test
   def test_pip_cannot_install_outside_the_entitlement
     write_wheel(@packages_dir, name: "widgets", version: "1.0.0")
     write_wheel(@packages_dir, name: "secret", version: "1.0.0")
-    gated = Paquette::PypiServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "widgets" }
-    serve(Writable.pypi_server(gated))
+    serve(Paquette::PypiServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |name:, version: nil| name == "widgets" }))
 
     assert pip_install("widgets"), "pip install failed:\n#{@output}"
     refute pip_install("secret"), "a gated project was installable:\n#{@output}"

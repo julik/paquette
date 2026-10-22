@@ -79,8 +79,10 @@ class Paquette::GemServer::GemRepository
   # serve changes — wrappers included. A wrapper that cannot describe
   # itself must return nil, "do not cache this", which propagates outward.
   #
+  # @param scope [String, nil] the one gem the validator is for, or nil for
+  #   the whole corpus; a repository that does not distinguish ignores it
   # @return [String, nil]
-  def cache_validator
+  def cache_validator(scope = nil)
     nil
   end
 
@@ -108,9 +110,10 @@ class Paquette::GemServer::GemRepository
   # the npm side.
   #
   # @param repository [Object]
+  # @param scope [String, nil] the one gem the validator is for, if any
   # @return [String, nil]
-  def self.cache_validator_of(repository)
-    Paquette::CacheValidation.validator_of(repository)
+  def self.cache_validator_of(repository, scope = nil)
+    Paquette::CacheValidation.validator_of(repository, scope)
   end
 
   # @param repository [Object]

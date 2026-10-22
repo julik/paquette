@@ -21,10 +21,12 @@ module Paquette::ConditionalGet
   #
   # @param resource_parts [Array<String>] what distinguishes this endpoint's
   #   body from another's over the same corpus
+  # @param scope [String, nil] the one package the endpoint is about, if any -
+  #   see Paquette::CacheValidation.validator_of
   # @param weak [Boolean]
   # @return [String, nil]
-  def etag_for(*resource_parts, weak: false)
-    Paquette::CacheValidation.etag_for(@repository, *resource_parts, weak: weak)
+  def etag_for(*resource_parts, scope: nil, weak: false)
+    Paquette::CacheValidation.etag_for(@repository, *resource_parts, scope: scope, weak: weak)
   end
 
   # Request headers that carry a credential. A request with either one is

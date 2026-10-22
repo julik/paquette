@@ -1,27 +1,41 @@
 require "delegate"
+require "digest"
 require "measurometer"
 
-# Filters every read through an entitler block; non-entitled projects and
-# versions do not exist. Writes pass through - see the gem-side twin.
+# Filters every read through the caller's authenticator; non-entitled projects
+# and versions do not exist. Writes pass through - see the gem-side twin, which
+# the server applies the same way: for every request whose authenticator
+# answers `entitled?`.
 class Paquette::PypiServer::ReadGatedRepository < SimpleDelegator
   # @param repository [Paquette::PypiServer::PypiRepository] the repository
   #   to wrap
-  # @param gate_key [String, nil] names this gate for HTTP caching - see the
-  #   gem-side ReadGatedRepository for the contract. Without one the whole
-  #   stack emits no ETag.
-  # @yield [name:, version:] the entitler, called with the normalized project
-  #   name and - for a file - the version out of its filename; returns truthy
-  #   when the caller may see it
-  def initialize(repository, gate_key: nil, &entitler)
+  # @param authenticator [Paquette::Authenticator] the caller's, answering
+  #   `entitled?(name:, version: nil)` - asked with the normalized project
+  #   name and, for a file, the version out of its filename
+  def initialize(repository, authenticator)
     super(repository)
-    @entitler = entitler
-    @gate_key = gate_key
+    @authenticator = authenticator
   end
 
+  # What this caller can see within the scope, digested into the wrapped
+  # validator - see the gem-side twin for why, and for why a caller who sees
+  # nothing gets none.
+  #
+  # @param scope [String, nil] one normalized project name, or nil for the
+  #   whole index
   # @return [String, nil]
-  def cache_validator
-    inner = Paquette::CacheValidation.validator_of(__getobj__)
-    Paquette::CacheValidation.derive_validator(inner, "read-gate", @gate_key)
+  def cache_validator(scope = nil)
+    inner = Paquette::CacheValidation.validator_of(__getobj__, scope)
+    return nil if inner.nil?
+
+    visible = if scope
+      filenames_for_project(scope).map { |filename| [scope, filename] }
+    else
+      project_names.flat_map { |project| [[project]] + filenames_for_project(project).map { |filename| [project, filename] } }
+    end
+    return nil if visible.empty?
+
+    Paquette::CacheValidation.derive_validator(inner, "read-gate", Digest::SHA256.hexdigest(visible.sort.join("\0")))
   end
 
   # @return [Boolean]
@@ -91,11 +105,11 @@ class Paquette::PypiServer::ReadGatedRepository < SimpleDelegator
     !!(entitled?(name: project) && entitled?(name: project, version: version))
   end
 
-  # The entitler is the caller's, and a project page calls it once per file.
+  # The authenticator is the caller's, and a project page asks it once per file.
   #
   # @param criteria [Hash]
   # @return [Object] truthy when entitled
   def entitled?(**criteria)
-    Measurometer.instrument("paquette.pypi_read_gate.entitled") { @entitler.call(**criteria) }
+    Measurometer.instrument("paquette.pypi_read_gate.entitled") { @authenticator.entitled?(**criteria) }
   end
 end

@@ -21,8 +21,8 @@ require "json"
 # reports it as a tampered gem.
 class CompactIndexBenchmarkTest < Minitest::Test
   # Split the way the corpus this was written for splits: a gem that ships an
-  # agreement and is therefore repacked per licensee, and one that ships none
-  # and is served byte for byte. Both walk the whole version list on every
+  # agreement with a marker in it and is therefore repacked per licensee, and
+  # one that carries no marker and is served byte for byte. Both walk the whole version list on every
   # /versions; only one of them repacks, and a regression in either path shows
   # up as the other's cost.
   PERSONALIZED_GEM = "bench_personalized"
@@ -69,7 +69,7 @@ class CompactIndexBenchmarkTest < Minitest::Test
 
     building = elapsed do
       1.upto(VERSIONS_PER_GEM) do |n|
-        write_dummy_gem(PERSONALIZED_GEM, "0.#{n}.0", files: {LICENSE_FILE => "The agreement, as shipped.\n"})
+        write_dummy_gem(PERSONALIZED_GEM, "0.#{n}.0", files: {LICENSE_FILE => "Licensed to:\n    paquette:licensee\n\nThe agreement, as shipped.\n"})
         write_dummy_gem(PLAIN_GEM, "0.#{n}.0")
       end
     end
@@ -96,7 +96,7 @@ class CompactIndexBenchmarkTest < Minitest::Test
     assert_equal VERSIONS_PER_GEM, listed.fetch(PERSONALIZED_GEM).length
     assert_equal VERSIONS_PER_GEM, listed.fetch(PLAIN_GEM).length
 
-    # The gem that ships an agreement was repacked once per version, the one
+    # The gem that carries a marker was repacked once per version, the one
     # that does not was not repacked at all.
     assert_equal VERSIONS_PER_GEM, @driver.counters["paquette.gem_personalizer.cache_miss"]
 
@@ -176,15 +176,16 @@ class CompactIndexBenchmarkTest < Minitest::Test
 
   private
 
+  # Open, so the server can write, and personalizing for one licensee
+  class PersonalizingOpen < Paquette::Authentication::Open
+    def personalization = {"licensee" => "Licensee One", "license_key" => "BENCH-1"}
+  end
+
   def server
     repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    personalized = Paquette::GemServer::Personalizer.new(repository,
-      license_key: "BENCH-1",
-      personalization_key: "Licensee One\nBENCH-1",
-      files_for: ->(gem_name, _version, gem_path) { agreement_files(gem_name, gem_path) },
-      cache_dir: @cache_dir)
+    personalized = Paquette::GemServer::Personalizer.new(repository, cache_dir: @cache_dir)
 
-    Writable.gem_server(personalized)
+    Writable::WithOtp.new(Paquette::GemServer.new(personalized, authenticator: PersonalizingOpen))
   end
 
   def get(path, env = {})
@@ -195,17 +196,6 @@ class CompactIndexBenchmarkTest < Minitest::Test
     buffer = +""
     response[2].each { |chunk| buffer << chunk }
     buffer
-  end
-
-  # The shop's own rule, and the shape that matters here: a gem that ships no
-  # agreement returns nil and is served as it sits on disk. Asking the spec
-  # rather than unpacking the gem is the whole difference between this costing
-  # a millisecond and costing a tenth of a second per version.
-  def agreement_files(gem_name, gem_path)
-    spec = Gem::Package.new(gem_path).spec
-    return nil unless spec.files.include?(LICENSE_FILE)
-
-    {LICENSE_FILE => "Licensed to Licensee One.\n\nThe agreement, as shipped.\n"}
   end
 
   # {"gem_name" => ["0.1.0", ...]} out of a /versions body.

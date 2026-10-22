@@ -4,12 +4,21 @@ require "digest"
 require "rubygems/package"
 
 class PersonalizerTest < Minitest::Test
+  # The licensee the fixture gem's `# paquette:licensee` marker gets filled with
+  LICENSEE = {"licensee" => "TEST-LICENSE-123"}.freeze
+
   def setup
     @gems_dir = FIXTURE_GEMS_DIR
     @dir_repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
-    @personalizer = Paquette::GemServer::Personalizer.new(@dir_repository,
-      license_key: "TEST-LICENSE-123",
-      magic_comment_replacements: {"# paquette_license_info" => "TEST-LICENSE-123"})
+    @cache_dir = Dir.mktmpdir("personalizer_test")
+    @personalizer = Paquette::GemServer::Personalizer.new(@dir_repository, cache_dir: @cache_dir)
+    @current = Paquette::Authenticator.current
+    Thread.current[Paquette::Authenticator::CURRENT_KEY] = PersonalizingAuthenticator.new(nil, LICENSEE)
+  end
+
+  def teardown
+    Thread.current[Paquette::Authenticator::CURRENT_KEY] = @current
+    FileUtils.remove_entry(@cache_dir)
   end
 
   def test_personalizer_delegates_to_repository
@@ -24,6 +33,8 @@ class PersonalizerTest < Minitest::Test
 
     # Get the personalized gem path
     personalized_path = @personalizer.gem_file_path("minuscule_test", "0.1.0")
+    assert_equal "# TEST-LICENSE-123", read_from_gem(personalized_path, "lib/minuscule_test.rb").lines[1].chomp,
+      "the marker line is filled in, comment leader and all"
 
     # Should be a different path than the original
     original_path = @dir_repository.gem_file_path("minuscule_test", "0.1.0")
@@ -72,8 +83,8 @@ class PersonalizerTest < Minitest::Test
 
       personalizer = Paquette::GemServer::Personalizer.new(
         Paquette::GemServer::DirectoryGemRepository.new(gems_dir),
-        license_key: "TEST-LICENSE-123",
-        files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"}
+        files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"},
+        cache_dir: @cache_dir
       )
       personalized = personalizer.compact_info("picky").fetch(0)
 
@@ -91,14 +102,14 @@ class PersonalizerTest < Minitest::Test
   # ── Files injected per licensee ────────────────────────────────────────────
   #
   # The repacker has always been able to write whole files into a gem; the
-  # personalizer is what knows who the gem is for. Together they are how a
-  # LICENSE naming its licensee gets into a download.
+  # authenticator is what knows who the gem is for. The file is one template
+  # for the registry, and the markers in it are filled with the caller's
+  # values - which is how a LICENSE naming its licensee gets into a download.
 
   def test_injected_files_reach_the_gem_and_its_manifest
     skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
 
-    personalizer = personalizer_for("ST-5DM4XRJ", "Acme BV")
-    spec = Gem::Package.new(personalizer.gem_file_path("minuscule_test", "0.1.0")).spec
+    spec = as("ST-5DM4XRJ", "Acme BV") { Gem::Package.new(licensed_personalizer.gem_file_path("minuscule_test", "0.1.0")).spec }
 
     assert_includes spec.files, "LICENSE-COMMERCIAL.txt",
       "an injected file has to be in spec.files or `gem contents` cannot see it"
@@ -107,11 +118,11 @@ class PersonalizerTest < Minitest::Test
   def test_injected_files_carry_what_was_rendered_into_them
     skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
 
-    personalizer = personalizer_for("ST-5DM4XRJ", "Acme BV")
-    licence = read_from_gem(personalizer.gem_file_path("minuscule_test", "0.1.0"), "LICENSE-COMMERCIAL.txt")
+    licence = as("ST-5DM4XRJ", "Acme BV") { read_from_gem(licensed_personalizer.gem_file_path("minuscule_test", "0.1.0"), "LICENSE-COMMERCIAL.txt") }
 
     assert_includes licence, "ST-5DM4XRJ"
     assert_includes licence, "Acme BV"
+    refute_includes licence, "paquette:"
   end
 
   # The one that matters most. These used to share a path keyed by gem and
@@ -121,8 +132,9 @@ class PersonalizerTest < Minitest::Test
   def test_two_licensees_never_share_a_personalized_file
     skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
 
-    alice = personalizer_for("ST-AAAAAAA", "Alice Ltd").gem_file_path("minuscule_test", "0.1.0")
-    bob = personalizer_for("ST-BBBBBBB", "Bob GmbH").gem_file_path("minuscule_test", "0.1.0")
+    personalizer = licensed_personalizer
+    alice = as("ST-AAAAAAA", "Alice Ltd") { personalizer.gem_file_path("minuscule_test", "0.1.0") }
+    bob = as("ST-BBBBBBB", "Bob GmbH") { personalizer.gem_file_path("minuscule_test", "0.1.0") }
 
     refute_equal alice, bob, "one path for two licensees is one licensee receiving the other's gem"
     assert_includes read_from_gem(alice, "LICENSE-COMMERCIAL.txt"), "Alice Ltd"
@@ -145,10 +157,10 @@ class PersonalizerTest < Minitest::Test
   def test_a_personalized_gem_is_built_once_and_then_reused
     skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
 
-    first = personalizer_for("ST-5DM4XRJ", "Acme BV").gem_file_path("minuscule_test", "0.1.0")
+    first = as("ST-5DM4XRJ", "Acme BV") { licensed_personalizer.gem_file_path("minuscule_test", "0.1.0") }
     digest = Digest::SHA256.file(first).hexdigest
 
-    second = personalizer_for("ST-5DM4XRJ", "Acme BV").gem_file_path("minuscule_test", "0.1.0")
+    second = as("ST-5DM4XRJ", "Acme BV") { licensed_personalizer.gem_file_path("minuscule_test", "0.1.0") }
 
     assert_equal first, second, "the same licensee must land on the same cached artifact"
     assert_equal digest, Digest::SHA256.file(second).hexdigest
@@ -160,9 +172,11 @@ class PersonalizerTest < Minitest::Test
   def test_the_published_checksum_describes_the_personalized_download
     skip "Test gem not found" unless @personalizer.gem_exists?("minuscule_test", "0.1.0")
 
-    personalizer = personalizer_for("ST-5DM4XRJ", "Acme BV")
-    published = extract_checksum(personalizer.compact_info("minuscule_test").first)
-    downloaded = Digest::SHA256.file(personalizer.gem_file_path("minuscule_test", "0.1.0")).hexdigest
+    personalizer = licensed_personalizer
+    published, downloaded = as("ST-5DM4XRJ", "Acme BV") do
+      [extract_checksum(personalizer.compact_info("minuscule_test").first),
+        Digest::SHA256.file(personalizer.gem_file_path("minuscule_test", "0.1.0")).hexdigest]
+    end
 
     assert_equal published, downloaded
   end
@@ -192,7 +206,7 @@ class PersonalizerTest < Minitest::Test
     File.write(File.join(bystander, "somebody-elses.txt"), "not ours\n")
     before = Dir.children(Dir.tmpdir)
 
-    personalizer_for("ST-CCCCCCC", "Cleanup Ltd").gem_file_path("minuscule_test", "0.1.0")
+    as("ST-CCCCCCC", "Cleanup Ltd") { licensed_personalizer.gem_file_path("minuscule_test", "0.1.0") }
 
     assert File.exist?(File.join(bystander, "somebody-elses.txt")),
       "a personalize deleted a file belonging to something else"
@@ -207,14 +221,67 @@ class PersonalizerTest < Minitest::Test
     FileUtils.remove_entry(sandbox) if sandbox && File.exist?(sandbox)
   end
 
+  # A gem with no marker anywhere is nobody's to personalize, whoever asks:
+  # its bytes, its checksum and its metadata are the ones on disk.
+  def test_a_gem_without_a_marker_is_served_byte_for_byte
+    original = @dir_repository.gem_file_path("zip_kit", "6.2.0")
+
+    assert_equal original, @personalizer.gem_file_path("zip_kit", "6.2.0")
+    assert_equal @dir_repository.gem_checksum("zip_kit", "6.2.0"), @personalizer.gem_checksum("zip_kit", "6.2.0")
+    assert_equal @dir_repository.compact_info("zip_kit"), @personalizer.compact_info("zip_kit")
+  end
+
+  # A marker for a key the caller did not supply is a comment and stays one
+  def test_a_marker_without_a_value_is_left_alone
+    path = as_values("license_key" => "ST-1") { @personalizer.gem_file_path("minuscule_test", "0.1.0") }
+
+    refute_equal @dir_repository.gem_file_path("minuscule_test", "0.1.0"), path, "the stamp alone is a reason to repack"
+    assert_equal "# paquette:licensee", read_from_gem(path, "lib/minuscule_test.rb").lines[1].chomp
+  end
+
+  def test_a_value_spanning_lines_is_refused_before_anything_is_written
+    assert_raises(Paquette::Markers::MultilineValue) do
+      as_values("licensee" => "two\nlines") { @personalizer.gem_file_path("minuscule_test", "0.1.0") }
+    end
+    assert_empty Dir.glob(File.join(@cache_dir, "*.gem"))
+  end
+
+  def test_a_caller_without_personalization_gets_the_original
+    Paquette::Authenticator.with(Paquette::Authenticator.new(nil)) do
+      assert_equal @dir_repository.gem_file_path("minuscule_test", "0.1.0"), @personalizer.gem_file_path("minuscule_test", "0.1.0")
+    end
+    Paquette::Authenticator.with(nil) do
+      assert_equal @dir_repository.gem_file_path("minuscule_test", "0.1.0"), @personalizer.gem_file_path("minuscule_test", "0.1.0")
+    end
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, {})) do
+      assert_equal @dir_repository.gem_file_path("minuscule_test", "0.1.0"), @personalizer.gem_file_path("minuscule_test", "0.1.0")
+    end
+  end
+
   private
 
-  def personalizer_for(license_ref, licensee)
+  LICENSE_TEMPLATE = <<~LICENSE
+    This copy is licensed to:
+
+        paquette:licensee
+        paquette:license_key
+
+  LICENSE
+
+  def licensed_personalizer
     Paquette::GemServer::Personalizer.new(
       Paquette::GemServer::DirectoryGemRepository.new(@gems_dir),
-      license_key: license_ref,
-      files: {"LICENSE-COMMERCIAL.txt" => "Licensed to #{licensee} under #{license_ref}.\n"}
+      files: {"LICENSE-COMMERCIAL.txt" => LICENSE_TEMPLATE},
+      cache_dir: @cache_dir
     )
+  end
+
+  def as(license_ref, licensee, &block)
+    as_values("license_key" => license_ref, "licensee" => licensee, &block)
+  end
+
+  def as_values(values, &block)
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, values), &block)
   end
 
   # None of the checked-in fixtures declares a required_rubygems_version —
@@ -223,7 +290,8 @@ class PersonalizerTest < Minitest::Test
   def gem_with_required_rubygems_version
     Dir.mktmpdir do |source_dir|
       FileUtils.mkdir_p(File.join(source_dir, "lib"))
-      File.write(File.join(source_dir, "lib", "picky.rb"), "module Picky; end\n")
+      # Marked, so the personalizer has a reason to repack it
+      File.write(File.join(source_dir, "lib", "picky.rb"), "# paquette:licensee\nmodule Picky; end\n")
 
       spec = Gem::Specification.new do |s|
         s.name = "picky"

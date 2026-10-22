@@ -32,6 +32,7 @@ The key Paquette concepts are:
 
 - The serving app object - this is what poses as a gem/npm/PyPI repo. It's a Rack app: `Paquette::GemServer`, `Paquette::NpmServer`, `Paquette::PypiServer`.
 - The repository object - that's the frontend for your stored packages. The basic implementations just expose a directory: `DirectoryGemRepository`, `DirectoryNpmRepository`, `DirectoryPypiRepository`.
+- The authenticator - one object per request, built from the token, that answers every question about the caller: may they read, may they publish, which packages they see, what gets written into their copies. See [Authentication](#authentication).
 - The repository wrappers - that's how you can control fulfillment from Paquette.
 
 A very basic example: in your Rails app, define a Paquette server with gems inside your app's `storage/`:
@@ -55,56 +56,80 @@ Call your app with `gem.localhost:3000` (or whichever other port you use) and yo
 
 You can make your package server do interesting things by wrapping your repository. Wrappers change what is read - who may write is the authenticator's business alone (see [Authentication](#authentication)), and a server without one already refuses every write.
 
+Two of the wrappers decide by who is asking, and they ask the request's authenticator - `Paquette::Authenticator.current`, which the server sets while it serves a request. So a stack is built once and shared, and the authenticator is where the per-caller facts live.
+
 Each of the three servers has its own `ReadGatedRepository` and `Personalizer`. The gem and PyPI servers also have a `CooldownRepository`.
 
 ### Entitlements
 
-`ReadGatedRepository` lets you customize which packages get offered to a specific user:
+Which packages a caller sees is a question to their authenticator. Define `entitled?` on it and the server puts a `ReadGatedRepository` around its repository for that request:
 
 ```ruby
-gem_repo = Paquette::GemServer::ReadGatedRepository.new(gem_repo, gate_key: Current.license.cache_key) do |name:, version: nil|
-  Current.license.package_names.include?(name)
+class AcmeAuthenticator < Paquette::Authenticator
+  def license = @license ||= License.find_by(token: token)
+
+  def read_permitted? = !license.nil?
+
+  # Without a version: may this caller see the package at all? With one:
+  # may they have that version? A lapsed license keeps its packages in the
+  # index and loses the versions released after it lapsed.
+  def entitled?(name:, version: nil)
+    return false if license.nil?
+    return license.package_names.include?(name) if version.nil?
+
+    license.covers?(name, version)
+  end
 end
-gem_server = Paquette::GemServer.new(gem_repo)
 ```
 
-Now the holder of the `license` stored in your `ActiveSupport::Current` for the request will only receive the gems included in their license's `package_names` list. And you can limit version access as well. This affects serving the actual packages, serving the indexes and anything else: a package the entitler says no to does not exist.
+A package the authenticator says no to does not exist: not in the indexes, not as a download, not as a checksum. A listing asks once per package and once per version, so remember what the token resolved to on the instance - it lives for one request - rather than looking it up on every answer.
 
-The `gate_key:` is optional and is only used for HTTP caching. Broadly speaking, it is the user or license ID which alters the ETag of the response - the identity the entitler consults, plus everything its answers depend on. If you pass none the response won't be cacheable - see [HTTP caching](#http-caching).
+The gate's ETag is a digest of what the caller can see, within what the endpoint is about: one package for a compact-index `info/` file or a packument, everything for `versions`. It moves when and only when the visible set does, which is what makes [HTTP caching](#http-caching) safe behind it, and there is no key to keep honest. A caller who can see nothing gets no ETag.
 
 ### Package personalization
 
-Paquette includes a _personalization_ wrapper which allows every package to be marked with license details of the downloader. See it as a "soft-DRM" in the style of Pragmatic Programmers back in the day.
+Paquette includes a _personalization_ wrapper which marks every package with the licensee's details. See it as a "soft-DRM" in the style of Pragmatic Programmers back in the day.
 
 > [!IMPORTANT]
 > Personalizing a package changes its checksum, and the checksum may become unique for every license. Often, this is exactly what you want. However, if you _change_ how you personalize a package for a specific user, their package manager may detect the changed checksum and assume the package has been tampered with. So - if you do personalize, either let your users know that package checksums will change when you alter the personalization flow, or never change how packages get personalized.
 >
 > Personalizing packages thus has security implications.
 
+What is personal comes from the caller's authenticator, as a hash of single-line strings:
+
 ```ruby
-gem_repo = Paquette::GemServer::Personalizer.new(
-  gem_repo,
+class AcmeAuthenticator < Paquette::Authenticator
+  # ...
+  def personalization
+    return if license.nil?
 
-  # Gets injected into the gemspec metadata as "paquette.license_key"
-  license_key: Current.license.serial,
-
-  # Replace a whole comment line in all Ruby files. The marker has to be
-  # the entire line; the replacement comes out as a comment
-  magic_comment_replacements: {"# paquette_license_info" => "Licensed to #{Current.license.holder_name}"},
-
-  # Inject files when repackaging the gem, hash of paths to contents
-  files: {"THANK-YOU.txt" => "Thank you for using this library!"},
-
-  # Where the repacked packages are kept. Defaults to the system temp
-  # directory, which an application with a cache directory should override
-  cache_dir: Rails.root.join("tmp/cache/paquette").to_s
-)
-gem_server = Paquette::GemServer.new(gem_repo)
+    {"licensee" => license.holder_name, "customer" => "Customer #{license.ref}"}
+  end
+end
 ```
 
-All the packages passing through personalization will be repackaged and cached, keyed by everything the personalizer writes into them. The initial request for the package index may be slow if checksums and sizes have to be provided (that depends on the API endpoint and the registry used).
+How it is written into a package is the personalizer's business, and the same on all three registries:
 
-`files_for:` is the per-package edition of `files:` - a callable given the package name, the version and the original path, returning more files to inject, or `nil` to serve that package byte for byte. What it returns may depend on the package and `personalization_key:` and nothing else, so put whatever else it reads into `personalization_key:`, or a cached package will be reused after the personalization has changed.
+```ruby
+gem_repo = Paquette::GemServer::Personalizer.new(gem_repo,
+  # Written into every personalized gem, markers filled in. Static: the
+  # terms are the same for everyone, the licensee's name is not
+  files: {"LICENSE.txt" => File.read("config/license_template.txt")},
+  # Where the repacked packages are kept. Defaults to the system temp
+  # directory, which an application with a cache directory should override
+  cache_dir: Rails.root.join("tmp/cache/paquette").to_s)
+gem_server = Paquette::GemServer.new(gem_repo, authenticator: AcmeAuthenticator)
+```
+
+Three things happen to a package that is personalized:
+
+- **Marker lines are filled in.** A package author puts `paquette:licensee` on a line of its own, in their language's comment syntax - `# paquette:licensee` in Ruby or Python, `// paquette:licensee` in JavaScript - or bare in a text file such as a LICENSE. The line comes out with the value in place of the marker, indentation and comment leader kept: `# Acme BV`. One line in, one line out, so sourcemaps and traceback line numbers still point where they did. A marker that is not alone on its line - a minifier pulled it onto a code line - is refused rather than served with a hole in it. Any file in the package, not only source.
+- **The values are stamped into the package's metadata**, machine-readably: `paquette.licensee` in the gemspec metadata, `"paquette": {"licensee": ...}` in package.json, `paquette.json` next to METADATA in a wheel.
+- **`files:` are written in**, with their markers filled in the same way.
+
+A package with no marker anywhere is served byte for byte, and that is remembered, so an open-source gem next to the licensed ones goes out untouched with no list to maintain. A caller whose authenticator gives no `personalization` - an anonymous reader, the publisher - gets vanilla bytes too.
+
+All the packages passing through personalization are repackaged and cached under everything that went into them, so two callers never share a file and a renamed licensee gets a new one. The initial request for the package index may be slow if checksums and sizes have to be provided (that depends on the API endpoint and the registry used).
 
 What each personalizer does differs a little by ecosystem - see [npm](#personalization-and-integrity-with-npm-packages) and [Python](#python).
 
@@ -129,82 +154,106 @@ The PyPI server has one too - see [Python](#python).
 
 ## Wiring it all together
 
-Since Paquette is very modular and is supposed to be assembled per use case, you will likely want to build the repository stack per caller - gated and personalized for the licensee the token belongs to:
+The authenticator is the one thing you write. It is built once per request from the token, so whatever the token resolves to is looked up once and remembered on the instance for every question that follows:
 
 ```ruby
+class AcmeAuthenticator < Paquette::Authenticator
+  def license = @license ||= License.find_by(token: token)
+
+  def read_permitted? = !license.nil?
+  def write_permitted? = !!license&.publisher?
+  def check_otp!(code) = Paquette::Totp.verify!(license.totp_secret, code)
+  def entitled?(name:, version: nil) = license.publisher? || license.covers?(name, version)
+  def identity = license.cache_key
+  def personalization = {"licensee" => license.holder_name}
+end
+
 REPO = Paquette::GemServer::DirectoryGemRepository.new(Rails.root.join("packages", "gems").to_s)
-AUTHENTICATOR = AcmeAuthenticator.new # see Authentication below
-
-gem_app = ->(env) {
-  token = Paquette::AuthToken.from_env(env)
-  # A gate would hide from a publisher whatever no license covers
-  if AUTHENTICATOR.write_permitted?(auth_token: token)
-    next Paquette::GemServer.new(REPO, authenticator: AUTHENTICATOR).call(env)
-  end
-
-  license = token && License.find_by(token: token)
-
-  repo = Paquette::GemServer::ReadGatedRepository.new(REPO, gate_key: license&.cache_key_with_version) do |name:, version: nil|
-    license&.gem_names&.include?(name)
-  end
-  if license
-    repo = Paquette::GemServer::Personalizer.new(repo,
-      license_key: license.key,
-      magic_comment_replacements: {"# paquette_license_info" => license.key})
-  end
-
-  Paquette::GemServer.new(repo, authenticator: AUTHENTICATOR).call(env)
-}
+GEM_SERVER = Paquette::GemServer.new(
+  Paquette::GemServer::Personalizer.new(REPO, cache_dir: Rails.root.join("tmp/cache/paquette").to_s),
+  authenticator: AcmeAuthenticator
+)
 ```
 
-Building a server is cheap, and a stack built per request is the norm. `Paquette::AuthToken.from_env(env)` reads the token the same way the server does, so the stack you pick and the answers your authenticator gives are about the same caller.
+The stack is built once. Per request, the server builds the authenticator, gates the repository on `entitled?`, and makes the authenticator current for the personalizer. `Paquette::AuthToken.from_env(env)` is how the server reads the token, in every dialect the clients speak, so you never do.
 
-The npm and PyPI servers are assembled exactly the same way, out of the same kind of parts.
+The npm and PyPI servers are assembled exactly the same way, out of the same kind of parts, and one authenticator class serves all three.
 
 ## Authentication
 
-All three servers take an `authenticator:` - any object answering three questions about a token, and optionally a fourth:
+All three servers take an `authenticator:` - a subclass of `Paquette::Authenticator`, or anything that answers `call(token)` with an instance for one request. The server calls it once per request with the token the request carried, or `nil` when it carried none, and asks the instance:
 
 ```ruby
-class AcmeAuthenticator
-  def read_permitted?(auth_token:)
-    auth_token.nil? || AccessToken.exists?(secret: auth_token) # nil lets anonymous callers read
-  end
+class AcmeAuthenticator < Paquette::Authenticator
+  def license = @license ||= License.find_by(token: token)
 
-  def write_permitted?(auth_token:)
-    Publisher.exists?(token: auth_token)
-  end
+  def read_permitted? = !license.nil? # a nil token resolves to no license, so anonymous callers are refused
 
-  def check_otp!(auth_token:, otp_code:)
-    Paquette::Totp.verify!(Publisher.find_by!(token: auth_token).totp_secret, otp_code)
-  end
+  def write_permitted? = !!license&.publisher?
+
+  def check_otp!(code) = Paquette::Totp.verify!(license.totp_secret, code)
 
   # Optional, for Paquette::ResponseCache - see Caching behind authentication
-  def identity(auth_token:)
-    AccessToken.find_by(secret: auth_token)&.license_id&.to_s
-  end
+  def identity = license.cache_key
 end
 
-Paquette::GemServer.new(gem_repo, authenticator: AcmeAuthenticator.new)
-Paquette::NpmServer.new(npm_repo, authenticator: AcmeAuthenticator.new)
-Paquette::PypiServer.new(pypi_repo, authenticator: AcmeAuthenticator.new)
+Paquette::GemServer.new(gem_repo, authenticator: AcmeAuthenticator)
+Paquette::NpmServer.new(npm_repo, authenticator: AcmeAuthenticator)
+Paquette::PypiServer.new(pypi_repo, authenticator: AcmeAuthenticator)
 ```
+
+Three questions are always asked, and the base class answers them the way a server without an authenticator does: everyone reads, nobody writes, no code is good. Three more are asked only when the instance answers to them: `entitled?(name:, version: nil)` for [Entitlements](#entitlements), `personalization` for [Package personalization](#package-personalization), and `identity` for [Caching behind authentication](#caching-behind-authentication).
 
 What each server does with it:
 
-- **The token.** Clients do not send it the same way, and `Paquette::AuthToken.from_env(env)` reads all of them: `Authorization: Bearer TOKEN` from npm, the bare key `gem push` sends as the whole header, and Basic auth from Bundler - the token as the username with any password (`https://TOKEN:x-oauth-basic@gem.example.com`), or as the password behind an empty username or one of `x-oauth-basic`, `x-access-token`, `x-oauth-token`, `__token__` - the last being how pip and twine send one. The token is `nil` when the request sent no credentials, a blank `Authorization` header included. A header that carries no token at all - `Bearer` with nothing after it, a scheme Paquette does not speak - is a 401 without asking the authenticator: a mangled header must not become an anonymous request.
-- **Reads.** Every request asks `read_permitted?`, and a `false` is a 401. Return `true` for a `nil` token to let anonymous callers in. Which packages a caller sees is the repository stack's business - a `ReadGatedRepository` - not the authenticator's.
+- **The token.** Clients do not send it the same way, and `Paquette::AuthToken.from_env(env)` reads all of them: `Authorization: Bearer TOKEN` from npm, the bare key `gem push` sends as the whole header, and Basic auth from Bundler - the token as the username with any password (`https://TOKEN:x-oauth-basic@gem.example.com`), or as the password behind an empty username or one of `x-oauth-basic`, `x-access-token`, `x-oauth-token`, `__token__` - the last being how pip and twine send one. The token is `nil` when the request sent no credentials, a blank `Authorization` header included. A header that carries no token at all - `Bearer` with nothing after it, a scheme Paquette does not speak - is a 401 without building an authenticator: a mangled header must not become an anonymous request.
+- **Reads.** Every request asks `read_permitted?`, and a `false` is a 401. Return `true` for a `nil` token to let anonymous callers in. Which packages a caller sees is `entitled?`'s business, not this.
 - **Writes.** Every write - `gem push`, `gem yank`, `npm publish`, `npm unpublish`, `npm dist-tag`, `twine upload` - also asks `write_permitted?`, which is a yes or no for the whole registry: a 403 for a token that may not, a 401 when there was no token. Then the write has to carry a one-time password. Without one the server asks for it in each client's own dialect, so `gem` and `npm` prompt the way they do against rubygems.org and npmjs.com, and `--otp` works on both. twine can send nothing but a username and a password, so on the PyPI server the code goes in the username: `twine upload -u 123456 -p TOKEN` - six to eight digits there, next to a password, is read as the code and the password as the token. With one, `check_otp!` gets it and raises `Paquette::OtpRejected` if it is no good. All of this happens before the handler runs, so a refused push is refused before its body is read.
 - **One-time passwords.** `Paquette::Totp.verify!(secret, code, drift: 30, after: nil)` checks a code against a base32 TOTP secret, raises `Paquette::OtpRejected` for you, and returns the time step the code belongs to. Keep that and hand it back as `after:` next time, and a code that was already used is refused. Keeping it, and throttling wrong guesses, needs state Paquette has nowhere to put, so both stay with your `check_otp!`.
 - **The outcome** lands in `env["paquette.authentication"]` for your own log line: `authorized`, `credentials_unreadable`, `read_refused`, `write_refused`, `otp_missing` or `otp_rejected`.
-- **Identity.** `identity` is only asked when a `Paquette::ResponseCache` sits in front, and only about a token `read_permitted?` has just let in. See [Caching behind authentication](#caching-behind-authentication).
+- **The instance** lands in `env["paquette.authenticator"]`, for an `on_publish:` hook that wants to know who published, or a log line that wants to say who was served. It is also `Paquette::Authenticator.current` while the server runs its handler, which is how the repository wrappers reach it, and `Paquette::Authenticator.with(authenticator) { ... }` makes one current anywhere else - a download link on a license page, say, that wants the same personalized file the registry serves.
 - **`npm whoami`** answers `paquette` for any accepted token, and 401 without one.
 
 Without an authenticator, a server lets everyone read and refuses every write. `Paquette::Authentication::Open` lets anyone read and write and takes any code as the one-time password - it is what the dev setup runs, and never what a server anyone else can reach should.
 
 ## Hostnames and mounting
 
-The dev server runs on `http://localhost:9292`. The three registries have to live on separate hostnames, so `config.ru` routes by the first subdomain - `gem.`, `npm.` or `pypi.` - with `Paquette::SubdomainRouter`:
+The three registries live on separate hostnames. In Rails, give each server a constraint on the first label of the host and `mount` it at the root. A server is a Rack app, built once as in [Wiring it all together](#wiring-it-all-together):
+
+```ruby
+# config/routes.rb
+Rails.application.routes.draw do
+  constraints(->(req) { req.host.start_with?("gem.") }) do
+    mount GEM_SERVER, at: "/"
+  end
+
+  constraints(->(req) { req.host.start_with?("npm.") }) do
+    mount Paquette::NpmServer.new(npm_repo, authenticator: AcmeAuthenticator), at: "/"
+  end
+
+  constraints(->(req) { req.host.start_with?("pypi.") }) do
+    mount Paquette::PypiServer.new(pypi_repo, authenticator: AcmeAuthenticator), at: "/"
+  end
+
+  # Your own routes go below. Rails matches top to bottom, so a `root` or a
+  # catch-all declared above the mounts would answer `gem.example.com/` itself.
+  root "pages#home"
+end
+```
+
+Rails has a `subdomain:` constraint, but it is not the one to reach for here. It takes `config.action_dispatch.tld_length` labels (one by default) off the end of the host and calls the rest the subdomain, so `gem.example.com` has the subdomain `gem` while `gem.localhost` has none at all - `localhost` is the whole domain to Rails - and `gem.acme.co.uk` has `gem.acme`. The lambda looks at the first label and nothing else, so one routes file serves `gem.localhost:3000` in development and `gem.example.com` in production. A registry whose hostname does not start with the registry name gets a `host:` constraint instead:
+
+```ruby
+constraints host: "gems.acme.dev" do
+  mount GEM_SERVER, at: "/"
+end
+```
+
+In development Rails allows `.localhost`, `.test` and any IP address out of the box, so `gem.localhost:3000` answers straight away. If you set `config.hosts` in production, add each registry's hostname to it.
+
+Mounting in `routes.rb` runs the server inside the Rails executor, so ActiveRecord connections and `Current` are managed the same as for a controller action. See [Hosting Paquette inside a Rails application](docs/hosting-paquette-inside-rails.md).
+
+Outside Rails, in a bare `config.ru`, `Paquette::SubdomainRouter` does the same job by the first label of the host - this is what the dev server on `http://localhost:9292` runs:
 
 ```ruby
 run Paquette::SubdomainRouter.new { |router|
@@ -215,11 +264,20 @@ run Paquette::SubdomainRouter.new { |router|
 }
 ```
 
-If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond. In Rails, mount each server under a host constraint, as in [Concepts](#concepts).
+If your OS supports `.localhost` TLDs, `gem.whatever.localhost:9292` will respond.
 
 ### Mounting under a path prefix (namespaces)
 
-All three servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/). In Rack only a `map` and nothing else:
+All three servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/). In Rails that is the `at:` of the mount:
+
+```ruby
+constraints(->(req) { req.host.start_with?("gem.") }) do
+  mount Paquette::GemServer.new(acme_repo), at: "/@acme"
+  mount Paquette::GemServer.new(beta_repo), at: "/@beta"
+end
+```
+
+In Rack only a `map` and nothing else:
 
 ```ruby
 Rack::Builder.new do
@@ -293,29 +351,17 @@ Everything else — `authors`, `summary`, `description`, `info`, the non-URI key
 
 ## npm
 
-The npm server is built the same way as the gem server and out of the same kind of parts: one repository object, wrapped in as many layers as you want, handed to a Rack app.
+The npm server is built the same way as the gem server and out of the same kind of parts: one repository object, wrapped in as many layers as you want, handed to a Rack app, with the authenticator deciding who sees and gets what.
 
 ```ruby
-def call(env)
-  username = env["REMOTE_USER"]
-  user = User.where(login: username).first!
-  packages_dir = Rails.root.join("packages", "npm").to_s
+repo = Paquette::NpmServer::DirectoryNpmRepository.new(Rails.root.join("packages", "npm").to_s)
+repo = Paquette::NpmServer::Personalizer.new(repo,
+  files: {"LICENSE.txt" => File.read("config/license_template.txt")},
+  cache_dir: Rails.root.join("tmp/cache/paquette").to_s)
 
-  repo = Paquette::NpmServer::DirectoryNpmRepository.new(packages_dir)
-
-  repo_with_gating = Paquette::NpmServer::ReadGatedRepository.new(repo) do |name:, version: nil|
-    user.license.package_names.include?(name)
-  end
-
-  repo_with_gating_and_personalization = Paquette::NpmServer::Personalizer.new(
-    repo_with_gating,
-    license_key: user.license_key,
-    magic_comment_replacements: {"// paquette_license_info" => user.license_key},
-    files: {"LICENSE.txt" => user.rendered_license}
-  )
-
-  Paquette::NpmServer.new(repo_with_gating_and_personalization).call(env)
-end
+# AcmeAuthenticator as in Authentication: entitled? is asked with the scoped
+# name whole - "@acme/widgets" - and personalization fills `// paquette:licensee`
+Paquette::NpmServer.new(repo, authenticator: AcmeAuthenticator)
 ```
 
 The layers mean the same things they do for gems, with a few quirks:
@@ -339,9 +385,9 @@ The scope stays on the package name but is dropped from the filename, exactly as
 
 npm records a `dist.integrity` hash for every version and refuses to install a tarball whose bytes do not match. A registry that rebuilds a tarball to serve it therefore has to rebuild it to *the same bytes* it published a hash for. Thus the same restriction applies as for RubyGems packages.
 
-Magic comment replacements are forced to be on one line. This is done so that if your package contains sourcemaps the offsets of the sourcemap do not shift - and the sourcemap thus won't have to be rewritten.
+A marker line is replaced by one line, so if your package contains sourcemaps the offsets of the sourcemap do not shift - and the sourcemap thus won't have to be rewritten. A marker a minifier has pulled onto the end of a code line is refused rather than left in.
 
-The license key lands in `package.json` as `"paquette": {"licenseKey": ...}`; `package_json_extras:` replaces that with a hash of your own.
+The values land in `package.json` under `"paquette"`: `{"paquette": {"licensee": "Acme BV"}}`.
 
 ### Publishing npm packages into Paquette
 
@@ -380,25 +426,21 @@ The PyPI server is built like the other two: a repository, as many wrappers as y
 
 ```ruby
 repo = Paquette::PypiServer::DirectoryPypiRepository.new(Rails.root.join("packages", "pypi").to_s)
-
-repo = Paquette::PypiServer::ReadGatedRepository.new(repo, gate_key: license.cache_key) do |name:, version: nil|
-  license.package_names.include?(name) # name is PEP 503 normalized: "acme-widgets"
-end
-
 repo = Paquette::PypiServer::Personalizer.new(repo,
-  license_key: license.key,
-  magic_comment_replacements: {"# paquette_license_info" => "licensed to #{license.holder}"},
-  files: {"acme_widgets/LICENSE.txt" => license.rendered_text})
+  files: {"acme_widgets/LICENSE.txt" => File.read("config/license_template.txt")}, # relative to site-packages
+  cache_dir: Rails.root.join("tmp/cache/paquette").to_s)
 
-Paquette::PypiServer.new(repo, authenticator: AUTHENTICATOR)
+# AcmeAuthenticator as in Authentication: entitled? is asked with the PEP 503
+# normalized name - "acme-widgets" - and personalization fills `# paquette:licensee`
+Paquette::PypiServer.new(repo, authenticator: AcmeAuthenticator)
 ```
 
 `CooldownRepository` is there too, and means what it means for gems: an upload through it lands and stays out of view until it has cooled. As on the other two servers, the wrappers pass writes through - who may upload is the authenticator's to say. A few things are particular to Python:
 
-- **Files, not versions.** A version is a set of files - a wheel per platform, an sdist - and the index lists files. The gate's entitler is still asked about `name:` and `version:`, the version read out of each filename, and a cooldown withholds each file on its own: a wheel added to an old release is held back like any new arrival. By default the cooldown reads the file's mtime, because a wheel carries no date of its own; `published_at:` takes a block called with `name:`, `version:` and `filename:` when you keep a better one.
+- **Files, not versions.** A version is a set of files - a wheel per platform, an sdist - and the index lists files. The authenticator is still asked `entitled?` about `name:` and `version:`, the version read out of each filename, and a cooldown withholds each file on its own: a wheel added to an old release is held back like any new arrival. By default the cooldown reads the file's mtime, because a wheel carries no date of its own; `published_at:` takes a block called with `name:`, `version:` and `filename:` when you keep a better one.
 - **Yanks.** `repo.yank_file(project, filename, reason: "")` is a PEP 592 yank: pip passes over the file unless a requirement pins that exact version, and the file stays downloadable for the lockfiles that already have it. There is no HTTP endpoint for it, since no client sends one.
 - **Filenames are forever**, as on pypi.org. Uploading a filename that was ever uploaded before is a 409, yanked or not.
-- **Personalization** rewrites the comment lines that consist of a marker, indentation kept, in `.py` and `.pyi` files - one line in, one line out, so traceback line numbers match the source the publisher saw. The license key lands in `paquette.json` (`stamp:` replaces it with a hash of your own), which `importlib.metadata.distribution("acme-widgets").read_text("paquette.json")` reads from the installed package. `files:` paths are relative to the archive root - site-packages, for a wheel. A wheel gets its RECORD rewritten and loses any `RECORD.jws` signature. METADATA is never touched, so its PEP 658 hash stays the repository's. The same checksum warning as for gems applies: pip checks the sha256 the index published, and `--require-hashes` lockfiles will notice a change in how you personalize.
+- **Personalization** fills marker lines - `# paquette:licensee` on a line of its own - indentation kept, one line in, one line out, so traceback line numbers match the source the publisher saw. The values land in `paquette.json`, which `importlib.metadata.distribution("acme-widgets").read_text("paquette.json")` reads from the installed package. `files:` paths are relative to the archive root - site-packages, for a wheel. A wheel gets its RECORD rewritten and loses any `RECORD.jws` signature. METADATA is never touched, so its PEP 658 hash stays the repository's. The same checksum warning as for gems applies: pip checks the sha256 the index published, and `--require-hashes` lockfiles will notice a change in how you personalize.
 
 ### Where Python packages live on disk
 
@@ -446,23 +488,23 @@ Behind authentication, which is what Paquette is for, a shared cache such as `Ra
 
 ```ruby
 use Paquette::ResponseCache, directory: "tmp/cache/gems"
-run gem_app
+run GEM_SERVER
 ```
 
-Which entry is the caller's is the server's to say, after the fact. The cache leaves a lookup in the Rack env; once the authenticator has let the read in, the server asks the same authenticator for `identity(auth_token:)` and hands the answer to the lookup, which gives back the ETag it holds for that identity. Return a license or user ID as a String or an Integer, not the token, and a rotated token finds the entries its predecessor left. Without an `identity` method, or with a `nil` or blank from it, nothing is cached. Anything else - a model object, say - raises `TypeError`, since it would stringify differently on every request and never hit.
+Which entry is the caller's is the server's to say, after the fact. The cache leaves a lookup in the Rack env; once the request's authenticator has let the read in, the server asks that same instance for `identity` and hands the answer to the lookup, which gives back the ETag it holds for that identity. Return a license or user ID as a String or an Integer, not the token, and a rotated token finds the entries its predecessor left. Without an `identity` method, or with a `nil` or blank from it, nothing is cached. Anything else - a model object, say - raises `TypeError`, since it would stringify differently on every request and never hit.
 
 So the identity always comes from the object that just authenticated the token, and never from the wire: an env key with a dot in it cannot be sent by a client, and no header names an identity in either direction. Anonymous and refused requests never get as far as being identified.
 
-That only pays off when the stack can name itself, so that Paquette answers the 304 _before_ rendering: give the `ReadGatedRepository` a `gate_key:`. The authenticator and the gate's cache key are still consulted on every request, so a revoked token is refused with a body on disk for it, and a stack without a validator is simply never stored. The ETag, not the identity, is what keeps two callers apart: a stored body only goes out when the server says it is current for the caller asking, and it is filed under that ETag, so a concurrent request writing a new body for the same entry cannot swap it in. A refused request is never identified, so its entry stays on disk - harmless, since it is only ever replayed on a 304.
+It pays off because the stack can name itself, so that Paquette answers the 304 _before_ rendering: the gate's validator is what the caller can see and the personalizer's is what gets written for them, both exact. The authenticator is still asked on every request, so a revoked token is refused with a body on disk for it, and a stack without a validator is simply never stored. The ETag, not the identity, is what keeps two callers apart: a stored body only goes out when the server says it is current for the caller asking, and it is filed under that ETag, so a concurrent request writing a new body for the same entry cannot swap it in. A refused request is never identified, so its entry stays on disk - harmless, since it is only ever replayed on a 304.
 
 Entries are keyed by the URL - host and mount point included - the identity, and whether `Accept` asks for JSON (the PyPI index answers one URL in HTML or JSON). So one cache can sit in front of all three servers, whether they are told apart by hostname or by path prefix:
 
 ```ruby
 use Paquette::ResponseCache, directory: "tmp/cache/paquette"
 run Paquette::SubdomainRouter.new { |router|
-  router.map "gem", to: gem_app
-  router.map "npm", to: npm_app
-  router.map "pypi", to: pypi_app
+  router.map "gem", to: GEM_SERVER
+  router.map "npm", to: NPM_SERVER
+  router.map "pypi", to: PYPI_SERVER
 }
 ```
 
@@ -470,9 +512,9 @@ Two servers answering the same path with the same ETag still get an entry each. 
 
 ### Caching validators
 
-Paquette allows the repo wrappers to alter the validator (the ETag). The validator itself is derived from the whole wrapper stack, not just from the corpus, wrappers are written to contribute to the ETag in a meaningful way.
+Paquette allows the repo wrappers to alter the validator (the ETag). The validator itself is derived from the whole wrapper stack, not just from the corpus, and each wrapper contributes exactly what it changes: the gate the names and versions the caller can see within what the endpoint is about, the personalizer the values and files written for them, the cooldown how many versions have cooled.
 
-A `nil` validator propagates outward, so a `Personalizer` wrapped around a keyless gate emits no `ETag` either.
+A `nil` validator propagates outward, so a `Personalizer` wrapped around a repository that cannot name itself emits no `ETag` either, and neither does a gate in front of a caller who can see nothing.
 
 ## The index page
 
@@ -503,7 +545,7 @@ For your own log line or monitoring transaction, each server says what a request
 env["paquette.served"] # => {route: "GET /gems/:gem_filename", package: "zip_kit", version: "6.2.1"}
 ```
 
-The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body, and an upload the Python project and version it wrote. `env["paquette.authentication"]` and `env["paquette.response_cache"]` sit beside it.
+The route is there whenever one matched, refused requests included, and makes a bounded action name. The package and version only when that package was actually served or written - a 2xx, or a 304 on a validator the client held - so a scanner probing made-up names cannot mint a tag value per probe. A push names the gem it wrote, which `gem push` sends only in the body, and an upload the Python project and version it wrote. `env["paquette.authentication"]`, `env["paquette.authenticator"]` - the caller's authenticator, with whatever the token resolved to still on it - and `env["paquette.response_cache"]` sit beside it.
 
 ## Running the tests
 

@@ -599,16 +599,19 @@ class PlatformGemWrappersTest < Minitest::Test
 
   PLATFORMS = ["ruby", "java", "arm64-darwin"]
 
+  # Every build carries a marker, so the personalizer has something to do
   def setup
     @gems_dir = Dir.mktmpdir("paquette_platform_wrappers")
     PLATFORMS.each do |platform|
-      write_platform_gem(@gems_dir, name: "nokogiri", version: "1.16.0", platform: platform)
+      write_platform_gem(@gems_dir, name: "nokogiri", version: "1.16.0", platform: platform,
+        files: {"lib/nokogiri.rb" => "# paquette:licensee\nmodule Nokogiri; end\n"})
     end
     @repository = Paquette::GemServer::DirectoryGemRepository.new(@gems_dir)
     @app = Writable.gem_server(@repository)
   end
 
   def teardown
+    Thread.current[Paquette::Authenticator::CURRENT_KEY] = nil
     FileUtils.remove_entry(@gems_dir) if @gems_dir && Dir.exist?(@gems_dir)
     FileUtils.remove_entry(@cache_dir) if @cache_dir && Dir.exist?(@cache_dir)
   end
@@ -623,9 +626,9 @@ class PlatformGemWrappersTest < Minitest::Test
   # it can express. The trap is the other direction: a gate that names the
   # bare number must not be read as naming every platform of it.
   def test_a_read_gate_can_withhold_one_platform_without_touching_its_siblings
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, gate_key: "t") do |name:, version: nil|
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name:, version: nil|
       version != "1.16.0-java"
-    end
+    })
 
     assert_equal ["1.16.0", "1.16.0-arm64-darwin"], gated.versions_for_gem("nokogiri").sort
     refute gated.gem_exists?("nokogiri", "1.16.0-java")
@@ -642,19 +645,19 @@ class PlatformGemWrappersTest < Minitest::Test
   # it because they look alike. It must be told about each one separately.
   def test_a_gate_keyed_on_the_bare_number_is_never_asked_about_a_platform_build
     asked = []
-    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, gate_key: "t") do |name:, version: nil|
+    gated = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name:, version: nil|
       asked << version
       version.nil? || version == "1.16.0"
-    end
+    })
 
     assert_equal ["1.16.0"], gated.versions_for_gem("nokogiri")
     assert_includes asked, "1.16.0-java"
     assert_includes asked, "1.16.0-arm64-darwin"
 
     # And a gate that names a platform build alone withholds exactly it.
-    only_java = Paquette::GemServer::ReadGatedRepository.new(@repository, gate_key: "t") do |name:, version: nil|
+    only_java = Paquette::GemServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name:, version: nil|
       version.nil? || version == "1.16.0-java"
-    end
+    })
     assert_equal ["1.16.0-java"], only_java.versions_for_gem("nokogiri")
   end
 
@@ -688,12 +691,7 @@ class PlatformGemWrappersTest < Minitest::Test
   # under would no longer describe it.
   def test_a_personalized_platform_gem_is_still_that_platform
     @cache_dir = Dir.mktmpdir("paquette_platform_personalized")
-    personalized = Paquette::GemServer::Personalizer.new(
-      @repository,
-      license_key: "LICENSE-KEY",
-      files: {"LICENSE.txt" => "For one licensee only"},
-      cache_dir: @cache_dir
-    )
+    personalized = personalized_repository
 
     PLATFORMS.each do |platform|
       column = column_for(platform)
@@ -703,7 +701,7 @@ class PlatformGemWrappersTest < Minitest::Test
       spec = Gem::Package.new(served).spec
       assert_equal platform, spec.platform.to_s, platform
       assert_equal "nokogiri-#{column}", spec.full_name, platform
-      assert_equal "LICENSE-KEY", spec.metadata["paquette.license_key"], platform
+      assert_equal "LICENSE-KEY", spec.metadata["paquette.licensee"], platform
     end
   end
 
@@ -712,12 +710,7 @@ class PlatformGemWrappersTest < Minitest::Test
   # to somebody asking for the ruby one.
   def test_a_personalizer_keeps_the_three_platforms_apart_in_its_cache
     @cache_dir = Dir.mktmpdir("paquette_platform_personalized")
-    personalized = Paquette::GemServer::Personalizer.new(
-      @repository,
-      license_key: "LICENSE-KEY",
-      files: {"LICENSE.txt" => "For one licensee only"},
-      cache_dir: @cache_dir
-    )
+    personalized = personalized_repository
 
     served = PLATFORMS.map { |platform| personalized.gem_file_path("nokogiri", column_for(platform)) }
     assert_equal 3, served.uniq.length
@@ -730,12 +723,7 @@ class PlatformGemWrappersTest < Minitest::Test
   # tampered with.
   def test_a_personalized_index_row_describes_the_platform_build_it_names
     @cache_dir = Dir.mktmpdir("paquette_platform_personalized")
-    personalized = Paquette::GemServer::Personalizer.new(
-      @repository,
-      license_key: "LICENSE-KEY",
-      files: {"LICENSE.txt" => "For one licensee only"},
-      cache_dir: @cache_dir
-    )
+    personalized = personalized_repository
 
     rows = personalized.compact_info("nokogiri").to_h do |line|
       column, rest = line.split(" ", 2)
@@ -748,5 +736,14 @@ class PlatformGemWrappersTest < Minitest::Test
       assert_equal Digest::SHA256.file(served).hexdigest, checksum, column
       assert_equal checksum, personalized.gem_checksum("nokogiri", column), column
     end
+  end
+
+  private
+
+  # A personalizer over the platform builds, with one licensee current for the
+  # rest of the test; teardown clears it.
+  def personalized_repository
+    Thread.current[Paquette::Authenticator::CURRENT_KEY] = PersonalizingAuthenticator.new(nil, {"licensee" => "LICENSE-KEY"})
+    Paquette::GemServer::Personalizer.new(@repository, files: {"LICENSE.txt" => "For one licensee only"}, cache_dir: @cache_dir)
   end
 end

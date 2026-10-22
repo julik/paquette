@@ -18,10 +18,10 @@ npm_repo = Paquette::NpmServer::DirectoryNpmRepository.new(npm_dir)
 pypi_repo = Paquette::PypiServer::DirectoryPypiRepository.new(pypi_dir)
 
 # Open lets anyone push, as long as they send a one-time password - any will
-# do (`gem push --otp 000000`, `npm publish --otp 000000`, `twine upload -u 000000`). Swap it for an
-# authenticator of your own to require a token, and a real code on every
-# push. See the README's Authentication section.
-authenticator = Paquette::Authentication::Open.new
+# do (`gem push --otp 000000`, `npm publish --otp 000000`, `twine upload -u 000000`). Swap it for a
+# Paquette::Authenticator subclass of your own to require a token, and a real
+# code on every push. See the MANUAL's Authentication section.
+authenticator = Paquette::Authentication::Open
 
 subdomain_apps = Paquette::SubdomainRouter.new do |router|
   router.map "gem", to: Paquette::GemServer.new(gems_repo, authenticator: authenticator)

@@ -1,29 +1,39 @@
 require "delegate"
+require "digest"
 require "measurometer"
 
-# Filters every read through an entitler block; non-entitled packages do
-# not exist. Writes pass through - see the gem-side twin.
+# Filters every read through the caller's authenticator; non-entitled packages
+# do not exist. Writes pass through - see the gem-side twin, which the server
+# applies the same way: for every request whose authenticator answers
+# `entitled?`.
 class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   # @param repository [Paquette::NpmServer::NpmRepository] the repository
   #   to wrap
-  # @param gate_key [String, nil] names this gate for HTTP caching — see
-  #   the gem-side ReadGatedRepository for the full contract: name the
-  #   identity the entitler consults and everything the answers depend on,
-  #   or leave it out and the whole stack emits no ETag (the intended
-  #   fail-closed default — a wrong ETag on a gated packument is one
-  #   customer holding another's entitlements).
-  # @yield [name:, version:] the entitler; returns truthy when the caller
-  #   may see that package/version
-  def initialize(repository, gate_key: nil, &entitler)
+  # @param authenticator [Paquette::Authenticator] the caller's, answering
+  #   `entitled?(name:, version: nil)`
+  def initialize(repository, authenticator)
     super(repository)
-    @entitler = entitler
-    @gate_key = gate_key
+    @authenticator = authenticator
   end
 
+  # What this caller can see within the scope, digested into the wrapped
+  # validator - see the gem-side twin for why, and for why a caller who sees
+  # nothing gets none.
+  #
+  # @param scope [String, nil] one package name, or nil for the whole corpus
   # @return [String, nil]
-  def cache_validator
-    inner = Paquette::CacheValidation.validator_of(__getobj__)
-    Paquette::CacheValidation.derive_validator(inner, "read-gate", @gate_key)
+  def cache_validator(scope = nil)
+    inner = Paquette::CacheValidation.validator_of(__getobj__, scope)
+    return nil if inner.nil?
+
+    visible = if scope
+      versions_for_package(scope).map { |version| [scope, version] }
+    else
+      package_names.zip + package_versions
+    end
+    return nil if visible.empty?
+
+    Paquette::CacheValidation.derive_validator(inner, "read-gate", Digest::SHA256.hexdigest(visible.sort.join("\0")))
   end
 
   # A gate may decide by something Paquette never sees — an IP, a header —
@@ -166,11 +176,6 @@ class Paquette::NpmServer::ReadGatedRepository < SimpleDelegator
   # @param criteria [Hash]
   # @return [Object] truthy when entitled
   def entitled?(**criteria)
-    Measurometer.instrument("paquette.npm_read_gate.entitled") { @entitler.call(**criteria) }
+    Measurometer.instrument("paquette.npm_read_gate.entitled") { @authenticator.entitled?(**criteria) }
   end
 end
-
-# Former name, kept so existing stacks keep building.
-#
-# @return [Class]
-Paquette::NpmServer::GatedNpmRepository = Paquette::NpmServer::ReadGatedRepository

@@ -360,7 +360,7 @@ class PypiServerTest < Minitest::Test
 
   # Who may write is the authenticator's to say, before any wrapper is asked
   def test_an_upload_through_a_gate_lands
-    gated = Paquette::PypiServer::ReadGatedRepository.new(@repository) { |**| false }
+    gated = Paquette::PypiServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |**| false })
     @app = Writable.pypi_server(gated)
     upload(wheel_bytes(name: "widgets", version: "1.0.0"), "widgets-1.0.0-py3-none-any.whl")
 

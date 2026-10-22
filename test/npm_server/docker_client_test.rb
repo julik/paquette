@@ -61,12 +61,12 @@ class DockerNpmClientTest < Minitest::Test
   # A completing install proves the personalized tarball matches its hash.
   def test_npm_installs_a_personalized_package
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0",
-      files: {"index.js" => "// paquette_license_info\nmodule.exports = 1;\n"})
+      files: {"index.js" => "// paquette:licensee\nmodule.exports = 1;\n"})
 
-    serve(Paquette::NpmServer::Personalizer.new(@repository,
-      license_key: "LIC-DOCKER-1",
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme Inc (LIC-DOCKER-1)"},
-      files: {"LICENSE.txt" => "Licensed to Acme Inc."}))
+    serve_app(Paquette::NpmServer.new(
+      Paquette::NpmServer::Personalizer.new(@repository, files: {"LICENSE.txt" => "Licensed to Acme Inc."}),
+      authenticator: PersonalizingAuthenticator.with({"licensee" => "licensed to Acme Inc (LIC-DOCKER-1)"})
+    ))
 
     output = run_npm(<<~SH)
       npm install widget --loglevel error
@@ -83,7 +83,7 @@ class DockerNpmClientTest < Minitest::Test
     write_npm_package(@packages_dir, name: "widget", version: "1.0.0")
     write_npm_package(@packages_dir, name: "secret", version: "1.0.0")
 
-    serve(Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "widget" })
+    serve_app(Paquette::NpmServer.new(@repository, authenticator: EntitlingAuthenticator.gating { |name:, version: nil| name == "widget" }))
 
     output = run_npm("npm install secret --loglevel error --fetch-retries 0", expect_failure: true)
     assert_match(/404|E404|not found/i, output)

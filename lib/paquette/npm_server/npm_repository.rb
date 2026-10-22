@@ -106,8 +106,10 @@ class Paquette::NpmServer::NpmRepository
   # the wrong licensee carries integrity hashes that cannot match the
   # tarball they download — npm treats that as tampering.
   #
+  # @param scope [String, nil] the one package the validator is for, or nil
+  #   for the whole corpus; a repository that does not distinguish ignores it
   # @return [String, nil]
-  def cache_validator
+  def cache_validator(scope = nil)
     nil
   end
 

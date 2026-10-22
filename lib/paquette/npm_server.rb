@@ -7,7 +7,6 @@ require "measurometer"
 # publish and unpublish — over any NpmRepository stack.
 class Paquette::NpmServer
   autoload :DirectoryNpmRepository, "#{__dir__}/npm_server/directory_npm_repository"
-  autoload :GatedNpmRepository, "#{__dir__}/npm_server/read_gated_repository"
   autoload :NpmRepository, "#{__dir__}/npm_server/npm_repository"
   autoload :Personalizer, "#{__dir__}/npm_server/personalizer"
   autoload :ReadGatedRepository, "#{__dir__}/npm_server/read_gated_repository"
@@ -138,9 +137,9 @@ class Paquette::NpmServer
   #   to make knowingly
   # @param shared_caching [Boolean] false keeps every response `private` —
   #   see the same option on GemServer
-  # @param authenticator [Object, nil] answers `read_permitted?`,
-  #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
-  #   Without one, everyone reads and nobody writes
+  # @param authenticator [#call, nil] a subclass of Paquette::Authenticator,
+  #   or anything answering `call(token)` with one, asked once per request
+  #   who the caller is. Without one, everyone reads and nobody writes
   # @param on_publish [#call, nil] called with a Paquette::Published and the
   #   Rack::Request once a publish has landed - see the same option on GemServer
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette npm registry"),
@@ -180,10 +179,14 @@ class Paquette::NpmServer
       next refusal if refusal
       next not_found("Not Found") unless route
 
-      # Shared across Rack threads: the request lives on a per-request clone.
+      # Shared across Rack threads: the request and the caller's view of the
+      # repository live on a per-request clone, and the caller's authenticator
+      # is current for the wrappers while the handler runs.
+      authenticator = env[Paquette::Authenticator::ENV_KEY]
       handler = clone
       handler.instance_variable_set(:@request, request)
-      response = @@routes.perform_action(route, handler, request)
+      handler.instance_variable_set(:@repository, repository_for(authenticator))
+      response = Paquette::Authenticator.with(authenticator) { @@routes.perform_action(route, handler, request) }
       Paquette::Served.package(env, handler.send(:served_package, route.params(request)), response[0])
       response
     end
@@ -191,6 +194,18 @@ class Paquette::NpmServer
     bad_request(e.message)
   rescue PayloadTooLarge => e
     payload_too_large(e.message)
+  end
+
+  # The repository as this caller sees it: behind a gate when their
+  # authenticator answers `entitled?`, the one the server was built with
+  # otherwise. The gate is per request because the authenticator is.
+  #
+  # @param authenticator [Paquette::Authenticator]
+  # @return [Object] a repository
+  def repository_for(authenticator)
+    return @repository unless authenticator.respond_to?(:entitled?)
+
+    Paquette::NpmServer::ReadGatedRepository.new(@repository, authenticator)
   end
 
   # The package a request was about, out of the route's own params - the
@@ -252,7 +267,7 @@ class Paquette::NpmServer
   # @param package_name [String]
   # @return [Array] a Rack response triplet
   def handle_metadata(package_name)
-    etag = etag_for("packument", package_name, metadata_base_url)
+    etag = etag_for("packument", package_name, metadata_base_url, scope: package_name)
     return not_modified(etag) if if_none_match_satisfied?(etag)
 
     Measurometer.instrument("paquette.npm_server.metadata") do
@@ -270,7 +285,7 @@ class Paquette::NpmServer
   # @param package_name [String]
   # @return [Array] a Rack response triplet
   def handle_dist_tags(package_name)
-    etag = etag_for("dist-tags", package_name)
+    etag = etag_for("dist-tags", package_name, scope: package_name)
     return not_modified(etag) if if_none_match_satisfied?(etag)
 
     tags = @repository.dist_tags(package_name)

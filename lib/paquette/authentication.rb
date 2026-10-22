@@ -1,20 +1,12 @@
 require "measurometer"
 
-# What the servers ask of the authenticator they are built with. It is any
-# object answering three questions about a token, and optionally a fourth:
-#
-#   read_permitted?(auth_token:)        # => Boolean
-#   write_permitted?(auth_token:)       # => Boolean, for the whole registry
-#   check_otp!(auth_token:, otp_code:)  # raises Paquette::OtpRejected on a wrong code
-#   identity(auth_token:)               # => String or nil, who the token belongs to
-#
-# `identity` is only asked when a Paquette::ResponseCache in front wants to
-# know, and only about a token `read_permitted?` has just let in. It names a
-# user or a license rather than the token, so entries survive a rotation.
-#
-# The token is the one Paquette::AuthToken reads, and nil when the caller sent
-# no credentials - answering true to `read_permitted?` for nil is how a
-# registry lets anonymous callers read.
+# How a server asks who is calling. It is built with an `authenticator:` - a
+# factory answering `call(token)` with a Paquette::Authenticator for one
+# request, which is what a subclass of that class is - and asks it once per
+# request, with the token Paquette::AuthToken read out of the request, or nil
+# when the caller sent no credentials. The instance is left in
+# `env["paquette.authenticator"]` for the rest of the stack and for the
+# application's own code.
 #
 # Every request asks `read_permitted?`, and a refusal is a 401. A write also
 # asks `write_permitted?` (a 403 when a token was sent, a 401 when none was),
@@ -22,6 +14,9 @@ require "measurometer"
 # the prompt each client knows, without asking the authenticator - so
 # `check_otp!` only ever sees a non-empty code. All of this happens before the
 # handler, so a refused push is refused before its body is read.
+#
+# `identity` is only asked when a Paquette::ResponseCache in front wants to
+# know, and only once `read_permitted?` has let the caller in.
 #
 # What is not shared - which header carries the code, what a refusal looks like
 # on the wire - is each server's own, because the client on the other end
@@ -35,62 +30,39 @@ module Paquette::Authentication
   # @return [String]
   OUTCOME_KEY = "paquette.authentication"
 
-  # What a server built without an authenticator asks: everyone reads, nobody
-  # writes. There is no secret to check a one-time password against.
-  class ReadOnly
-    # @param auth_token [String, nil]
-    # @return [Boolean]
-    def read_permitted?(auth_token:)
-      true
-    end
-
-    # @param auth_token [String, nil]
-    # @return [Boolean]
-    def write_permitted?(auth_token:)
-      false
-    end
-
-    # @param auth_token [String, nil]
-    # @param otp_code [String]
-    # @raise [Paquette::OtpRejected] always
-    # @return [void]
-    def check_otp!(auth_token:, otp_code:)
-      raise Paquette::OtpRejected
-    end
-  end
-
   # Lets anyone read and write, and takes any code as the one-time password - a
   # write still has to carry one. For development and tests, never for a server
   # anyone else can reach.
-  class Open
-    # @param auth_token [String, nil]
+  class Open < Paquette::Authenticator
     # @return [Boolean]
-    def read_permitted?(auth_token:)
+    def write_permitted?
       true
     end
 
-    # @param auth_token [String, nil]
-    # @return [Boolean]
-    def write_permitted?(auth_token:)
-      true
-    end
-
-    # @param auth_token [String, nil]
-    # @param otp_code [String]
+    # @param code [String]
     # @return [void]
-    def check_otp!(auth_token:, otp_code:)
+    def check_otp!(code)
     end
   end
 
   private
 
-  # @param authenticator [Object, nil]
+  # @param authenticator [#call, nil] the factory; nil is "everyone reads,
+  #   nobody writes"
   # @return [void]
+  # @raise [ArgumentError] for an object that is not a factory - an instance
+  #   of the authenticator rather than its class, say
   def setup_authentication(authenticator)
-    @authenticator = authenticator || ReadOnly.new
+    @authenticator_factory = authenticator || Paquette::Authenticator
+    return if @authenticator_factory.respond_to?(:call)
+
+    raise ArgumentError,
+      "authenticator: must answer call(token) with an authenticator for one request - a subclass of " \
+      "Paquette::Authenticator, or a lambda - not #{@authenticator_factory.inspect}"
   end
 
-  # The refusal for this request, or nil to let it through.
+  # The refusal for this request, or nil to let it through. On the way, the
+  # caller's authenticator is built and put in the env.
   #
   # @param route [Paquette::Routes::Route, nil] nil when nothing matched -
   #   the caller is still asked about, so an unknown path does not tell a
@@ -101,11 +73,18 @@ module Paquette::Authentication
   # @return [Array, nil] a Rack response triplet
   def authentication_refusal(route, env, request_env = env)
     token = Paquette::AuthToken.from_env(env)
-    outcome = authentication_outcome(route, token, env)
+    outcome = if token.nil? && Paquette::AuthToken.provided?(env)
+      # A mangled header must not become an anonymous request
+      "credentials_unreadable"
+    else
+      authenticator = authenticator_for(env, token)
+      authentication_outcome(route, authenticator, env)
+    end
     env[OUTCOME_KEY] = outcome
+
     # A read let through is nearly every request, and not worth a counter
     if outcome == "authorized" && !route&.write?
-      identify_for_response_cache(env, request_env, token) if route
+      identify_for_response_cache(env, request_env, authenticator) if route
     else
       Measurometer.increment_counter("paquette.authentication.#{outcome}")
     end
@@ -118,16 +97,26 @@ module Paquette::Authentication
     end
   end
 
-  # @param route [Paquette::Routes::Route, nil]
+  # One per request. An authenticator already in the env - put there by
+  # something in front of this server - is the caller's and is kept.
+  #
+  # @param env [Hash]
   # @param token [String, nil]
+  # @return [Paquette::Authenticator]
+  def authenticator_for(env, token)
+    env[Paquette::Authenticator::ENV_KEY] ||= Measurometer.instrument("paquette.authentication.resolve") do
+      @authenticator_factory.call(token)
+    end
+  end
+
+  # @param route [Paquette::Routes::Route, nil]
+  # @param authenticator [Paquette::Authenticator]
   # @param env [Hash] the Rack env
   # @return [String]
-  def authentication_outcome(route, token, env)
-    # A mangled header must not become an anonymous request
-    return "credentials_unreadable" if token.nil? && Paquette::AuthToken.provided?(env)
-    return "read_refused" unless ask_authenticator(:read_permitted?, auth_token: token)
+  def authentication_outcome(route, authenticator, env)
+    return "read_refused" unless ask_authenticator(authenticator, :read_permitted?)
     return "authorized" unless route&.write?
-    return "write_refused" unless ask_authenticator(:write_permitted?, auth_token: token)
+    return "write_refused" unless ask_authenticator(authenticator, :write_permitted?)
 
     code = otp_code(env)
     # An empty code counts as missing, not as a wrong guess: a shell that
@@ -135,7 +124,7 @@ module Paquette::Authentication
     return "otp_missing" if code.nil? || code.empty?
 
     begin
-      ask_authenticator(:check_otp!, auth_token: token, otp_code: code)
+      ask_authenticator(authenticator, :check_otp!, code)
       "authorized"
     rescue Paquette::OtpRejected
       "otp_rejected"
@@ -144,29 +133,30 @@ module Paquette::Authentication
 
   # Tells a ResponseCache in front who the caller is, and revalidates against
   # what it holds for them. Only past the authenticator, so a stored body is
-  # never matched to a token that was not let in.
+  # never matched to a caller that was not let in.
   #
   # @param env [Hash] the Rack env
   # @param request_env [Hash]
-  # @param token [String, nil]
+  # @param authenticator [Paquette::Authenticator]
   # @return [void]
-  def identify_for_response_cache(env, request_env, token)
+  def identify_for_response_cache(env, request_env, authenticator)
     lookup = env[Paquette::ResponseCache::LOOKUP_KEY]
-    return unless lookup && token && @authenticator.respond_to?(:identity)
+    return unless lookup && authenticator.token && authenticator.respond_to?(:identity)
 
-    etag = lookup.identify(ask_authenticator(:identity, auth_token: token))
+    etag = lookup.identify(ask_authenticator(authenticator, :identity))
     request_env["HTTP_IF_NONE_MATCH"] = etag if etag
   end
 
   # The authenticator is the caller's, and it usually goes to a database to
   # resolve the token - before any of the work the request asked for.
   #
+  # @param authenticator [Paquette::Authenticator]
   # @param question [Symbol]
-  # @param kwargs [Hash]
+  # @param args [Array]
   # @return [Object]
-  def ask_authenticator(question, **kwargs)
+  def ask_authenticator(authenticator, question, *args)
     Measurometer.instrument("paquette.authentication.#{question.to_s.delete_suffix("?").delete_suffix("!")}") do
-      @authenticator.public_send(question, **kwargs)
+      authenticator.public_send(question, *args)
     end
   end
 

@@ -15,12 +15,14 @@ require_relative "../test_helper"
 # differ, rather than that caching works.
 class NpmHttpCachingTest < Minitest::Test
   PACKAGE = "widgets"
+  MARKED_SOURCE = "// paquette:licensee\nmodule.exports = 1;\n"
 
   def setup
     @dir = Dir.mktmpdir("paquette_npm_caching")
     @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@dir)
-    write_npm_package(@dir, name: PACKAGE, version: "1.0.0")
-    write_npm_package(@dir, name: PACKAGE, version: "1.1.0")
+    # Both carry a marker, so a personalizer has something to write
+    write_npm_package(@dir, name: PACKAGE, version: "1.0.0", files: {"index.js" => MARKED_SOURCE})
+    write_npm_package(@dir, name: PACKAGE, version: "1.1.0", files: {"index.js" => MARKED_SOURCE})
     @cache_dirs = []
   end
 
@@ -150,7 +152,7 @@ class NpmHttpCachingTest < Minitest::Test
   end
 
   def test_whoami_is_not_cacheable_under_gating_either
-    response = get(gated_app(gate_key: "alice") { |**| true }, "/-/whoami", "HTTP_AUTHORIZATION" => "Bearer t")
+    response = get(gated_app { |**| true }, "/-/whoami", "HTTP_AUTHORIZATION" => "Bearer t")
 
     assert_equal "private, no-store", response[1]["Cache-Control"]
     refute_includes response[1]["Cache-Control"], "public"
@@ -160,38 +162,46 @@ class NpmHttpCachingTest < Minitest::Test
   # The wrapper chain
   # ------------------------------------------------------------------
 
-  def test_a_gate_without_a_key_emits_no_etag_at_all
-    response = get(gated_app(gate_key: nil) { |**| true }, "/#{PACKAGE}")
+  # A caller who can see nothing in scope gets no validator: the package does
+  # not exist for them, and a validator would still move with the corpus
+  # beneath the gate, telling them when versions they cannot see land.
+  def test_a_caller_who_sees_nothing_gets_no_validator
+    response = get(gated_app { |**| false }, "/#{PACKAGE}")
 
-    assert_equal 200, response[0]
+    assert_equal 404, response[0]
     assert_nil response[1]["ETag"]
-    assert_equal 200, get(gated_app(gate_key: nil) { |**| true }, "/#{PACKAGE}", "HTTP_IF_NONE_MATCH" => "*")[0]
   end
 
-  def test_the_fail_closed_gate_propagates_through_a_personalizer_above_it
-    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |**| true }
-    personalized = Paquette::NpmServer::Personalizer.new(gated,
-      license_key: "L", personalization_key: "one", cache_dir: tmp_cache_dir)
+  # The gate's validator is what the caller can see, so it moves the moment
+  # that changes - a window closing, a license revoked - and never otherwise.
+  def test_the_validator_moves_when_the_caller_s_view_changes
+    allowed = %w[1.0.0 1.1.0]
+    app = gated_app { |name:, version: nil| version.nil? || allowed.include?(version) }
+    before = get(app, "/#{PACKAGE}")[1]["ETag"]
+    assert_equal 304, get(app, "/#{PACKAGE}", "HTTP_IF_NONE_MATCH" => before)[0]
 
-    assert_nil get(Writable.npm_server(personalized), "/#{PACKAGE}")[1]["ETag"]
+    allowed.pop
+
+    after = get(app, "/#{PACKAGE}")[1]["ETag"]
+    refute_equal before, after
+    assert_equal 200, get(app, "/#{PACKAGE}", "HTTP_IF_NONE_MATCH" => before)[0]
   end
 
-  def test_two_different_gates_produce_different_validators
-    alice = get(gated_app(gate_key: "alice") { |**| true }, "/#{PACKAGE}")
-    bob = get(gated_app(gate_key: "bob") { |**| true }, "/#{PACKAGE}")
+  def test_two_callers_seeing_different_versions_get_different_validators
+    alice = get(gated_app { |**| true }, "/#{PACKAGE}")
+    bob = get(gated_app { |name:, version: nil| version.nil? || version == "1.0.0" }, "/#{PACKAGE}")
 
     refute_nil alice[1]["ETag"]
     refute_nil bob[1]["ETag"]
     refute_equal alice[1]["ETag"], bob[1]["ETag"]
 
-    crossed = get(gated_app(gate_key: "alice") { |**| true },
-      "/#{PACKAGE}", "HTTP_IF_NONE_MATCH" => bob[1]["ETag"])
+    crossed = get(gated_app { |**| true }, "/#{PACKAGE}", "HTTP_IF_NONE_MATCH" => bob[1]["ETag"])
     assert_equal 200, crossed[0]
   end
 
-  def test_the_same_gate_key_is_stable_across_freshly_built_stacks
-    one = get(gated_app(gate_key: "licensee-1") { |**| true }, "/#{PACKAGE}")[1]["ETag"]
-    two = get(gated_app(gate_key: "licensee-1") { |**| true }, "/#{PACKAGE}")[1]["ETag"]
+  def test_the_same_view_is_stable_across_freshly_built_stacks
+    one = get(gated_app { |**| true }, "/#{PACKAGE}")[1]["ETag"]
+    two = get(gated_app { |**| true }, "/#{PACKAGE}")[1]["ETag"]
 
     assert_equal one, two
   end
@@ -405,7 +415,7 @@ class NpmHttpCachingTest < Minitest::Test
   end
 
   def test_a_tarball_over_a_gated_package_is_still_refused
-    app = gated_app(gate_key: "alice") { |**| false }
+    app = gated_app { |**| false }
     assert_equal 404, get(app, tarball_path, "HTTP_RANGE" => "bytes=0-9")[0]
   end
 
@@ -436,8 +446,8 @@ class NpmHttpCachingTest < Minitest::Test
     [
       ["plain", plain_app, true],
       ["plain, shared_caching: false", Writable.npm_server(@repository, shared_caching: false), false],
-      ["gated with a key", gated_app(gate_key: "alice") { |**| true }, false],
-      ["gated without a key", gated_app(gate_key: nil) { |**| true }, false],
+      ["gated", gated_app { |**| true }, false],
+      ["gated to one version", gated_app { |name:, version: nil| version.nil? || version == "1.0.0" }, false],
       ["personalized", personalized_app(key: "one"), false],
       ["gated and personalized", gated_and_personalized_app, false]
     ].each { |description, app, open| yield description, app, open }
@@ -485,27 +495,31 @@ class NpmHttpCachingTest < Minitest::Test
     Writable.npm_server(@repository)
   end
 
-  def gated_app(gate_key:, &entitler)
-    Writable.npm_server(
-      Paquette::NpmServer::ReadGatedRepository.new(@repository, gate_key: gate_key, &entitler)
-    )
+  # The server gates for a caller whose authenticator answers entitled?, so a
+  # gated app is a plain stack with such an authenticator.
+  def gated_app(&entitler)
+    server(@repository, authenticator: EntitlingAuthenticator.gating(&entitler))
   end
 
   def personalized_app(key:)
     personalized = Paquette::NpmServer::Personalizer.new(@repository,
-      license_key: "LICENSE-#{key}", personalization_key: key,
-      files: {"LICENSE.txt" => "Licensed to #{key}\n"}, cache_dir: tmp_cache_dir)
+      files: {"LICENSE.txt" => "Licensed to\n  paquette:licensee\n"}, cache_dir: tmp_cache_dir)
 
-    Writable.npm_server(personalized)
+    server(personalized, authenticator: PersonalizingAuthenticator.with({"licensee" => key}))
   end
 
   def gated_and_personalized_app
-    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository, gate_key: "alice") { |**| true }
-    personalized = Paquette::NpmServer::Personalizer.new(gated,
-      license_key: "L", personalization_key: "alice",
-      files: {"LICENSE.txt" => "Licensed to alice\n"}, cache_dir: tmp_cache_dir)
+    personalized = Paquette::NpmServer::Personalizer.new(@repository,
+      files: {"LICENSE.txt" => "Licensed to\n  paquette:licensee\n"}, cache_dir: tmp_cache_dir)
+    authenticator = ->(token) do
+      Class.new(EntitlingAuthenticator) { def personalization = {"licensee" => "alice"} }.new(token) { |**| true }
+    end
 
-    Writable.npm_server(personalized)
+    server(personalized, authenticator: authenticator)
+  end
+
+  def server(repository, authenticator: OPEN_AUTHENTICATOR, **options)
+    Writable::WithOtp.new(Paquette::NpmServer.new(repository, authenticator: authenticator, **options))
   end
 
   def tmp_cache_dir

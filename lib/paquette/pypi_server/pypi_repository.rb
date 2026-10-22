@@ -101,8 +101,10 @@ class Paquette::PypiServer::PypiRepository
   # A short string that changes whenever anything this repository would
   # serve changes, or nil for "do not cache this" - see Paquette::CacheValidation.
   #
+  # @param scope [String, nil] the one project the validator is for, or nil
+  #   for the whole corpus; a repository that does not distinguish ignores it
   # @return [String, nil]
-  def cache_validator
+  def cache_validator(scope = nil)
     nil
   end
 

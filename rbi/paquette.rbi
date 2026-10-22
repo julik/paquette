@@ -403,6 +403,148 @@ module Paquette
     def self.served?(env, status); end
   end
 
+  # The one mechanism the personalizers write with. A package author puts a
+  # marker on a line of its own, in whatever their language calls a comment:
+  # 
+  #   # paquette:licensee
+  #   // paquette:licensee
+  #   -- paquette:licensee
+  # 
+  # or bare, in a text file that has no comments. The personalizer replaces the
+  # body of that line with the value the caller's authenticator gave for the
+  # key, keeping the indentation, the comment leader and the line ending, so the
+  # line count never changes and a sourcemap or a traceback still points where
+  # it did. A key is lowercase letters, digits and underscores. A line that is
+  # not exactly a marker is never touched.
+  # 
+  # No regexps. Every line here came out of an uploaded package.
+  module Markers
+    PREFIX = T.let("paquette:", T.untyped)
+    LEADERS = T.let(["#", "//", "--", ";", "%", "*"].freeze, T.untyped)
+    MAX_KEY_LENGTH = T.let(64, T.untyped)
+
+    # Every value is a single line of text, or the whole scheme breaks.
+    # 
+    # _@param_ `values`
+    sig { params(values: T::Hash[String, String]).void }
+    def check_values!(values); end
+
+    # Every value is a single line of text, or the whole scheme breaks.
+    # 
+    # _@param_ `values`
+    sig { params(values: T::Hash[String, String]).void }
+    def self.check_values!(values); end
+
+    # _@param_ `key`
+    sig { params(key: String).returns(T::Boolean) }
+    def valid_key?(key); end
+
+    # _@param_ `key`
+    sig { params(key: String).returns(T::Boolean) }
+    def self.valid_key?(key); end
+
+    # The key when `line` is nothing but a marker, nil otherwise.
+    # 
+    # _@param_ `line` — one line, with or without its ending
+    sig { params(line: String).returns(T.nilable(String)) }
+    def key_of(line); end
+
+    # The key when `line` is nothing but a marker, nil otherwise.
+    # 
+    # _@param_ `line` — one line, with or without its ending
+    sig { params(line: String).returns(T.nilable(String)) }
+    def self.key_of(line); end
+
+    # Whether `text` is something this module can read at all: UTF-8 with no
+    # NUL in it. Anything else is a binary and is left alone.
+    # 
+    # _@param_ `text`
+    sig { params(text: String).returns(T::Boolean) }
+    def text?(text); end
+
+    # Whether `text` is something this module can read at all: UTF-8 with no
+    # NUL in it. Anything else is a binary and is left alone.
+    # 
+    # _@param_ `text`
+    sig { params(text: String).returns(T::Boolean) }
+    def self.text?(text); end
+
+    # The key named anywhere on `line`, alone on it or not - what the package
+    # asks for, as opposed to what {key_of} will fill. nil when nothing on the
+    # line looks like a marker.
+    # 
+    # _@param_ `line`
+    sig { params(line: String).returns(T.nilable(String)) }
+    def mentioned_key_of(line); end
+
+    # The key named anywhere on `line`, alone on it or not - what the package
+    # asks for, as opposed to what {key_of} will fill. nil when nothing on the
+    # line looks like a marker.
+    # 
+    # _@param_ `line`
+    sig { params(line: String).returns(T.nilable(String)) }
+    def self.mentioned_key_of(line); end
+
+    # The keys of every marker in `text`, in order of appearance - mentioned
+    # anywhere on a line, not only alone on one. Detection is loose where
+    # filling is strict, so that a marker a minifier has pulled onto a code
+    # line still counts as the package asking to be personalized, and is then
+    # refused by {substitute} rather than served untouched.
+    # 
+    # _@param_ `text`
+    sig { params(text: String).returns(T::Array[String]) }
+    def keys_in(text); end
+
+    # The keys of every marker in `text`, in order of appearance - mentioned
+    # anywhere on a line, not only alone on one. Detection is loose where
+    # filling is strict, so that a marker a minifier has pulled onto a code
+    # line still counts as the package asking to be personalized, and is then
+    # refused by {substitute} rather than served untouched.
+    # 
+    # _@param_ `text`
+    sig { params(text: String).returns(T::Array[String]) }
+    def self.keys_in(text); end
+
+    # `text` with every marker line whose key is in `values` replaced. A marker
+    # for a key not in `values` stays as it is - it is a comment. Returns the
+    # input itself, not a copy, when there was nothing to do.
+    # 
+    # _@param_ `text`
+    # 
+    # _@param_ `values`
+    # 
+    # _@param_ `described_as` — what to call the text in an error
+    # 
+    # _@return_ — in the encoding `text` came in
+    sig { params(text: String, values: T::Hash[String, String], described_as: String).returns(String) }
+    def substitute(text, values, described_as: "text"); end
+
+    # `text` with every marker line whose key is in `values` replaced. A marker
+    # for a key not in `values` stays as it is - it is a comment. Returns the
+    # input itself, not a copy, when there was nothing to do.
+    # 
+    # _@param_ `text`
+    # 
+    # _@param_ `values`
+    # 
+    # _@param_ `described_as` — what to call the text in an error
+    # 
+    # _@return_ — in the encoding `text` came in
+    sig { params(text: String, values: T::Hash[String, String], described_as: String).returns(String) }
+    def self.substitute(text, values, described_as: "text"); end
+
+    # Raised when a marker for a key the caller supplied is still in the text
+    # after the pass: it was not alone on its line - `esbuild --minify` pulls
+    # a legal comment onto the end of a code line - and the package would go
+    # out with no stamp in it and nothing to say so.
+    class NotApplied < StandardError
+    end
+
+    # Raised for a value that would change the line count.
+    class MultilineValue < StandardError
+    end
+  end
+
   # Reading and writing of npm tarballs, hand-rolled rather than built on
   # Gem::Package's TarWriter/TarReader: a repack must come out byte-identical
   # (npm checks dist.integrity), and TarWriter can neither take the entry
@@ -771,7 +913,7 @@ module Paquette
     # 
     # _@param_ `shared_caching` — false keeps every response `private`, as if every request carried a credential — set it when you authorize by something Paquette cannot see (an IP allowlist, mTLS, a VPN)
     # 
-    # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # _@param_ `authenticator` — a subclass of Paquette::Authenticator, or anything answering `call(token)` with one, asked once per request who the caller is. Without one, everyone reads and nobody writes
     # 
     # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once a push has landed. An exception from it is a 500 for a gem that is already stored
     sig do
@@ -780,7 +922,7 @@ module Paquette
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object),
+        authenticator: T.nilable(T.untyped),
         on_publish: T.nilable(T.untyped)
       ).void
     end
@@ -797,6 +939,16 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def dispatch(env); end
+
+    # The repository as this caller sees it: behind a gate when their
+    # authenticator answers `entitled?`, the one the server was built with
+    # otherwise. The gate is per request because the authenticator is.
+    # 
+    # _@param_ `authenticator`
+    # 
+    # _@return_ — a repository
+    sig { params(authenticator: Paquette::Authenticator).returns(Object) }
+    def repository_for(authenticator); end
 
     # The gem a request was about, out of the route's own params - or what a
     # write said it wrote, since a push names its gem only in the body.
@@ -1087,11 +1239,12 @@ module Paquette
     sig { params(message: String).returns(T::Array[T.untyped]) }
     def server_error(message = "Internal Server Error"); end
 
-    # _@param_ `authenticator`
-    sig { params(authenticator: T.nilable(Object)).void }
+    # _@param_ `authenticator` — the factory; nil is "everyone reads, nobody writes"
+    sig { params(authenticator: T.nilable(T.untyped)).void }
     def setup_authentication(authenticator); end
 
-    # The refusal for this request, or nil to let it through.
+    # The refusal for this request, or nil to let it through. On the way, the
+    # caller's authenticator is built and put in the env.
     # 
     # _@param_ `route` — nil when nothing matched - the caller is still asked about, so an unknown path does not tell a stranger which paths exist
     # 
@@ -1103,34 +1256,45 @@ module Paquette
     sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
     def authentication_refusal(route, env, request_env = env); end
 
-    # _@param_ `route`
+    # One per request. An authenticator already in the env - put there by
+    # something in front of this server - is the caller's and is kept.
+    # 
+    # _@param_ `env`
     # 
     # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).returns(Paquette::Authenticator) }
+    def authenticator_for(env, token); end
+
+    # _@param_ `route`
+    # 
+    # _@param_ `authenticator`
     # 
     # _@param_ `env` — the Rack env
-    sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
-    def authentication_outcome(route, token, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), authenticator: Paquette::Authenticator, env: T::Hash[T.untyped, T.untyped]).returns(String) }
+    def authentication_outcome(route, authenticator, env); end
 
     # Tells a ResponseCache in front who the caller is, and revalidates against
     # what it holds for them. Only past the authenticator, so a stored body is
-    # never matched to a token that was not let in.
+    # never matched to a caller that was not let in.
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@param_ `request_env`
     # 
-    # _@param_ `token`
-    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
-    def identify_for_response_cache(env, request_env, token); end
+    # _@param_ `authenticator`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], authenticator: Paquette::Authenticator).void }
+    def identify_for_response_cache(env, request_env, authenticator); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
     # 
+    # _@param_ `authenticator`
+    # 
     # _@param_ `question`
     # 
-    # _@param_ `kwargs`
-    sig { params(question: Symbol, kwargs: T::Hash[T.untyped, T.untyped]).returns(Object) }
-    def ask_authenticator(question, **kwargs); end
+    # _@param_ `args`
+    sig { params(authenticator: Paquette::Authenticator, question: Symbol, args: T::Array[T.untyped]).returns(Object) }
+    def ask_authenticator(authenticator, question, *args); end
 
     # _@return_ — a Rack response triplet
     sig { returns(T::Array[T.untyped]) }
@@ -1146,9 +1310,11 @@ module Paquette
     # 
     # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
     # 
+    # _@param_ `scope` — the one package the endpoint is about, if any - see Paquette::CacheValidation.validator_of
+    # 
     # _@param_ `weak`
-    sig { params(resource_parts: T::Array[String], weak: T::Boolean).returns(T.nilable(String)) }
-    def etag_for(*resource_parts, weak: false); end
+    sig { params(resource_parts: T::Array[String], scope: T.nilable(String), weak: T::Boolean).returns(T.nilable(String)) }
+    def etag_for(*resource_parts, scope: nil, weak: false); end
 
     # `public` only when the embedder allowed shared caching, the request
     # carried no credential and nothing in the stack varies by caller —
@@ -1364,19 +1530,20 @@ module Paquette
       end
     end
 
-    # Rewrites the contents of a .gem into a new, byte-reproducible .gem —
-    # replacing magic comment lines, merging gemspec metadata and injecting files.
+    # Rewrites the contents of a .gem into a new, byte-reproducible .gem for one
+    # caller: every marker line filled in with the caller's value (see
+    # Paquette::Markers), the values stamped into the gemspec metadata, and files
+    # injected.
     class GemRepacker
-      FORMAT_VERSION = T.let(2, T.untyped)
+      FORMAT_VERSION = T.let(3, T.untyped)
       INJECTED_FILE_MODE = T.let(0o100644, T.untyped)
+      METADATA_PREFIX = T.let("paquette.", T.untyped)
 
       # One-shot convenience for {#initialize} + {#repack}.
       # 
       # _@param_ `gem_path`
       # 
-      # _@param_ `gemspec_extras`
-      # 
-      # _@param_ `magic_comment_replacements`
+      # _@param_ `values`
       # 
       # _@param_ `files`
       # 
@@ -1386,34 +1553,37 @@ module Paquette
       sig do
         params(
           gem_path: String,
-          gemspec_extras: T::Hash[String, String],
-          magic_comment_replacements: T::Hash[String, String],
+          values: T::Hash[String, String],
           files: T::Hash[String, String],
-          into: T.nilable(String),
-          block: T.untyped
+          into: T.nilable(String)
         ).returns(String)
       end
-      def self.repack(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block); end
+      def self.repack(gem_path, values:, files: {}, into: nil); end
+
+      # The keys of every marker in the gem, read straight out of its data
+      # tarball without unpacking it to disk. Empty for a gem that asks for
+      # nothing, which is how a personalizer knows to serve it as it is.
+      # 
+      # _@param_ `gem_path`
+      sig { params(gem_path: String).returns(T::Array[String]) }
+      def self.marker_keys(gem_path); end
 
       # _@param_ `gem_path` — path of the source .gem
       # 
-      # _@param_ `gemspec_extras` — keys merged into the gemspec metadata
+      # _@param_ `values` — the caller's values: each marker line for a key is filled with its value, and each pair is stamped into the gemspec metadata as paquette.<key>
       # 
-      # _@param_ `magic_comment_replacements` — whole comment lines to replace, marker => replacement
-      # 
-      # _@param_ `files` — files to inject, path relative to the gem root => content
+      # _@param_ `files` — files to inject, path relative to the gem root => content, with markers in the content filled in too
       # 
       # _@param_ `into` — destination path; without it the gem lands in a fresh tmpdir whose cleanup becomes the caller's problem.
       sig do
         params(
           gem_path: String,
-          gemspec_extras: T::Hash[String, String],
-          magic_comment_replacements: T::Hash[String, String],
+          values: T::Hash[String, String],
           files: T::Hash[String, String],
           into: T.nilable(String)
         ).void
       end
-      def initialize(gem_path, gemspec_extras: {}, magic_comment_replacements: {}, files: {}, into: nil); end
+      def initialize(gem_path, values:, files: {}, into: nil); end
 
       # Four subprocess-and-disk stages, each timed separately: a repack that
       # got slow is almost always one of them.
@@ -1427,14 +1597,20 @@ module Paquette
       sig { void }
       def unpack_gem; end
 
+      # Every file in the gem, not only the Ruby ones: a LICENSE carries a
+      # marker as readily as a source file does. Binaries are left alone by
+      # Markers itself. The span keeps its old name.
+      # 
+      # Removed before it is rewritten: the file may have been shipped
+      # read-only, and the mode it goes back out with comes from the source
+      # gem's tar header, not from what is on disk here.
       sig { void }
-      def process_ruby_files; end
+      def fill_markers; end
 
       # The mode of every entry in the source gem's data.tar.gz, as its packer
       # wrote it. The repack writes these back rather than what is on disk:
-      # extraction masks each mode with this process's umask, and the .rb files
-      # are rewritten through a Tempfile created 0600, so the disk says more
-      # about the server than about the gem.
+      # extraction masks each mode with this process's umask, so the disk says
+      # more about the server than about the gem.
       # 
       # _@return_ — entry name => mode
       sig { returns(T::Hash[String, Integer]) }
@@ -1442,19 +1618,9 @@ module Paquette
 
       # A file that replaces one the gem shipped keeps that file's mode. Removed
       # before it is written, because the one it replaces may have been shipped
-      # read-only.
+      # read-only. Markers in the injected content are filled in like any other.
       sig { void }
       def inject_files; end
-
-      # _@param_ `file_path`
-      sig { params(file_path: String).void }
-      def process_ruby_file(file_path); end
-
-      # _@param_ `input_file`
-      # 
-      # _@param_ `output_file`
-      sig { params(input_file: IO, output_file: IO).void }
-      def apply_magic_comment_replacements(input_file, output_file); end
 
       # _@return_ — the path of the finished gem
       sig { returns(String) }
@@ -1550,43 +1716,25 @@ module Paquette
       end
     end
 
-    # Wraps a gem repository and serves each gem repacked for one licensee —
-    # magic comment lines replaced, files injected, the license key stamped
-    # into the gemspec metadata — with the repacked gems and their checksums
-    # cached on disk.
+    # Wraps a gem repository and serves each gem repacked for the caller: every
+    # marker line filled with the value the caller's authenticator gave for it
+    # (see Paquette::Markers), the values stamped into the gemspec metadata,
+    # files injected — with the repacked gems and their checksums cached on disk.
+    # 
+    # Built once and shared: who the caller is comes from
+    # Paquette::Authenticator.current, which the server sets for the request. A
+    # caller whose authenticator gives no `personalization`, and a gem with no
+    # marker in it, are both served byte for byte.
     class Personalizer < SimpleDelegator
       CHECKSUM_SIDECAR_FORMAT_VERSION = T.let(1, T.untyped)
 
-      # Two rules make the caching sound, and they are the caller's to keep:
-      # what `files_for:` returns may depend on the gem file and
-      # `personalization_key:` and nothing else, and nil must be a fact about
-      # the file alone — it is remembered per file, never per licensee.
-      # 
       # _@param_ `repository` — the repository to wrap
       # 
-      # _@param_ `license_key` — stamped into every served gem's metadata
-      # 
-      # _@param_ `magic_comment_replacements` — whole comment lines to replace in **/*.rb, marker => replacement
-      # 
-      # _@param_ `files` — path => content, written into every gem and added to spec.files — this is what a per-licensee LICENSE file arrives through, rendered by the caller
-      # 
-      # _@param_ `files_for` — the per-gem edition of `files:`, called with (gem_name, version, original_path); returns a path => content hash injected on top of `files:`, or nil meaning this gem is served byte for byte as it sits on disk
-      # 
-      # _@param_ `personalization_key` — everything the personalized bytes depend on beyond the gem itself — a licensee id, a ref
+      # _@param_ `files` — path => content, written into every gem that carries a marker and added to spec.files, with markers in the content filled in — a LICENSE naming the licensee, say
       # 
       # _@param_ `cache_dir` — where personalized gems and opt-out markers are kept; defaults to the system temp directory, which an application with a cache directory of its own should override
-      sig do
-        params(
-          repository: Paquette::GemServer::GemRepository,
-          license_key: String,
-          magic_comment_replacements: T::Hash[String, String],
-          files: T::Hash[String, String],
-          files_for: T.nilable(Proc),
-          personalization_key: T.nilable(String),
-          cache_dir: T.nilable(String)
-        ).void
-      end
-      def initialize(repository, license_key:, magic_comment_replacements: {}, files: {}, files_for: nil, personalization_key: nil, cache_dir: nil); end
+      sig { params(repository: Paquette::GemServer::GemRepository, files: T::Hash[String, String], cache_dir: T.nilable(String)).void }
+      def initialize(repository, files: {}, cache_dir: nil); end
 
       # _@param_ `gem_name`
       # 
@@ -1596,15 +1744,17 @@ module Paquette
       sig { params(gem_name: String, version: String).returns(T.nilable(String)) }
       def gem_file_path(gem_name, version); end
 
-      # The wrapped validator with this personalizer's identity mixed in, so
-      # one licensee's cached index can never satisfy another's request. The
+      # The wrapped validator with what this caller gets written into their gems
+      # mixed in, so one licensee's cached index can never satisfy another's. The
       # key is the same digest that names the cached gems on disk, so this is
-      # exactly as strong as that cache; `files_for:` itself is not digested —
-      # a Proc cannot be, and the initializer's contract means it need not be.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # exactly as strong as that cache. A caller who gets vanilla bytes gets the
+      # wrapped validator as it is.
+      # 
+      # _@param_ `scope` — forwarded to the wrapped repository
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
-      # Every byte this serves is baked for one licensee.
+      # Every byte this serves is baked for one caller.
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
 
@@ -1625,8 +1775,13 @@ module Paquette
       sig { params(gem_name: String).returns(T::Array[String]) }
       def compact_info(gem_name); end
 
+      # The current caller's values, checked once per request's worth of asking.
+      # nil when there is nobody to personalize for.
+      sig { returns(T.nilable(T::Hash[String, String])) }
+      def personalization; end
+
       # The cache is keyed by everything that goes INTO the gem, never the gem
-      # alone — a per-licensee path is what keeps two racing licensees from
+      # alone — a per-caller path is what keeps two racing licensees from
       # receiving each other's copy. Consulted before the gem is ever opened:
       # compact_info asks per version per request.
       # 
@@ -1635,8 +1790,17 @@ module Paquette
       # _@param_ `gem_name`
       # 
       # _@param_ `version`
-      sig { params(original_gem_path: String, gem_name: String, version: String).returns(String) }
-      def personalize_gem(original_gem_path, gem_name, version); end
+      # 
+      # _@param_ `values`
+      sig do
+        params(
+          original_gem_path: String,
+          gem_name: String,
+          version: String,
+          values: T::Hash[String, String]
+        ).returns(String)
+      end
+      def personalize_gem(original_gem_path, gem_name, version, values); end
 
       # The block form of mktmpdir removes exactly what it created, so nothing
       # in this method ever deletes a path somebody else chose.
@@ -1645,9 +1809,9 @@ module Paquette
       # 
       # _@param_ `personalized_path`
       # 
-      # _@param_ `dynamic_files`
-      sig { params(original_gem_path: String, personalized_path: String, dynamic_files: T::Hash[String, String]).returns(String) }
-      def repack(original_gem_path, personalized_path, dynamic_files); end
+      # _@param_ `values`
+      sig { params(original_gem_path: String, personalized_path: String, values: T::Hash[String, String]).returns(String) }
+      def repack(original_gem_path, personalized_path, values); end
 
       # The SHA256 of a personalized gem, remembered next to it — the bytes at
       # that path are fixed for as long as the path exists. Size and mtime are
@@ -1697,8 +1861,17 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(gem_name: String, version: String, stat: ::File::Stat).returns(String) }
-      def cache_path(gem_name, version, stat); end
+      # 
+      # _@param_ `values`
+      sig do
+        params(
+          gem_name: String,
+          version: String,
+          stat: ::File::Stat,
+          values: T::Hash[String, String]
+        ).returns(String)
+      end
+      def cache_path(gem_name, version, stat, values); end
 
       # Where "this gem carries nothing to personalize" is written down — an
       # empty file whose presence is the fact. Keyed by the source identity
@@ -1713,12 +1886,15 @@ module Paquette
       sig { params(gem_name: String, version: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(gem_name, version, stat); end
 
-      # Everything this personalizer would write into a gem, and the repacker
-      # format it writes it with, as one short hash. Stable across processes, so
-      # a restart does not orphan the cache; a new repacker format does, on
-      # purpose.
-      sig { returns(String) }
-      def personalization_digest; end
+      # Everything that would be written into a gem for this caller, and the
+      # repacker format it is written with, as one short hash. Stable across
+      # processes, so a restart does not orphan the cache; a new repacker format
+      # does, on purpose. Values only ever come in as data, so the digest sees
+      # all of them - there is nothing to declare.
+      # 
+      # _@param_ `values`
+      sig { params(values: T::Hash[String, String]).returns(String) }
+      def personalization_digest(values); end
     end
 
     # Abstract base class for gem repositories
@@ -1788,8 +1964,10 @@ module Paquette
       # A short string that changes whenever anything this repository would
       # serve changes — wrappers included. A wrapper that cannot describe
       # itself must return nil, "do not cache this", which propagates outward.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # 
+      # _@param_ `scope` — the one gem the validator is for, or nil for the whole corpus; a repository that does not distinguish ignores it
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       # Whether two callers can get different answers out of this repository —
       # false permits `public` responses. True is the only safe default for a
@@ -1813,8 +1991,10 @@ module Paquette
       # the npm side.
       # 
       # _@param_ `repository`
-      sig { params(repository: Object).returns(T.nilable(String)) }
-      def self.cache_validator_of(repository); end
+      # 
+      # _@param_ `scope` — the one gem the validator is for, if any
+      sig { params(repository: Object, scope: T.nilable(String)).returns(T.nilable(String)) }
+      def self.cache_validator_of(repository, scope = nil); end
 
       # _@param_ `repository`
       # 
@@ -2020,8 +2200,10 @@ module Paquette
       # are at least `interval` old. That count is digested with the inner
       # validator and the interval; the sorted publish times are memoized
       # under the inner validator, fail-closed as everywhere else.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # 
+      # _@param_ `scope` — forwarded to the wrapped repository
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       # A gem with no servable version disappears from /names altogether —
       # Bundler treats a listed name as resolvable.
@@ -2093,20 +2275,33 @@ module Paquette
       def published_time(gem_name, version); end
     end
 
-    # Wraps a gem repository and filters every read through an entitler block:
-    # non-entitled gems disappear from listings, return nil paths, and report
-    # as non-existent. Writes pass through - who may write is the authenticator's
-    # to say, and the server asks it before any repository is touched.
+    # Wraps a gem repository and filters every read through the caller's
+    # authenticator: a gem the caller is not entitled to disappears from
+    # listings, returns nil paths, and reports as non-existent. Writes pass
+    # through - who may write is the authenticator's to say, and the server asks
+    # it before any repository is touched.
+    # 
+    # The server puts one of these around its repository for every request whose
+    # authenticator answers `entitled?`, so an application never builds one.
     class ReadGatedRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
-      # _@param_ `gate_key` — what this gate is called, for HTTP caching: the identity the entitler consults plus everything the answers depend on. Left out, the whole stack emits no ETag and serves every request in full — the intended fail-closed default, because a wrong ETag hands one customer another's entitlements.
-      sig { params(repository: Paquette::GemServer::GemRepository, gate_key: T.nilable(String), entitler: T.untyped).void }
-      def initialize(repository, gate_key: nil, &entitler); end
+      # _@param_ `authenticator` — the caller's, answering `entitled?(name:, version: nil)` - truthy when they may see that gem, or that version of it
+      sig { params(repository: Paquette::GemServer::GemRepository, authenticator: Paquette::Authenticator).void }
+      def initialize(repository, authenticator); end
 
-      # nil without a gate_key — derive_validator does the refusing.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # The wrapped validator with what this caller can see mixed in: the names
+      # and versions the gate lets through, within the scope. Exact by
+      # construction - the ETag moves when and only when the visible set does -
+      # at the price of one entitlement question per package in scope, which is
+      # the same question rendering the body asks. A caller who can see nothing
+      # gets no validator: their response is empty and cheap, and an ETag over it
+      # would still move with the corpus beneath the gate, telling a stranger
+      # when gems they cannot see are published.
+      # 
+      # _@param_ `scope` — one gem name, or nil for the whole corpus
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       # A gate may decide by something Paquette never sees — an IP, a header —
       # so even two anonymous callers can get different views. Never `public`.
@@ -2149,9 +2344,10 @@ module Paquette
       sig { params(gem_name: String, version: String).returns(T::Boolean) }
       def gem_exists?(gem_name, version); end
 
-      # The entitler is the caller's, and a listing calls it once per gem in
-      # the corpus — an entitler that reaches for a database on every call is
-      # the usual reason a gated index is slower than an ungated one.
+      # The authenticator is the caller's, and a listing asks it once per gem in
+      # the corpus — one that reaches for a database on every call, instead of
+      # remembering what it learned for the request, is the usual reason a gated
+      # index is slower than an ungated one.
       # 
       # _@param_ `criteria`
       # 
@@ -2178,8 +2374,8 @@ module Paquette
       sig { returns(String) }
       def fingerprint; end
 
-      sig { returns(String) }
-      def cache_validator; end
+      sig { params(scope: T.nilable(String)).returns(String) }
+      def cache_validator(scope = nil); end
 
       # A directory of gems is the same directory for everybody; the wrappers
       # above are what make a response caller-specific.
@@ -2453,7 +2649,6 @@ module Paquette
     include Paquette::Authentication
     SCOPED_PATH = T.let(%r{\A(/(?:-/package/)?)(@[^/%]+)/([^/]+)(/.*)?\z}, T.untyped)
     DEFAULT_BLURB = T.let("This server provides npm packages. Point your registry at it and install as usual.", T.untyped)
-    GatedNpmRepository = T.let(Paquette::NpmServer::ReadGatedRepository, T.untyped)
 
     # What a request would dispatch to, without dispatching it — the npm twin
     # of GemServer.route_for. The scoped-name normalization is applied first,
@@ -2489,7 +2684,7 @@ module Paquette
     # 
     # _@param_ `shared_caching` — false keeps every response `private` — see the same option on GemServer
     # 
-    # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # _@param_ `authenticator` — a subclass of Paquette::Authenticator, or anything answering `call(token)` with one, asked once per request who the caller is. Without one, everyone reads and nobody writes
     # 
     # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once a publish has landed - see the same option on GemServer
     sig do
@@ -2498,7 +2693,7 @@ module Paquette
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object),
+        authenticator: T.nilable(T.untyped),
         on_publish: T.nilable(T.untyped)
       ).void
     end
@@ -2515,6 +2710,16 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def dispatch(env); end
+
+    # The repository as this caller sees it: behind a gate when their
+    # authenticator answers `entitled?`, the one the server was built with
+    # otherwise. The gate is per request because the authenticator is.
+    # 
+    # _@param_ `authenticator`
+    # 
+    # _@return_ — a repository
+    sig { params(authenticator: Paquette::Authenticator).returns(Object) }
+    def repository_for(authenticator); end
 
     # The package a request was about, out of the route's own params - the
     # version too when a tarball names one - or what a publish wrote.
@@ -2761,11 +2966,12 @@ module Paquette
     sig { params(message: String).returns(T::Array[T.untyped]) }
     def server_error(message = "Internal Server Error"); end
 
-    # _@param_ `authenticator`
-    sig { params(authenticator: T.nilable(Object)).void }
+    # _@param_ `authenticator` — the factory; nil is "everyone reads, nobody writes"
+    sig { params(authenticator: T.nilable(T.untyped)).void }
     def setup_authentication(authenticator); end
 
-    # The refusal for this request, or nil to let it through.
+    # The refusal for this request, or nil to let it through. On the way, the
+    # caller's authenticator is built and put in the env.
     # 
     # _@param_ `route` — nil when nothing matched - the caller is still asked about, so an unknown path does not tell a stranger which paths exist
     # 
@@ -2777,34 +2983,45 @@ module Paquette
     sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
     def authentication_refusal(route, env, request_env = env); end
 
-    # _@param_ `route`
+    # One per request. An authenticator already in the env - put there by
+    # something in front of this server - is the caller's and is kept.
+    # 
+    # _@param_ `env`
     # 
     # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).returns(Paquette::Authenticator) }
+    def authenticator_for(env, token); end
+
+    # _@param_ `route`
+    # 
+    # _@param_ `authenticator`
     # 
     # _@param_ `env` — the Rack env
-    sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
-    def authentication_outcome(route, token, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), authenticator: Paquette::Authenticator, env: T::Hash[T.untyped, T.untyped]).returns(String) }
+    def authentication_outcome(route, authenticator, env); end
 
     # Tells a ResponseCache in front who the caller is, and revalidates against
     # what it holds for them. Only past the authenticator, so a stored body is
-    # never matched to a token that was not let in.
+    # never matched to a caller that was not let in.
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@param_ `request_env`
     # 
-    # _@param_ `token`
-    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
-    def identify_for_response_cache(env, request_env, token); end
+    # _@param_ `authenticator`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], authenticator: Paquette::Authenticator).void }
+    def identify_for_response_cache(env, request_env, authenticator); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
     # 
+    # _@param_ `authenticator`
+    # 
     # _@param_ `question`
     # 
-    # _@param_ `kwargs`
-    sig { params(question: Symbol, kwargs: T::Hash[T.untyped, T.untyped]).returns(Object) }
-    def ask_authenticator(question, **kwargs); end
+    # _@param_ `args`
+    sig { params(authenticator: Paquette::Authenticator, question: Symbol, args: T::Array[T.untyped]).returns(Object) }
+    def ask_authenticator(authenticator, question, *args); end
 
     # _@return_ — a Rack response triplet
     sig { returns(T::Array[T.untyped]) }
@@ -2816,9 +3033,11 @@ module Paquette
     # 
     # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
     # 
+    # _@param_ `scope` — the one package the endpoint is about, if any - see Paquette::CacheValidation.validator_of
+    # 
     # _@param_ `weak`
-    sig { params(resource_parts: T::Array[String], weak: T::Boolean).returns(T.nilable(String)) }
-    def etag_for(*resource_parts, weak: false); end
+    sig { params(resource_parts: T::Array[String], scope: T.nilable(String), weak: T::Boolean).returns(T.nilable(String)) }
+    def etag_for(*resource_parts, scope: nil, weak: false); end
 
     # `public` only when the embedder allowed shared caching, the request
     # carried no credential and nothing in the stack varies by caller —
@@ -3013,51 +3232,37 @@ module Paquette
     class PayloadTooLarge < StandardError
     end
 
-    # Rewrites each served tarball on the fly to embed the licensee's key;
-    # counterpart of GemServer::Personalizer.
+    # Rewrites each served tarball on the fly for the caller: every marker line
+    # filled with the value the caller's authenticator gave for it (see
+    # Paquette::Markers), the values stamped into package.json, files injected -
+    # with the repacked tarballs cached on disk. Counterpart of
+    # GemServer::Personalizer.
+    # 
+    # Built once and shared: who the caller is comes from
+    # Paquette::Authenticator.current, which the server sets for the request. A
+    # caller whose authenticator gives no `personalization`, and a package with
+    # no marker in it, are both served byte for byte - with the repository's own
+    # integrity hashes, which describe exactly that file.
     class Personalizer < SimpleDelegator
-      # The caller keeps the two contracts spelled out on
-      # GemServer::Personalizer: what `files_for:` returns depends only on the
-      # tarball and `personalization_key:`, and nil is a fact about the
-      # package, never about the licensee.
-      # 
       # _@param_ `repository` — the repository to wrap
       # 
-      # _@param_ `license_key`
-      # 
-      # _@param_ `magic_comment_replacements` — checked here as well as in the repacker, so a bad pair is refused where the stack is built rather than on the first customer download
-      # 
-      # _@param_ `files` — files injected into every tarball
-      # 
-      # _@param_ `package_json_extras` — merged into package.json; defaults to a "paquette" key carrying the license key
-      # 
-      # _@param_ `files_for` — per-package files, called with (package_name, version, original_path); nil return means the package is served byte for byte
-      # 
-      # _@param_ `personalization_key` — everything the personalized bytes depend on beyond the tarball itself
+      # _@param_ `files` — path => content, written into every tarball that carries a marker, with markers in the content filled in
       # 
       # _@param_ `cache_dir` — where personalized tarballs and opt-out markers are kept; the system temp directory is only a default
-      sig do
-        params(
-          repository: Paquette::NpmServer::NpmRepository,
-          license_key: String,
-          magic_comment_replacements: T::Hash[String, String],
-          files: T::Hash[String, String],
-          package_json_extras: T.nilable(T::Hash[T.untyped, T.untyped]),
-          files_for: T.nilable(Proc),
-          personalization_key: T.nilable(String),
-          cache_dir: T.nilable(String)
-        ).void
-      end
-      def initialize(repository, license_key:, magic_comment_replacements: {}, files: {}, package_json_extras: nil, files_for: nil, personalization_key: nil, cache_dir: nil); end
+      sig { params(repository: Paquette::NpmServer::NpmRepository, files: T::Hash[String, String], cache_dir: T.nilable(String)).void }
+      def initialize(repository, files: {}, cache_dir: nil); end
 
-      # The wrapped validator with this personalizer's identity mixed in — the
-      # packument carries per-licensee integrity hashes in the document
-      # itself. The key is the same digest that names the cached tarballs on
-      # disk, so the validator is exactly as strong as that cache.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # The wrapped validator with what this caller gets written into their
+      # tarballs mixed in — the packument carries per-caller integrity hashes in
+      # the document itself. The key is the same digest that names the cached
+      # tarballs on disk, so the validator is exactly as strong as that cache. A
+      # caller who gets vanilla bytes gets the wrapped validator as it is.
+      # 
+      # _@param_ `scope` — forwarded to the wrapped repository
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
-      # Every byte — and every dist.integrity — is baked for one licensee.
+      # Every byte — and every dist.integrity — is baked for one caller.
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
 
@@ -3086,16 +3291,29 @@ module Paquette
       sig { params(package_name: String).returns(T.nilable(T::Hash[T.untyped, T.untyped])) }
       def package_metadata(package_name); end
 
-      # Keyed by everything that goes INTO the package: two licensees never
-      # share a file. See GemServer::Personalizer, whose scheme this is.
+      # The current caller's values. nil when there is nobody to personalize for.
+      sig { returns(T.nilable(T::Hash[String, String])) }
+      def personalization; end
+
+      # Keyed by everything that goes INTO the package: two callers never share
+      # a file. See GemServer::Personalizer, whose scheme this is.
       # 
       # _@param_ `original_path`
       # 
       # _@param_ `package_name`
       # 
       # _@param_ `version`
-      sig { params(original_path: String, package_name: String, version: String).returns(String) }
-      def personalize(original_path, package_name, version); end
+      # 
+      # _@param_ `values`
+      sig do
+        params(
+          original_path: String,
+          package_name: String,
+          version: String,
+          values: T::Hash[String, String]
+        ).returns(String)
+      end
+      def personalize(original_path, package_name, version, values); end
 
       # The FULL package name — basename keying once served one scope's code as
       # another's. Stat identity, so a replaced tarball invalidates the cache
@@ -3106,12 +3324,21 @@ module Paquette
       # _@param_ `version`
       # 
       # _@param_ `stat`
-      sig { params(package_name: String, version: String, stat: ::File::Stat).returns(String) }
-      def cache_digest(package_name, version, stat); end
+      # 
+      # _@param_ `values`
+      sig do
+        params(
+          package_name: String,
+          version: String,
+          stat: ::File::Stat,
+          values: T::Hash[String, String]
+        ).returns(String)
+      end
+      def cache_digest(package_name, version, stat, values); end
 
       # Where "this package carries nothing to personalize" is written down.
       # Keyed by the package and its source identity alone, never by the
-      # licensee — whether a package participates is a fact about the package.
+      # caller — whether a package participates is a fact about the package.
       # 
       # _@param_ `package_name`
       # 
@@ -3121,11 +3348,14 @@ module Paquette
       sig { params(package_name: String, version: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(package_name, version, stat); end
 
-      # Everything this personalizer would write into a tarball, and the
-      # repacker format it writes it with. Stable across processes, so a restart
-      # does not orphan the cache; a new repacker format does, on purpose.
-      sig { returns(String) }
-      def personalization_digest; end
+      # Everything that would be written into a tarball for this caller, and the
+      # repacker format it is written with. Stable across processes, so a restart
+      # does not orphan the cache; a new repacker format does, on purpose. Values
+      # only ever come in as data, so the digest sees all of them.
+      # 
+      # _@param_ `values`
+      sig { params(values: T::Hash[String, String]).returns(String) }
+      def personalization_digest(values); end
     end
 
     # Abstract base class for NPM package repositories; mirrors GemRepository.
@@ -3198,8 +3428,10 @@ module Paquette
       # serve changes, or nil for "do not cache this". A packument replayed to
       # the wrong licensee carries integrity hashes that cannot match the
       # tarball they download — npm treats that as tampering.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # 
+      # _@param_ `scope` — the one package the validator is for, or nil for the whole corpus; a repository that does not distinguish ignores it
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       # Whether two callers can get different answers out of this repository —
       # true is the safe default; see GemRepository#varies_by_caller?.
@@ -3309,17 +3541,24 @@ module Paquette
       def self.version_doc(package_json, package_name, version, dist); end
     end
 
-    # Filters every read through an entitler block; non-entitled packages do
-    # not exist. Writes pass through - see the gem-side twin.
+    # Filters every read through the caller's authenticator; non-entitled packages
+    # do not exist. Writes pass through - see the gem-side twin, which the server
+    # applies the same way: for every request whose authenticator answers
+    # `entitled?`.
     class ReadGatedRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
-      # _@param_ `gate_key` — names this gate for HTTP caching — see the gem-side ReadGatedRepository for the full contract: name the identity the entitler consults and everything the answers depend on, or leave it out and the whole stack emits no ETag (the intended fail-closed default — a wrong ETag on a gated packument is one customer holding another's entitlements).
-      sig { params(repository: Paquette::NpmServer::NpmRepository, gate_key: T.nilable(String), entitler: T.untyped).void }
-      def initialize(repository, gate_key: nil, &entitler); end
+      # _@param_ `authenticator` — the caller's, answering `entitled?(name:, version: nil)`
+      sig { params(repository: Paquette::NpmServer::NpmRepository, authenticator: Paquette::Authenticator).void }
+      def initialize(repository, authenticator); end
 
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # What this caller can see within the scope, digested into the wrapped
+      # validator - see the gem-side twin for why, and for why a caller who sees
+      # nothing gets none.
+      # 
+      # _@param_ `scope` — one package name, or nil for the whole corpus
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       # A gate may decide by something Paquette never sees — an IP, a header —
       # so even two anonymous callers can get different views. Never `public`.
@@ -3425,8 +3664,9 @@ module Paquette
       sig { params(path: String).returns(Integer) }
       def mtime_ns(path); end
 
-      sig { returns(String) }
-      def cache_validator; end
+      # _@param_ `scope`
+      sig { params(scope: T.nilable(String)).returns(String) }
+      def cache_validator(scope = nil); end
 
       # A directory of packages is the same directory for everybody; the
       # wrappers are what make a response caller-specific.
@@ -3656,7 +3896,7 @@ module Paquette
     # 
     # _@param_ `shared_caching` — false keeps every response `private` - see the same option on GemServer
     # 
-    # _@param_ `authenticator` — answers `read_permitted?`, `write_permitted?` and `check_otp!` - see Paquette::Authentication. Without one, everyone reads and nobody writes
+    # _@param_ `authenticator` — a subclass of Paquette::Authenticator, or anything answering `call(token)` with one, asked once per request who the caller is. Without one, everyone reads and nobody writes
     # 
     # _@param_ `on_publish` — called with a Paquette::Published and the Rack::Request once an upload has landed - see the same option on GemServer
     sig do
@@ -3665,7 +3905,7 @@ module Paquette
         placeholder_app: T.untyped,
         max_push_bytes: T.nilable(Integer),
         shared_caching: T::Boolean,
-        authenticator: T.nilable(Object),
+        authenticator: T.nilable(T.untyped),
         on_publish: T.nilable(T.untyped)
       ).void
     end
@@ -3682,6 +3922,16 @@ module Paquette
     # _@return_ — a Rack response triplet
     sig { params(env: T::Hash[T.untyped, T.untyped]).returns(T::Array[T.untyped]) }
     def dispatch(env); end
+
+    # The repository as this caller sees it: behind a gate when their
+    # authenticator answers `entitled?`, the one the server was built with
+    # otherwise. The gate is per request because the authenticator is.
+    # 
+    # _@param_ `authenticator`
+    # 
+    # _@return_ — a repository
+    sig { params(authenticator: Paquette::Authenticator).returns(Object) }
+    def repository_for(authenticator); end
 
     # The project a request was about, and the version when a file names one -
     # or what an upload wrote, since that names its project in the body only.
@@ -3860,11 +4110,12 @@ module Paquette
     sig { params(message: String).returns(T::Array[T.untyped]) }
     def payload_too_large(message = "Payload Too Large"); end
 
-    # _@param_ `authenticator`
-    sig { params(authenticator: T.nilable(Object)).void }
+    # _@param_ `authenticator` — the factory; nil is "everyone reads, nobody writes"
+    sig { params(authenticator: T.nilable(T.untyped)).void }
     def setup_authentication(authenticator); end
 
-    # The refusal for this request, or nil to let it through.
+    # The refusal for this request, or nil to let it through. On the way, the
+    # caller's authenticator is built and put in the env.
     # 
     # _@param_ `route` — nil when nothing matched - the caller is still asked about, so an unknown path does not tell a stranger which paths exist
     # 
@@ -3876,34 +4127,45 @@ module Paquette
     sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
     def authentication_refusal(route, env, request_env = env); end
 
-    # _@param_ `route`
+    # One per request. An authenticator already in the env - put there by
+    # something in front of this server - is the caller's and is kept.
+    # 
+    # _@param_ `env`
     # 
     # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).returns(Paquette::Authenticator) }
+    def authenticator_for(env, token); end
+
+    # _@param_ `route`
+    # 
+    # _@param_ `authenticator`
     # 
     # _@param_ `env` — the Rack env
-    sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
-    def authentication_outcome(route, token, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), authenticator: Paquette::Authenticator, env: T::Hash[T.untyped, T.untyped]).returns(String) }
+    def authentication_outcome(route, authenticator, env); end
 
     # Tells a ResponseCache in front who the caller is, and revalidates against
     # what it holds for them. Only past the authenticator, so a stored body is
-    # never matched to a token that was not let in.
+    # never matched to a caller that was not let in.
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@param_ `request_env`
     # 
-    # _@param_ `token`
-    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
-    def identify_for_response_cache(env, request_env, token); end
+    # _@param_ `authenticator`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], authenticator: Paquette::Authenticator).void }
+    def identify_for_response_cache(env, request_env, authenticator); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
     # 
+    # _@param_ `authenticator`
+    # 
     # _@param_ `question`
     # 
-    # _@param_ `kwargs`
-    sig { params(question: Symbol, kwargs: T::Hash[T.untyped, T.untyped]).returns(Object) }
-    def ask_authenticator(question, **kwargs); end
+    # _@param_ `args`
+    sig { params(authenticator: Paquette::Authenticator, question: Symbol, args: T::Array[T.untyped]).returns(Object) }
+    def ask_authenticator(authenticator, question, *args); end
 
     # _@return_ — a Rack response triplet
     sig { returns(T::Array[T.untyped]) }
@@ -3915,9 +4177,11 @@ module Paquette
     # 
     # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
     # 
+    # _@param_ `scope` — the one package the endpoint is about, if any - see Paquette::CacheValidation.validator_of
+    # 
     # _@param_ `weak`
-    sig { params(resource_parts: T::Array[String], weak: T::Boolean).returns(T.nilable(String)) }
-    def etag_for(*resource_parts, weak: false); end
+    sig { params(resource_parts: T::Array[String], scope: T.nilable(String), weak: T::Boolean).returns(T.nilable(String)) }
+    def etag_for(*resource_parts, scope: nil, weak: false); end
 
     # `public` only when the embedder allowed shared caching, the request
     # carried no credential and nothing in the stack varies by caller —
@@ -4128,42 +4392,32 @@ module Paquette
       def close; end
     end
 
-    # Serves each wheel and sdist repacked for one licensee - magic comment lines
-    # replaced, files injected, the license key stamped into paquette.json - with
-    # the repacked files cached on disk. Counterpart of NpmServer::Personalizer,
-    # and the same two contracts about `files_for:` apply.
+    # Serves each wheel and sdist repacked for the caller - every marker line
+    # filled with the value the caller's authenticator gave for it (see
+    # Paquette::Markers), the values written to paquette.json, files injected -
+    # with the repacked files cached on disk. Counterpart of
+    # NpmServer::Personalizer.
+    # 
+    # Built once and shared: who the caller is comes from
+    # Paquette::Authenticator.current, which the server sets for the request. A
+    # caller whose authenticator gives no `personalization`, and a file with no
+    # marker in it, are both served byte for byte.
     class Personalizer < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
-      # _@param_ `license_key`
-      # 
-      # _@param_ `magic_comment_replacements` — whole comment lines in *.py and *.pyi to replace, marker => replacement
-      # 
-      # _@param_ `files` — injected into every file, path relative to the archive root - site-packages, for a wheel
-      # 
-      # _@param_ `stamp` — written as paquette.json into the wheel's .dist-info and the sdist's root; defaults to the license key
-      # 
-      # _@param_ `files_for` — per-file extras, called with (project, filename, original_path); nil means the file is served byte for byte
-      # 
-      # _@param_ `personalization_key` — everything the personalized bytes depend on beyond the file itself
+      # _@param_ `files` — injected into every file that carries a marker, path relative to the archive root - site-packages, for a wheel - with markers in the content filled in
       # 
       # _@param_ `cache_dir` — where personalized files and opt-out markers are kept
-      sig do
-        params(
-          repository: Paquette::PypiServer::PypiRepository,
-          license_key: String,
-          magic_comment_replacements: T::Hash[String, String],
-          files: T::Hash[String, String],
-          stamp: T.nilable(T::Hash[T.untyped, T.untyped]),
-          files_for: T.nilable(Proc),
-          personalization_key: T.nilable(String),
-          cache_dir: T.nilable(String)
-        ).void
-      end
-      def initialize(repository, license_key:, magic_comment_replacements: {}, files: {}, stamp: nil, files_for: nil, personalization_key: nil, cache_dir: nil); end
+      sig { params(repository: Paquette::PypiServer::PypiRepository, files: T::Hash[String, String], cache_dir: T.nilable(String)).void }
+      def initialize(repository, files: {}, cache_dir: nil); end
 
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # The wrapped validator with what this caller gets written into their files
+      # mixed in - see the gem-side Personalizer. A caller who gets vanilla bytes
+      # gets the wrapped validator as it is.
+      # 
+      # _@param_ `scope` — forwarded to the wrapped repository
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
@@ -4183,6 +4437,10 @@ module Paquette
       sig { params(project: String, filename: String).returns(T.nilable(Paquette::PypiServer::PypiRepository::DistributionFile)) }
       def file_info(project, filename); end
 
+      # The current caller's values. nil when there is nobody to personalize for.
+      sig { returns(T.nilable(T::Hash[String, String])) }
+      def personalization; end
+
       # A project page lists every file, and the stack is built per request, so
       # the hash is kept next to the file it describes. The path names everything
       # that went into the file, which is what makes the sidecar safe to trust.
@@ -4191,25 +4449,44 @@ module Paquette
       sig { params(served: String).returns(String) }
       def served_sha256(served); end
 
-      # Keyed by everything that goes INTO the file: two licensees never share one.
+      # Keyed by everything that goes INTO the file: two callers never share one.
+      # Consulted before the file is ever opened.
       # 
       # _@param_ `original_path`
       # 
       # _@param_ `project`
       # 
       # _@param_ `filename`
-      sig { params(original_path: String, project: String, filename: String).returns(String) }
-      def personalize(original_path, project, filename); end
+      # 
+      # _@param_ `values`
+      sig do
+        params(
+          original_path: String,
+          project: String,
+          filename: String,
+          values: T::Hash[String, String]
+        ).returns(String)
+      end
+      def personalize(original_path, project, filename, values); end
 
       # _@param_ `project`
       # 
       # _@param_ `filename`
       # 
       # _@param_ `stat`
-      sig { params(project: String, filename: String, stat: ::File::Stat).returns(String) }
-      def cache_digest(project, filename, stat); end
+      # 
+      # _@param_ `values`
+      sig do
+        params(
+          project: String,
+          filename: String,
+          stat: ::File::Stat,
+          values: T::Hash[String, String]
+        ).returns(String)
+      end
+      def cache_digest(project, filename, stat, values); end
 
-      # Keyed by the file alone, never the licensee - see NpmServer::Personalizer.
+      # Keyed by the file alone, never the caller - see NpmServer::Personalizer.
       # 
       # _@param_ `project`
       # 
@@ -4219,8 +4496,13 @@ module Paquette
       sig { params(project: String, filename: String, stat: ::File::Stat).returns(String) }
       def plain_marker_path(project, filename, stat); end
 
-      sig { returns(String) }
-      def personalization_digest; end
+      # Everything that would be written into a file for this caller, and the
+      # repacker format it is written with. Values only ever come in as data, so
+      # the digest sees all of them - there is nothing to declare.
+      # 
+      # _@param_ `values`
+      sig { params(values: T::Hash[String, String]).returns(String) }
+      def personalization_digest(values); end
     end
 
     # Abstract base class for Python package repositories; mirrors NpmRepository.
@@ -4307,8 +4589,10 @@ module Paquette
 
       # A short string that changes whenever anything this repository would
       # serve changes, or nil for "do not cache this" - see Paquette::CacheValidation.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # 
+      # _@param_ `scope` — the one project the validator is for, or nil for the whole corpus; a repository that does not distinguish ignores it
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
@@ -4472,8 +4756,10 @@ module Paquette
 
       # Named by how many known publish times have cooled - see the gem side,
       # whose reasoning this is.
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # 
+      # _@param_ `scope` — forwarded to the wrapped repository
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       sig { returns(T::Array[String]) }
       def project_names; end
@@ -4536,17 +4822,24 @@ module Paquette
       def published_time(project, filename); end
     end
 
-    # Filters every read through an entitler block; non-entitled projects and
-    # versions do not exist. Writes pass through - see the gem-side twin.
+    # Filters every read through the caller's authenticator; non-entitled projects
+    # and versions do not exist. Writes pass through - see the gem-side twin, which
+    # the server applies the same way: for every request whose authenticator
+    # answers `entitled?`.
     class ReadGatedRepository < SimpleDelegator
       # _@param_ `repository` — the repository to wrap
       # 
-      # _@param_ `gate_key` — names this gate for HTTP caching - see the gem-side ReadGatedRepository for the contract. Without one the whole stack emits no ETag.
-      sig { params(repository: Paquette::PypiServer::PypiRepository, gate_key: T.nilable(String), entitler: T.untyped).void }
-      def initialize(repository, gate_key: nil, &entitler); end
+      # _@param_ `authenticator` — the caller's, answering `entitled?(name:, version: nil)` - asked with the normalized project name and, for a file, the version out of its filename
+      sig { params(repository: Paquette::PypiServer::PypiRepository, authenticator: Paquette::Authenticator).void }
+      def initialize(repository, authenticator); end
 
-      sig { returns(T.nilable(String)) }
-      def cache_validator; end
+      # What this caller can see within the scope, digested into the wrapped
+      # validator - see the gem-side twin for why, and for why a caller who sees
+      # nothing gets none.
+      # 
+      # _@param_ `scope` — one normalized project name, or nil for the whole index
+      sig { params(scope: T.nilable(String)).returns(T.nilable(String)) }
+      def cache_validator(scope = nil); end
 
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
@@ -4594,7 +4887,7 @@ module Paquette
       sig { params(project: String, filename: String).returns(T::Boolean) }
       def entitled_file?(project, filename); end
 
-      # The entitler is the caller's, and a project page calls it once per file.
+      # The authenticator is the caller's, and a project page asks it once per file.
       # 
       # _@param_ `criteria`
       # 
@@ -4630,8 +4923,9 @@ module Paquette
       sig { returns(String) }
       def fingerprint; end
 
-      sig { returns(String) }
-      def cache_validator; end
+      # _@param_ `scope`
+      sig { params(scope: T.nilable(String)).returns(String) }
+      def cache_validator(scope = nil); end
 
       sig { returns(T::Boolean) }
       def varies_by_caller?; end
@@ -4751,28 +5045,20 @@ module Paquette
     end
   end
 
-  # Rewrites the contents of an npm tarball into a new one; counterpart of
-  # GemServer::GemRepacker, with `package_json_extras:` for `gemspec_extras`.
-  # Byte-reproducible — see Paquette::Tarball for why that is load-bearing.
+  # Rewrites the contents of an npm tarball into a new one for one caller: every
+  # marker line filled with the caller's value (see Paquette::Markers), the
+  # values stamped into package.json under "paquette", files injected.
+  # Counterpart of GemServer::GemRepacker. Byte-reproducible — see
+  # Paquette::Tarball for why that is load-bearing.
   class NpmRepacker
-    FORMAT_VERSION = T.let(2, T.untyped)
-    SOURCE_EXTENSIONS = T.let(%w[.js .mjs .cjs .jsx .ts .tsx .mts .cts].freeze, T.untyped)
-
-    # One line in, one line out — the rule the whole personalization scheme
-    # rests on (a changed line count shifts every sourcemap mapping below it),
-    # so a pair that cannot honour it is refused rather than bent to fit.
-    # 
-    # _@param_ `replacements`
-    sig { params(replacements: T::Hash[String, String]).void }
-    def self.check_replacements!(replacements); end
+    FORMAT_VERSION = T.let(3, T.untyped)
+    STAMP_KEY = T.let("paquette", T.untyped)
 
     # One-shot convenience for {#initialize} + {#repack}.
     # 
     # _@param_ `npm_path`
     # 
-    # _@param_ `package_json_extras`
-    # 
-    # _@param_ `magic_comment_replacements`
+    # _@param_ `values`
     # 
     # _@param_ `files`
     # 
@@ -4782,34 +5068,37 @@ module Paquette
     sig do
       params(
         npm_path: String,
-        package_json_extras: T::Hash[String, Object],
-        magic_comment_replacements: T::Hash[String, String],
+        values: T::Hash[String, String],
         files: T::Hash[String, String],
         into: T.nilable(String),
         block: T.untyped
       ).returns(String)
     end
-    def self.repack(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil, &block); end
+    def self.repack(npm_path, values:, files: {}, into: nil, &block); end
+
+    # The keys of every marker in the tarball. Empty for a package that asks
+    # for nothing, which is how a personalizer knows to serve it as it is.
+    # 
+    # _@param_ `npm_path`
+    sig { params(npm_path: String).returns(T::Array[String]) }
+    def self.marker_keys(npm_path); end
 
     # _@param_ `npm_path` — path of the source tarball
     # 
-    # _@param_ `package_json_extras` — keys merged into package.json
+    # _@param_ `values` — the caller's values: each marker line for a key is filled with its value, and all of them land in package.json under "paquette"
     # 
-    # _@param_ `magic_comment_replacements` — whole comment lines to replace, marker => replacement
-    # 
-    # _@param_ `files` — files to inject, path relative to the package root => content
+    # _@param_ `files` — files to inject, path relative to the package root => content, with markers in the content filled in too
     # 
     # _@param_ `into` — destination path; a tmpdir when nil
     sig do
       params(
         npm_path: String,
-        package_json_extras: T::Hash[String, Object],
-        magic_comment_replacements: T::Hash[String, String],
+        values: T::Hash[String, String],
         files: T::Hash[String, String],
         into: T.nilable(String)
       ).void
     end
-    def initialize(npm_path, package_json_extras: {}, magic_comment_replacements: {}, files: {}, into: nil); end
+    def initialize(npm_path, values:, files: {}, into: nil); end
 
     # _@return_ — the path of the repacked tarball
     sig { params(block: T.proc.params(input: StringIO, output: StringIO, relative_path: String).void).returns(String) }
@@ -4818,47 +5107,25 @@ module Paquette
     sig { returns(String) }
     def destination; end
 
+    # Every entry, not only the source files: a LICENSE carries a marker as
+    # readily as a module does. Binaries are left alone by Markers itself.
+    # 
     # _@param_ `entry`
     # 
     # _@param_ `root`
     sig { params(entry: Paquette::Tarball::Entry, root: String, block: T.untyped).returns(Paquette::Tarball::Entry) }
     def rewrite(entry, root, &block); end
 
-    # _@param_ `relative_path`
-    sig { params(relative_path: String).returns(T::Boolean) }
-    def replaceable?(relative_path); end
-
-    # A whole comment line is replaced by a whole comment line: sourcemaps
-    # restart their column counter at every line, so rewriting one line cannot
-    # disturb the mappings on any other.
-    # 
-    # _@param_ `content`
-    # 
-    # _@param_ `relative_path`
-    sig { params(content: String, relative_path: String).returns(String) }
-    def apply_magic_comment_replacements(content, relative_path); end
-
-    # A marker still present after the pass was one the line-wise match could
-    # not reach — `esbuild --minify` pulls a legal comment onto the end of a
-    # code line — and the package would then be served with no license key in
-    # it and nothing to say so. Replacing it mid-line instead would shift
-    # sourcemap columns, which is exactly what the line-wise rule avoids.
-    # 
-    # _@param_ `text`
-    # 
-    # _@param_ `relative_path`
-    sig { params(text: String, relative_path: String).void }
-    def verify_markers_applied(text, relative_path); end
-
     # _@param_ `entries`
     # 
     # _@param_ `root`
     sig { params(entries: T::Array[Paquette::Tarball::Entry], root: String).returns(T::Array[Paquette::Tarball::Entry]) }
-    def apply_package_json_extras(entries, root); end
+    def stamp(entries, root); end
 
     # Injected files inherit the package's oldest mtime, keeping the tarball
     # independent of when they were added. One that replaces a shipped file
     # keeps that file's mode, so replacing a bin script leaves it executable.
+    # Markers in the injected content are filled in like any other.
     # 
     # _@param_ `entries`
     # 
@@ -4871,26 +5138,107 @@ module Paquette
     # _@param_ `content`
     sig { params(entry: Paquette::Tarball::Entry, content: String).returns(Paquette::Tarball::Entry) }
     def with_content(entry, content); end
-
-    # Raised when a marker survives the pass — see #verify_markers_applied.
-    class MarkerNotApplied < StandardError
-    end
-
-    # Raised for a marker or replacement spanning several lines.
-    class MultilineReplacement < StandardError
-    end
   end
 
-  # Rewrites the contents of a wheel or an sdist into a new one; the Python
-  # counterpart of Paquette::NpmRepacker. Byte-reproducible, since pip checks
-  # the sha256 the index published for the file.
+  # Who is asking, for the one request: built from the token by the server, kept
+  # in the Rack env, and asked by everything in the stack that cares who the
+  # caller is - the server for reads, writes and the one-time password, the gate
+  # for what the caller may see, the personalizer for what gets written into
+  # their packages, the response cache for whose entries these are.
+  # 
+  # Subclass it and answer the questions out of the token. The instance lives for
+  # one request, so whatever the token resolves to can be remembered on it:
+  # 
+  #   class AcmeAuthenticator < Paquette::Authenticator
+  #     def license = @license ||= License.find_by(token: token)
+  # 
+  #     def read_permitted? = !license.nil?
+  #     def write_permitted? = !!license&.publisher?
+  #     def check_otp!(code) = Paquette::Totp.verify!(license.totp_secret, code)
+  #     def entitled?(name:, version: nil) = license.gem_names.include?(name)
+  #     def identity = license.cache_key
+  #     def personalization = {"licensee" => license.holder_name}
+  #   end
+  # 
+  #   Paquette::GemServer.new(repo, authenticator: AcmeAuthenticator)
+  # 
+  # The server takes the class - anything answering `call(token)` with an
+  # instance will do, a lambda included - and calls it once per request with
+  # the token Paquette::AuthToken read, or nil when the caller sent no
+  # credentials. The three questions below are always asked. Three more are
+  # optional, and asked only when the instance answers to them:
+  # 
+  #   entitled?(name:, version: nil)  # the gate: may this caller see this package, or
+  #                                   # this version of it? Absent, they see everything
+  #   identity                        # for Paquette::ResponseCache: a String or Integer
+  #                                   # naming who the token belongs to, so entries
+  #                                   # survive a rotation. Absent or nil, nothing is cached
+  #   personalization                 # a Hash of String values written into every
+  #                                   # package that carries a marker for one - see the
+  #                                   # Personalizers. Absent or nil, vanilla bytes
+  # 
+  # A gate goes on the server's repository for every request whose authenticator
+  # answers `entitled?`, so there is nothing to wire for one.
+  class Authenticator
+    ENV_KEY = T.let("paquette.authenticator", T.untyped)
+    CURRENT_KEY = T.let(:paquette_authenticator, T.untyped)
+
+    # The factory protocol: the class is its own factory.
+    # 
+    # _@param_ `token`
+    sig { params(token: T.nilable(String)).returns(Paquette::Authenticator) }
+    def self.call(token); end
+
+    # The authenticator of the request being served, for the repository
+    # wrappers, which have no env to read it out of. Set by the server for the
+    # duration of its handler, and by {with} anywhere else.
+    sig { returns(T.nilable(Paquette::Authenticator)) }
+    def self.current; end
+
+    # Makes `authenticator` current for the block - how a repository stack is
+    # asked about one caller outside a request, a download link on a license
+    # page say. Fiber-local, so two requests on one thread cannot see each other.
+    # 
+    # _@param_ `authenticator`
+    # 
+    # _@return_ — what the block returned
+    sig { params(authenticator: T.nilable(Paquette::Authenticator)).returns(Object) }
+    def self.with(authenticator); end
+
+    # _@param_ `token`
+    sig { params(token: T.nilable(String)).void }
+    def initialize(token); end
+
+    # Everyone reads: the default for a server built without an authenticator.
+    sig { returns(T::Boolean) }
+    def read_permitted?; end
+
+    # Nobody writes.
+    sig { returns(T::Boolean) }
+    def write_permitted?; end
+
+    # No secret to check against, so no code is good.
+    # 
+    # _@param_ `code` — the one-time password the write carried, never empty
+    sig { params(code: String).void }
+    def check_otp!(code); end
+
+    # _@return_ — the token the request carried, nil for none
+    sig { returns(T.nilable(String)) }
+    attr_reader :token
+  end
+
+  # Rewrites the contents of a wheel or an sdist into a new one for one caller:
+  # every marker line filled with the caller's value (see Paquette::Markers),
+  # the values written to paquette.json, files injected. The Python counterpart
+  # of Paquette::NpmRepacker. Byte-reproducible, since pip checks the sha256 the
+  # index published for the file.
   # 
   # A wheel has its RECORD rewritten to match, and loses any signature over the
   # old one. An sdist only gets its files changed - whatever wheel pip builds
   # from it is pip's.
   class PypiRepacker
-    FORMAT_VERSION = T.let(1, T.untyped)
-    SOURCE_EXTENSIONS = T.let(%w[.py .pyi].freeze, T.untyped)
+    FORMAT_VERSION = T.let(2, T.untyped)
     STAMP_FILE = T.let("paquette.json", T.untyped)
     RECORD_SIGNATURES = T.let(%w[RECORD.jws RECORD.p7s].freeze, T.untyped)
 
@@ -4898,9 +5246,7 @@ module Paquette
     # 
     # _@param_ `filename` — the distribution filename, which says which kind of archive this is
     # 
-    # _@param_ `stamp` — written as paquette.json; nil writes none
-    # 
-    # _@param_ `magic_comment_replacements`
+    # _@param_ `values`
     # 
     # _@param_ `files` — path relative to the archive root => content - the root of a wheel is site-packages
     # 
@@ -4911,36 +5257,42 @@ module Paquette
       params(
         path: String,
         filename: String,
-        stamp: T.nilable(T::Hash[T.untyped, T.untyped]),
-        magic_comment_replacements: T::Hash[String, String],
+        values: T::Hash[String, String],
         files: T::Hash[String, String],
         into: T.nilable(String)
       ).returns(String)
     end
-    def self.repack(path, filename:, stamp: nil, magic_comment_replacements: {}, files: {}, into: nil); end
+    def self.repack(path, filename:, values:, files: {}, into: nil); end
+
+    # The keys of every marker in the archive, whichever kind it is. Empty for
+    # a file that asks for nothing, which is how a personalizer knows to serve
+    # it as it is.
+    # 
+    # _@param_ `path`
+    # 
+    # _@param_ `filename`
+    sig { params(path: String, filename: String).returns(T::Array[String]) }
+    def self.marker_keys(path, filename:); end
 
     # _@param_ `path`
     # 
     # _@param_ `filename`
     # 
-    # _@param_ `stamp`
+    # _@param_ `values` — the caller's values: each marker line for a key is filled with its value, and all of them land in paquette.json
     # 
-    # _@param_ `magic_comment_replacements`
-    # 
-    # _@param_ `files`
+    # _@param_ `files` — with markers in the content filled in too
     # 
     # _@param_ `into`
     sig do
       params(
         path: String,
         filename: String,
-        stamp: T.nilable(T::Hash[T.untyped, T.untyped]),
-        magic_comment_replacements: T::Hash[String, String],
+        values: T::Hash[String, String],
         files: T::Hash[String, String],
         into: T.nilable(String)
       ).void
     end
-    def initialize(path, filename:, stamp: nil, magic_comment_replacements: {}, files: {}, into: nil); end
+    def initialize(path, filename:, values:, files: {}, into: nil); end
 
     # _@return_ — the path of the repacked file
     sig { returns(String) }
@@ -4959,7 +5311,15 @@ module Paquette
     sig { returns(String) }
     def repack_sdist; end
 
-    # Either kind of entry - both structs answer to the same four fields
+    sig { returns(String) }
+    def stamp; end
+
+    # The injected files with their markers filled in, named by the block.
+    sig { params(blk: T.proc.params(relative_path: String).void).returns(T::Array[[String, String]]) }
+    def injected_files(&blk); end
+
+    # Either kind of entry - both structs answer to the same four fields. Every
+    # entry, not only the sources: Markers leaves a binary alone itself.
     # 
     # _@param_ `entry`
     # 
@@ -4974,31 +5334,15 @@ module Paquette
     # _@param_ `injected`
     sig { params(entries: T::Array[T.untyped], injected: T::Array[[String, String]], blk: T.proc.params(name: String, mode: Integer, content: String).void).returns(T::Array[T.untyped]) }
     def inject(entries, injected, &blk); end
-
-    # A whole comment line is replaced by a whole comment line, indentation and all
-    # 
-    # _@param_ `content`
-    # 
-    # _@param_ `relative_path`
-    sig { params(content: String, relative_path: String).returns(String) }
-    def apply_magic_comment_replacements(content, relative_path); end
   end
 
-  # What the servers ask of the authenticator they are built with. It is any
-  # object answering three questions about a token, and optionally a fourth:
-  # 
-  #   read_permitted?(auth_token:)        # => Boolean
-  #   write_permitted?(auth_token:)       # => Boolean, for the whole registry
-  #   check_otp!(auth_token:, otp_code:)  # raises Paquette::OtpRejected on a wrong code
-  #   identity(auth_token:)               # => String or nil, who the token belongs to
-  # 
-  # `identity` is only asked when a Paquette::ResponseCache in front wants to
-  # know, and only about a token `read_permitted?` has just let in. It names a
-  # user or a license rather than the token, so entries survive a rotation.
-  # 
-  # The token is the one Paquette::AuthToken reads, and nil when the caller sent
-  # no credentials - answering true to `read_permitted?` for nil is how a
-  # registry lets anonymous callers read.
+  # How a server asks who is calling. It is built with an `authenticator:` - a
+  # factory answering `call(token)` with a Paquette::Authenticator for one
+  # request, which is what a subclass of that class is - and asks it once per
+  # request, with the token Paquette::AuthToken read out of the request, or nil
+  # when the caller sent no credentials. The instance is left in
+  # `env["paquette.authenticator"]` for the rest of the stack and for the
+  # application's own code.
   # 
   # Every request asks `read_permitted?`, and a refusal is a 401. A write also
   # asks `write_permitted?` (a 403 when a token was sent, a 401 when none was),
@@ -5007,6 +5351,9 @@ module Paquette
   # `check_otp!` only ever sees a non-empty code. All of this happens before the
   # handler, so a refused push is refused before its body is read.
   # 
+  # `identity` is only asked when a Paquette::ResponseCache in front wants to
+  # know, and only once `read_permitted?` has let the caller in.
+  # 
   # What is not shared - which header carries the code, what a refusal looks like
   # on the wire - is each server's own, because the client on the other end
   # dictates it: an including server defines `otp_code(env)`, `otp_missing` and
@@ -5014,11 +5361,12 @@ module Paquette
   module Authentication
     OUTCOME_KEY = T.let("paquette.authentication", T.untyped)
 
-    # _@param_ `authenticator`
-    sig { params(authenticator: T.nilable(Object)).void }
+    # _@param_ `authenticator` — the factory; nil is "everyone reads, nobody writes"
+    sig { params(authenticator: T.nilable(T.untyped)).void }
     def setup_authentication(authenticator); end
 
-    # The refusal for this request, or nil to let it through.
+    # The refusal for this request, or nil to let it through. On the way, the
+    # caller's authenticator is built and put in the env.
     # 
     # _@param_ `route` — nil when nothing matched - the caller is still asked about, so an unknown path does not tell a stranger which paths exist
     # 
@@ -5030,34 +5378,45 @@ module Paquette
     sig { params(route: T.nilable(Paquette::Routes::Route), env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped]).returns(T.nilable(T::Array[T.untyped])) }
     def authentication_refusal(route, env, request_env = env); end
 
-    # _@param_ `route`
+    # One per request. An authenticator already in the env - put there by
+    # something in front of this server - is the caller's and is kept.
+    # 
+    # _@param_ `env`
     # 
     # _@param_ `token`
+    sig { params(env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).returns(Paquette::Authenticator) }
+    def authenticator_for(env, token); end
+
+    # _@param_ `route`
+    # 
+    # _@param_ `authenticator`
     # 
     # _@param_ `env` — the Rack env
-    sig { params(route: T.nilable(Paquette::Routes::Route), token: T.nilable(String), env: T::Hash[T.untyped, T.untyped]).returns(String) }
-    def authentication_outcome(route, token, env); end
+    sig { params(route: T.nilable(Paquette::Routes::Route), authenticator: Paquette::Authenticator, env: T::Hash[T.untyped, T.untyped]).returns(String) }
+    def authentication_outcome(route, authenticator, env); end
 
     # Tells a ResponseCache in front who the caller is, and revalidates against
     # what it holds for them. Only past the authenticator, so a stored body is
-    # never matched to a token that was not let in.
+    # never matched to a caller that was not let in.
     # 
     # _@param_ `env` — the Rack env
     # 
     # _@param_ `request_env`
     # 
-    # _@param_ `token`
-    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], token: T.nilable(String)).void }
-    def identify_for_response_cache(env, request_env, token); end
+    # _@param_ `authenticator`
+    sig { params(env: T::Hash[T.untyped, T.untyped], request_env: T::Hash[T.untyped, T.untyped], authenticator: Paquette::Authenticator).void }
+    def identify_for_response_cache(env, request_env, authenticator); end
 
     # The authenticator is the caller's, and it usually goes to a database to
     # resolve the token - before any of the work the request asked for.
     # 
+    # _@param_ `authenticator`
+    # 
     # _@param_ `question`
     # 
-    # _@param_ `kwargs`
-    sig { params(question: Symbol, kwargs: T::Hash[T.untyped, T.untyped]).returns(Object) }
-    def ask_authenticator(question, **kwargs); end
+    # _@param_ `args`
+    sig { params(authenticator: Paquette::Authenticator, question: Symbol, args: T::Array[T.untyped]).returns(Object) }
+    def ask_authenticator(authenticator, question, *args); end
 
     # _@return_ — a Rack response triplet
     sig { returns(T::Array[T.untyped]) }
@@ -5067,41 +5426,19 @@ module Paquette
     sig { returns(T::Array[T.untyped]) }
     def forbidden; end
 
-    # What a server built without an authenticator asks: everyone reads, nobody
-    # writes. There is no secret to check a one-time password against.
-    class ReadOnly
-      # _@param_ `auth_token`
-      sig { params(auth_token: T.nilable(String)).returns(T::Boolean) }
-      def read_permitted?(auth_token:); end
-
-      # _@param_ `auth_token`
-      sig { params(auth_token: T.nilable(String)).returns(T::Boolean) }
-      def write_permitted?(auth_token:); end
-
-      # _@param_ `auth_token`
-      # 
-      # _@param_ `otp_code`
-      sig { params(auth_token: T.nilable(String), otp_code: String).void }
-      def check_otp!(auth_token:, otp_code:); end
-    end
-
     # Lets anyone read and write, and takes any code as the one-time password - a
     # write still has to carry one. For development and tests, never for a server
     # anyone else can reach.
-    class Open
-      # _@param_ `auth_token`
-      sig { params(auth_token: T.nilable(String)).returns(T::Boolean) }
-      def read_permitted?(auth_token:); end
+    class Open < Paquette::Authenticator
+      ENV_KEY = T.let("paquette.authenticator", T.untyped)
+      CURRENT_KEY = T.let(:paquette_authenticator, T.untyped)
 
-      # _@param_ `auth_token`
-      sig { params(auth_token: T.nilable(String)).returns(T::Boolean) }
-      def write_permitted?(auth_token:); end
+      sig { returns(T::Boolean) }
+      def write_permitted?; end
 
-      # _@param_ `auth_token`
-      # 
-      # _@param_ `otp_code`
-      sig { params(auth_token: T.nilable(String), otp_code: String).void }
-      def check_otp!(auth_token:, otp_code:); end
+      # _@param_ `code`
+      sig { params(code: String).void }
+      def check_otp!(code); end
     end
   end
 
@@ -5153,14 +5490,15 @@ module Paquette
   #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
   #   run Paquette::GemServer.new(repo, authenticator: authenticator)
   # 
-  # Which entry is the caller's is the server's to say, and only once its
-  # authenticator has let the read in: the cache leaves a Lookup in the env, and
-  # the server hands it what `identity(auth_token:)` on that same authenticator
-  # says the token belongs to - a user or a license, never the token itself, so a
-  # rotated token finds the entries the old one left. An env key with a dot in it
-  # cannot come from a client, so nothing on the wire can name an identity. A
-  # request the server never identifies - anonymous, refused, or behind an
-  # authenticator without `identity` - goes straight through.
+  # Which entry is the caller's is the server's to say, and only once the
+  # Paquette::Authenticator it built for the request has let the read in: the
+  # cache leaves a Lookup in the env, and the server hands it what `identity` on
+  # that authenticator says the token belongs to - a user or a license, never the
+  # token itself, so a rotated token finds the entries the old one left. An env
+  # key with a dot in it cannot come from a client, so nothing on the wire can
+  # name an identity. A request the server never identifies - anonymous, refused,
+  # or with an authenticator that has no `identity` or answers nil - goes
+  # straight through.
   # 
   # Entries are keyed by the URL, that identity, and whether `Accept` asks for
   # JSON - the PyPI index answers one URL in HTML or JSON. The URL carries the
@@ -5168,8 +5506,8 @@ module Paquette
   # told apart by subdomain or by path prefix. The key is not what
   # keeps two callers apart - the ETag is, since the stored one has to be current
   # for the caller asking - but it keeps each caller from overwriting another's
-  # entry, and a gate_key that wrongly names two customers alike from serving one's
-  # body to the other.
+  # entry, and an identity that wrongly names two customers alike from serving
+  # one's body to the other.
   # 
   # Only identified requests without a query string are stored, and the
   # client's own headers go into the key only as that one bit, so a stranger puts
@@ -5390,9 +5728,11 @@ module Paquette
     # 
     # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
     # 
+    # _@param_ `scope` — the one package the endpoint is about, if any - see Paquette::CacheValidation.validator_of
+    # 
     # _@param_ `weak`
-    sig { params(resource_parts: T::Array[String], weak: T::Boolean).returns(T.nilable(String)) }
-    def etag_for(*resource_parts, weak: false); end
+    sig { params(resource_parts: T::Array[String], scope: T.nilable(String), weak: T::Boolean).returns(T.nilable(String)) }
+    def etag_for(*resource_parts, scope: nil, weak: false); end
 
     # `public` only when the embedder allowed shared caching, the request
     # carried no credential and nothing in the stack varies by caller —
@@ -5591,16 +5931,32 @@ module Paquette
     # The stack's validator. Fails closed (nil) for an object that has never
     # heard of the protocol.
     # 
+    # The scope is the one package an endpoint is about, or nil for the whole
+    # corpus. A gate's validator is a digest of what the caller can see, which
+    # costs one entitlement question per package in scope - so an endpoint about
+    # one package says so, and pays for that package alone. A repository whose
+    # `cache_validator` takes no argument is asked without one.
+    # 
     # _@param_ `repository`
-    sig { params(repository: Object).returns(T.nilable(String)) }
-    def validator_of(repository); end
+    # 
+    # _@param_ `scope`
+    sig { params(repository: Object, scope: T.nilable(String)).returns(T.nilable(String)) }
+    def validator_of(repository, scope = nil); end
 
     # The stack's validator. Fails closed (nil) for an object that has never
     # heard of the protocol.
     # 
+    # The scope is the one package an endpoint is about, or nil for the whole
+    # corpus. A gate's validator is a digest of what the caller can see, which
+    # costs one entitlement question per package in scope - so an endpoint about
+    # one package says so, and pays for that package alone. A repository whose
+    # `cache_validator` takes no argument is asked without one.
+    # 
     # _@param_ `repository`
-    sig { params(repository: Object).returns(T.nilable(String)) }
-    def self.validator_of(repository); end
+    # 
+    # _@param_ `scope`
+    sig { params(repository: Object, scope: T.nilable(String)).returns(T.nilable(String)) }
+    def self.validator_of(repository, scope = nil); end
 
     # Whether two callers asking the stack the same question can get different
     # answers — which decides whether an anonymous response may be `public`.
@@ -5653,9 +6009,18 @@ module Paquette
     # 
     # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
     # 
+    # _@param_ `scope` — the one package the endpoint is about, if any
+    # 
     # _@param_ `weak`
-    sig { params(repository: Object, resource_parts: T::Array[String], weak: T::Boolean).returns(T.nilable(String)) }
-    def etag_for(repository, *resource_parts, weak: false); end
+    sig do
+      params(
+        repository: Object,
+        resource_parts: T::Array[String],
+        scope: T.nilable(String),
+        weak: T::Boolean
+      ).returns(T.nilable(String))
+    end
+    def etag_for(repository, *resource_parts, scope: nil, weak: false); end
 
     # The validator for one response. Returns nil, meaning "emit no ETag",
     # whenever the stack refused to name itself.
@@ -5664,9 +6029,18 @@ module Paquette
     # 
     # _@param_ `resource_parts` — what distinguishes this endpoint's body from another's over the same corpus
     # 
+    # _@param_ `scope` — the one package the endpoint is about, if any
+    # 
     # _@param_ `weak`
-    sig { params(repository: Object, resource_parts: T::Array[String], weak: T::Boolean).returns(T.nilable(String)) }
-    def self.etag_for(repository, *resource_parts, weak: false); end
+    sig do
+      params(
+        repository: Object,
+        resource_parts: T::Array[String],
+        scope: T.nilable(String),
+        weak: T::Boolean
+      ).returns(T.nilable(String))
+    end
+    def self.etag_for(repository, *resource_parts, scope: nil, weak: false); end
   end
 
   # Routes requests to Rack apps by the first label of the Host header, with an

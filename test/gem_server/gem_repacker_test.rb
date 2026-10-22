@@ -15,10 +15,8 @@ class GemRepackerTest < Minitest::Test
     # Generate random characters for the replacement
     random_chars = (0...8).map { ("a".."z").to_a[rand(26)] }.join
 
-    # Use magic comment replacements to replace '# paquette_license_info' with '# LIC#{random_chars}'
-    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: {},
-      magic_comment_replacements: {"# paquette_license_info" => "LIC#{random_chars}"})
+    # The fixture carries `# paquette:licensee` in every Ruby file
+    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: {"licensee" => "LIC#{random_chars}"})
 
     assert File.exist?(new_gem_path)
     assert new_gem_path.end_with?("-repacked.gem")
@@ -41,7 +39,7 @@ class GemRepackerTest < Minitest::Test
       [0o022, 0o077].each do |umask|
         repacked = with_umask(umask) do
           Paquette::GemServer::GemRepacker.repack(source,
-            magic_comment_replacements: {"# paquette_license_info" => "LIC-1"},
+            values: {"licensee" => "LIC-1"},
             into: File.join(dir, "repacked-#{umask.to_s(8)}.gem"))
         end
 
@@ -57,6 +55,7 @@ class GemRepackerTest < Minitest::Test
       digests = [0o022, 0o002, 0o077].map do |umask|
         with_umask(umask) do
           repacked = Paquette::GemServer::GemRepacker.repack(source,
+            values: {"licensee" => "somebody"},
             files: {"LICENSE-EXTRA.txt" => "Licensed to somebody\n"},
             into: File.join(dir, "repacked-#{umask.to_s(8)}.gem"))
           Digest::SHA256.file(repacked).hexdigest
@@ -73,6 +72,7 @@ class GemRepackerTest < Minitest::Test
 
       repacked = with_umask(0o077) do
         Paquette::GemServer::GemRepacker.repack(source,
+          values: {"licensee" => "LIC-1"},
           files: {"LICENSE-EXTRA.txt" => "new\n", "data/readonly.txt" => "replaced\n"},
           into: File.join(dir, "repacked.gem"))
       end
@@ -83,24 +83,21 @@ class GemRepackerTest < Minitest::Test
     end
   end
 
-  def test_repack_with_metadata_keys
+  # Every value is stamped into the gemspec metadata under paquette.<key>,
+  # whether or not a marker asked for it
+  def test_repack_stamps_every_value_into_the_metadata
     assert File.exist?(@test_gem_path), "Test gem not found at #{@test_gem_path}"
 
-    # Test adding metadata keys to the gemspec
-    additional_metadata = {
-      "paquette.license_key" => "TEST-LICENSE-123",
-      "paquette.custom_field" => "custom_value"
-    }
-
-    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: additional_metadata,
-      magic_comment_replacements: {})
+    values = {"license_key" => "TEST-LICENSE-123", "custom_field" => "custom_value"}
+    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: values)
 
     assert File.exist?(new_gem_path)
     assert new_gem_path.end_with?("-repacked.gem")
 
-    # Verify the metadata was added to the gem spec
-    verify_metadata_in_gem(new_gem_path, additional_metadata)
+    verify_metadata_in_gem(new_gem_path, {
+      "paquette.license_key" => "TEST-LICENSE-123",
+      "paquette.custom_field" => "custom_value"
+    })
 
     # Clean up
     File.delete(new_gem_path) if File.exist?(new_gem_path)
@@ -129,10 +126,7 @@ class GemRepackerTest < Minitest::Test
       "docs/CHANGELOG.md" => "# Changelog\n\n## 0.1.0\n- Initial release"
     }
 
-    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: {},
-      magic_comment_replacements: {},
-      files: files_to_inject)
+    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: {}, files: files_to_inject)
 
     assert File.exist?(new_gem_path)
     assert new_gem_path.end_with?("-repacked.gem")
@@ -152,10 +146,7 @@ class GemRepackerTest < Minitest::Test
       "lib/minuscule_test.rb" => "# Replaced content\nmodule MinusculeTest\n  VERSION = '0.1.0-replaced'\nend"
     }
 
-    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: {},
-      magic_comment_replacements: {},
-      files: files_to_replace)
+    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: {}, files: files_to_replace)
 
     assert File.exist?(new_gem_path)
     assert new_gem_path.end_with?("-repacked.gem")
@@ -176,77 +167,86 @@ class GemRepackerTest < Minitest::Test
       "docs/README.md" => "# Test Gem\n\nThis gem has been personalized."
     }
 
-    magic_comment_replacements = {
-      "# paquette_license_info" => "LICENSE-INJECTED"
-    }
+    values = {"licensee" => "LICENSE-INJECTED", "license_key" => "TEST-LICENSE-COMBINED"}
 
-    gemspec_extras = {
-      "paquette.license_key" => "TEST-LICENSE-COMBINED"
-    }
-
-    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: gemspec_extras,
-      magic_comment_replacements: magic_comment_replacements,
-      files: files_to_inject)
+    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: values, files: files_to_inject)
 
     assert File.exist?(new_gem_path)
     assert new_gem_path.end_with?("-repacked.gem")
 
     # Verify all features work together
-    verify_metadata_in_gem(new_gem_path, gemspec_extras)
+    verify_metadata_in_gem(new_gem_path, {"paquette.license_key" => "TEST-LICENSE-COMBINED", "paquette.licensee" => "LICENSE-INJECTED"})
     verify_injected_files(new_gem_path, files_to_inject)
+    verify_repacking(new_gem_path, "ENSE-INJECTED")
 
     # Clean up
     File.delete(new_gem_path) if File.exist?(new_gem_path)
   end
 
-  def test_repack_with_magic_comment_replacements
+  # A value for a key no file carries a marker for is stamped and nothing else;
+  # a marker for a key with no value stays as it is
+  def test_values_and_markers_need_not_match
     assert File.exist?(@test_gem_path), "Test gem not found at #{@test_gem_path}"
 
-    # Test adding magic comment replacements
-    magic_comment_replacements = {
-      "# paquette_license_info" => "TEST-LICENSE-789",
-      "# paquette_custom_field" => "CUSTOM-VALUE-123"
-    }
+    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: {"custom_field" => "CUSTOM-VALUE-123"})
 
-    new_gem_path = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: {"paquette.license_key" => "TEST-LICENSE-789"},
-      magic_comment_replacements: magic_comment_replacements)
-
-    assert File.exist?(new_gem_path)
-    assert new_gem_path.end_with?("-repacked.gem")
-
-    # Verify the metadata was added to the gem spec
-    verify_metadata_in_gem(new_gem_path, {"paquette.license_key" => "TEST-LICENSE-789"})
-
-    # Clean up
-    File.delete(new_gem_path) if File.exist?(new_gem_path)
+    verify_metadata_in_gem(new_gem_path, {"paquette.custom_field" => "CUSTOM-VALUE-123"})
+    lines = unpacked_lines(new_gem_path, "lib/minuscule_test.rb")
+    assert_includes lines, "# paquette:licensee"
+  ensure
+    File.delete(new_gem_path) if new_gem_path && File.exist?(new_gem_path)
   end
 
-  def test_personalizer_with_flexible_comment_replacements
-    assert File.exist?(@test_gem_path), "Test gem not found at #{@test_gem_path}"
+  # Markers are filled in every text file, not only the Ruby ones, and in
+  # injected files too
+  def test_markers_are_filled_in_every_text_file
+    Dir.mktmpdir("gem_repacker_markers") do |dir|
+      source = build_gem_with_modes(dir)
+      repacked = Paquette::GemServer::GemRepacker.repack(source,
+        values: {"licensee" => "Acme BV"},
+        files: {"LICENSE.txt" => "Licensed to:\n    paquette:licensee\n"},
+        into: File.join(dir, "repacked.gem"))
 
-    # Test the Personalizer with custom magic comment replacements
-    dir_repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
+      assert_equal ["# Acme BV", "module Moded; end"], unpacked_lines(repacked, "lib/moded.rb")
+      assert_equal ["Acme BV", "  Acme BV"], unpacked_lines(repacked, "data/readonly.txt"),
+        "a marker in a plain text file is filled in, indentation kept"
+      assert_equal ["Licensed to:", "    Acme BV"], unpacked_lines(repacked, "LICENSE.txt")
+    end
+  end
 
-    custom_replacements = {
-      "# paquette_license_info" => "CUSTOM-LICENSE-123",
-      "# paquette_custom_field" => "CUSTOM-VALUE-456"
-    }
+  def test_a_marker_that_is_not_alone_on_its_line_fails_the_repack
+    Dir.mktmpdir("gem_repacker_inline") do |dir|
+      source = build_gem_with_modes(dir, extra: {"lib/inline.rb" => ["x = 1 # paquette:licensee\n", 0o644]})
 
-    personalizer = Paquette::GemServer::Personalizer.new(dir_repository,
-      license_key: "CUSTOM-LICENSE-123",
-      magic_comment_replacements: custom_replacements)
+      assert_raises(Paquette::Markers::NotApplied) do
+        Paquette::GemServer::GemRepacker.repack(source, values: {"licensee" => "L"}, into: File.join(dir, "repacked.gem"))
+      end
+      refute File.exist?(File.join(dir, "repacked.gem"))
+    end
+  end
 
-    # Get the personalized gem path
-    personalized_gem_path = personalizer.gem_file_path("minuscule_test", "0.1.0")
-    assert File.exist?(personalized_gem_path)
+  def test_marker_keys_reads_the_gem_without_unpacking_it
+    assert_equal ["licensee"], Paquette::GemServer::GemRepacker.marker_keys(@test_gem_path)
 
-    # Verify the metadata was added
-    verify_metadata_in_gem(personalized_gem_path, {"paquette.license_key" => "CUSTOM-LICENSE-123"})
+    other = File.join(FIXTURE_GEMS_DIR, "zip_kit", "zip_kit-6.2.0.gem")
+    assert_equal [], Paquette::GemServer::GemRepacker.marker_keys(other)
 
-    # Clean up
-    File.delete(personalized_gem_path) if File.exist?(personalized_gem_path)
+    Dir.mktmpdir("gem_repacker_keys") do |dir|
+      assert_equal ["licensee", "customer"], Paquette::GemServer::GemRepacker.marker_keys(build_gem_with_modes(dir,
+        extra: {"lib/more.rb" => ["// paquette:customer\n# paquette:licensee\n", 0o644]}))
+    end
+  end
+
+  def test_values_are_checked_before_anything_is_unpacked
+    assert_raises(Paquette::Markers::MultilineValue) do
+      Paquette::GemServer::GemRepacker.new(@test_gem_path, values: {"licensee" => "a\nb"})
+    end
+    assert_raises(ArgumentError) do
+      Paquette::GemServer::GemRepacker.new(@test_gem_path, values: {"Bad Key" => "x"})
+    end
+    assert_raises(ArgumentError) do
+      Paquette::GemServer::GemRepacker.new(@test_gem_path, values: {"licensee" => 1})
+    end
   end
 
   # A repack has to be reproducible, because Personalizer publishes a SHA256 for
@@ -260,13 +260,13 @@ class GemRepackerTest < Minitest::Test
   # works or not, which is exactly how the bug survived being looked at.
   def test_repacking_is_reproducible_across_seconds
     first = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
+      values: {"licensee" => "Acme BV"}, files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
     digest = Digest::SHA256.file(first).hexdigest
 
     sleep 1.1
 
     second = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
+      values: {"licensee" => "Acme BV"}, files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
 
     refute_equal first, second, "each repack should land somewhere of its own"
     assert_equal digest, Digest::SHA256.file(second).hexdigest,
@@ -277,7 +277,7 @@ class GemRepackerTest < Minitest::Test
   # machines repacking the same source agree.
   def test_the_repack_keeps_the_original_gems_date
     original = Gem::Package.new(@test_gem_path).spec.date
-    repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path, files: {"X.txt" => "x\n"})
+    repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path, values: {}, files: {"X.txt" => "x\n"})
 
     assert_equal original, Gem::Package.new(repacked).spec.date
   end
@@ -371,7 +371,7 @@ class GemRepackerTest < Minitest::Test
     not_a_gem = File.join(sandbox, "not-a-gem-1.0.0.gem")
     File.binwrite(not_a_gem, "this is not a gem\n")
 
-    assert_raises(RuntimeError) { Paquette::GemServer::GemRepacker.repack(not_a_gem) }
+    assert_raises(RuntimeError) { Paquette::GemServer::GemRepacker.repack(not_a_gem, values: {}) }
     assert_empty Dir.children(sandbox).grep(/\Agem_repacker/), "a failed repack left its working directory behind"
   ensure
     ENV["TMPDIR"] = previous_tmpdir
@@ -384,14 +384,15 @@ class GemRepackerTest < Minitest::Test
   # umask-002 machine or shipping an executable arrives.
   #
   # @return [String] path of the built gem
-  def build_gem_with_modes(dir)
+  def build_gem_with_modes(dir, extra: {})
     root = File.join(dir, "source")
-    {
-      "lib/moded.rb" => ["# paquette_license_info\nmodule Moded; end\n", 0o664],
+    files = {
+      "lib/moded.rb" => ["# paquette:licensee\nmodule Moded; end\n", 0o664],
       "exe/moded" => ["#!/usr/bin/env ruby\n", 0o755],
-      "data/readonly.txt" => ["read me\n", 0o444],
+      "data/readonly.txt" => ["paquette:licensee\n  paquette:licensee\n", 0o444],
       "README.md" => ["# Moded\n", 0o644]
-    }.each do |path, (content, mode)|
+    }.merge(extra)
+    files.each do |path, (content, mode)|
       full = File.join(root, path)
       FileUtils.mkdir_p(File.dirname(full))
       File.write(full, content)
@@ -403,7 +404,7 @@ class GemRepackerTest < Minitest::Test
       s.version = "0.1.0"
       s.summary = "Files with different modes"
       s.authors = ["Paquette"]
-      s.files = ["README.md", "data/readonly.txt", "exe/moded", "lib/moded.rb"]
+      s.files = files.keys.sort
     end
     modes = spec.files.to_h { |path| [path, File.stat(File.join(root, path)).mode] }
 
@@ -456,7 +457,7 @@ class GemRepackerTest < Minitest::Test
             found_replacement = true
           end
           # Ensure the original line is gone
-          refute_equal line.chomp, "# paquette_license_info", "Original line still present in #{rb_file}"
+          refute_equal line.chomp, "# paquette:licensee", "Original line still present in #{rb_file}"
         end
       end
 
@@ -468,8 +469,16 @@ class GemRepackerTest < Minitest::Test
 
   def repack_of(gem_path)
     Paquette::GemServer::GemRepacker.repack(gem_path,
-      gemspec_extras: {"paquette.license_key" => "L-1"},
+      values: {"license_key" => "L-1"},
       files: {"LICENSE-COMMERCIAL.txt" => "Licensed to Acme BV.\n"})
+  end
+
+  # The lines of one file out of a gem, endings dropped
+  def unpacked_lines(gem_path, entry)
+    Dir.mktmpdir do |dir|
+      Gem::Package.new(gem_path).extract_files(dir)
+      File.readlines(File.join(dir, entry), chomp: true)
+    end
   end
 
   def create_personalized_gem
@@ -484,8 +493,7 @@ class GemRepackerTest < Minitest::Test
     # is how two repacks of one gem ended up overwriting each other and a
     # caller was handed whichever finished last.
     repacked = Paquette::GemServer::GemRepacker.repack(@test_gem_path,
-      gemspec_extras: {"paquette.license_key" => "TEST-LICENSE-456"},
-      magic_comment_replacements: {"# paquette_license_info" => "TEST-LICENSE-456"})
+      values: {"license_key" => "TEST-LICENSE-456", "licensee" => "TEST-LICENSE-456"})
 
     FileUtils.mv(repacked, personalized_path)
     personalized_path

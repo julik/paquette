@@ -10,10 +10,23 @@ module Paquette::CacheValidation
   # The stack's validator. Fails closed (nil) for an object that has never
   # heard of the protocol.
   #
+  # The scope is the one package an endpoint is about, or nil for the whole
+  # corpus. A gate's validator is a digest of what the caller can see, which
+  # costs one entitlement question per package in scope - so an endpoint about
+  # one package says so, and pays for that package alone. A repository whose
+  # `cache_validator` takes no argument is asked without one.
+  #
   # @param repository [Object]
+  # @param scope [String, nil]
   # @return [String, nil]
-  def validator_of(repository)
-    repository.cache_validator if repository.respond_to?(:cache_validator)
+  def validator_of(repository, scope = nil)
+    return nil unless repository.respond_to?(:cache_validator)
+
+    if repository.method(:cache_validator).arity.zero?
+      repository.cache_validator
+    else
+      repository.cache_validator(scope)
+    end
   end
 
   # Whether two callers asking the stack the same question can get different
@@ -50,10 +63,11 @@ module Paquette::CacheValidation
   # @param repository [Object]
   # @param resource_parts [Array<String>] what distinguishes this endpoint's
   #   body from another's over the same corpus
+  # @param scope [String, nil] the one package the endpoint is about, if any
   # @param weak [Boolean]
   # @return [String, nil]
-  def etag_for(repository, *resource_parts, weak: false)
-    base = validator_of(repository)
+  def etag_for(repository, *resource_parts, scope: nil, weak: false)
+    base = validator_of(repository, scope)
     return nil if base.nil?
 
     tag = %("#{Digest::SHA256.base64digest([base, *resource_parts].join("\0"))}")

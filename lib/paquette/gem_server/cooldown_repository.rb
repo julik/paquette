@@ -40,9 +40,10 @@ class Paquette::GemServer::CooldownRepository < SimpleDelegator
   # validator and the interval; the sorted publish times are memoized
   # under the inner validator, fail-closed as everywhere else.
   #
+  # @param scope [String, nil] forwarded to the wrapped repository
   # @return [String, nil]
-  def cache_validator
-    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
+  def cache_validator(scope = nil)
+    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__, scope)
     return nil if inner.nil?
 
     source_state = if @published_at_source

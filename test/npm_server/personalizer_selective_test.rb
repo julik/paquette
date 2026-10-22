@@ -1,14 +1,17 @@
 require_relative "../test_helper"
 require "digest"
 
-# The files_for:/personalization_key:/cache_dir: side of the npm Personalizer;
-# twin of the gem-side PersonalizerSelectiveTest.
+# The cache_dir: side of the npm Personalizer - where files land, which
+# packages opt out, and the promise that the caches answer before the tarball
+# is ever opened; twin of the gem-side PersonalizerSelectiveTest.
 class NpmPersonalizerSelectiveTest < Minitest::Test
   PACKAGE = "@acme/widgets"
 
   def setup
     @packages_dir = Dir.mktmpdir("npm_personalizer_selective")
-    write_npm_package(@packages_dir, name: PACKAGE, version: "1.0.0")
+    write_npm_package(@packages_dir, name: PACKAGE, version: "1.0.0",
+      files: {"index.js" => "// paquette:licensee\nmodule.exports = 1;\n"})
+    write_npm_package(@packages_dir, name: "plain", version: "1.0.0")
     @repository = Paquette::NpmServer::DirectoryNpmRepository.new(@packages_dir)
     @cache_dir = Dir.mktmpdir("npm_personalizer_selective_cache")
   end
@@ -18,70 +21,70 @@ class NpmPersonalizerSelectiveTest < Minitest::Test
     FileUtils.remove_entry(@cache_dir)
   end
 
-  def test_cache_dir_is_where_personalized_tarballs_land
-    personalizer = Paquette::NpmServer::Personalizer.new(@repository, license_key: "L-1", cache_dir: @cache_dir)
+  def personalizer(**options)
+    Paquette::NpmServer::Personalizer.new(@repository, cache_dir: @cache_dir, **options)
+  end
 
-    path = personalizer.package_file_path(PACKAGE, "1.0.0")
+  def as(licensee, &block)
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, {"licensee" => licensee}), &block)
+  end
+
+  def test_cache_dir_is_where_personalized_tarballs_land
+    path = as("Licensee One") { personalizer.package_file_path(PACKAGE, "1.0.0") }
 
     assert File.exist?(path)
     assert path.start_with?(@cache_dir), "expected #{path} under #{@cache_dir}"
   end
 
-  def test_files_for_injects_per_package_content_and_is_asked_once_per_file
-    calls = 0
-    personalizer = Paquette::NpmServer::Personalizer.new(@repository,
-      license_key: "L-1",
-      personalization_key: "Licensee One",
-      files_for: ->(name, version, _path) {
-        calls += 1
-        {"LICENSE-NOTE.txt" => "For Licensee One: #{name} #{version}"}
-      },
-      cache_dir: @cache_dir)
+  def test_a_personalized_tarball_is_built_once_and_then_reused
+    repo = personalizer(files: {"LICENSE-NOTE.txt" => "For\n  paquette:licensee\n"})
 
-    first = personalizer.package_file_path(PACKAGE, "1.0.0")
-    second = personalizer.package_file_path(PACKAGE, "1.0.0")
+    first = as("Licensee One") { repo.package_file_path(PACKAGE, "1.0.0") }
+    built_at = File.mtime(first)
+    second = as("Licensee One") { repo.package_file_path(PACKAGE, "1.0.0") }
 
     assert_equal first, second
-    assert_equal 1, calls, "the cache answers before files_for is asked again"
-    assert_equal "For Licensee One: #{PACKAGE} 1.0.0", tarball_file(first, "package/LICENSE-NOTE.txt")
+    assert_equal built_at, File.mtime(second), "the cache answers before the tarball is repacked again"
+    assert_equal "For\n  Licensee One\n", tarball_file(first, "package/LICENSE-NOTE.txt")
 
     # The integrity the document advertises is the served file's.
-    assert_equal Digest::SHA1.file(first).hexdigest, personalizer.dist_for(PACKAGE, "1.0.0")["shasum"]
-  end
-
-  def test_files_for_nil_serves_the_original_and_keeps_the_repository_s_hashes
-    calls = 0
-    personalizer = Paquette::NpmServer::Personalizer.new(@repository,
-      license_key: "L-1",
-      files_for: ->(*) {
-        calls += 1
-        nil
-      },
-      cache_dir: @cache_dir)
-
-    original = @repository.package_file_path(PACKAGE, "1.0.0")
-
-    assert_equal original, personalizer.package_file_path(PACKAGE, "1.0.0")
-    assert_equal original, personalizer.package_file_path(PACKAGE, "1.0.0")
-    assert_equal 1, calls, "the opt-out marker answers before files_for is asked again"
-    assert_equal @repository.dist_for(PACKAGE, "1.0.0"), personalizer.dist_for(PACKAGE, "1.0.0")
-    assert_equal 1, Dir.glob(File.join(@cache_dir, "*.plain")).length
-  end
-
-  def test_two_personalization_keys_never_share_a_file
-    build_for = ->(key) do
-      Paquette::NpmServer::Personalizer.new(@repository,
-        license_key: "L-1",
-        personalization_key: key,
-        files_for: ->(_name, _version, _path) { {"LICENSE-NOTE.txt" => "For #{key}"} },
-        cache_dir: @cache_dir).package_file_path(PACKAGE, "1.0.0")
+    as("Licensee One") do
+      assert_equal Digest::SHA1.file(first).hexdigest, repo.dist_for(PACKAGE, "1.0.0")["shasum"]
     end
+  end
 
-    one = build_for.call("Licensee One")
-    other = build_for.call("Licensee Two")
+  # Whether a package carries a marker is a fact about the package, written
+  # down once and never asked of the licensee.
+  def test_a_package_without_a_marker_is_served_as_it_is_and_remembered
+    original = @repository.package_file_path("plain", "1.0.0")
+    repo = personalizer
+
+    as("Licensee One") do
+      assert_equal original, repo.package_file_path("plain", "1.0.0")
+      assert_equal @repository.dist_for("plain", "1.0.0"), repo.dist_for("plain", "1.0.0")
+    end
+    as("Licensee Two") { assert_equal original, repo.package_file_path("plain", "1.0.0") }
+
+    assert_equal 1, Dir.glob(File.join(@cache_dir, "*.plain")).length
+    assert_empty Dir.glob(File.join(@cache_dir, "*.tgz"))
+  end
+
+  def test_two_licensees_never_share_a_file
+    repo = personalizer(files: {"LICENSE-NOTE.txt" => "paquette:licensee\n"})
+
+    one = as("Licensee One") { repo.package_file_path(PACKAGE, "1.0.0") }
+    other = as("Licensee Two") { repo.package_file_path(PACKAGE, "1.0.0") }
 
     refute_equal one, other
-    assert_equal "For Licensee One", tarball_file(one, "package/LICENSE-NOTE.txt")
-    assert_equal "For Licensee Two", tarball_file(other, "package/LICENSE-NOTE.txt")
+    assert_equal "Licensee One\n", tarball_file(one, "package/LICENSE-NOTE.txt")
+    assert_equal "Licensee Two\n", tarball_file(other, "package/LICENSE-NOTE.txt")
+  end
+
+  # The injected files are part of what the cache is keyed on.
+  def test_different_injected_files_never_share_a_file
+    one = as("L") { personalizer(files: {"A.txt" => "a"}).package_file_path(PACKAGE, "1.0.0") }
+    other = as("L") { personalizer(files: {"A.txt" => "b"}).package_file_path(PACKAGE, "1.0.0") }
+
+    refute_equal one, other
   end
 end

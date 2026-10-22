@@ -20,14 +20,15 @@ require "securerandom"
 #   use Paquette::ResponseCache, directory: "tmp/cache/gems"
 #   run Paquette::GemServer.new(repo, authenticator: authenticator)
 #
-# Which entry is the caller's is the server's to say, and only once its
-# authenticator has let the read in: the cache leaves a Lookup in the env, and
-# the server hands it what `identity(auth_token:)` on that same authenticator
-# says the token belongs to - a user or a license, never the token itself, so a
-# rotated token finds the entries the old one left. An env key with a dot in it
-# cannot come from a client, so nothing on the wire can name an identity. A
-# request the server never identifies - anonymous, refused, or behind an
-# authenticator without `identity` - goes straight through.
+# Which entry is the caller's is the server's to say, and only once the
+# Paquette::Authenticator it built for the request has let the read in: the
+# cache leaves a Lookup in the env, and the server hands it what `identity` on
+# that authenticator says the token belongs to - a user or a license, never the
+# token itself, so a rotated token finds the entries the old one left. An env
+# key with a dot in it cannot come from a client, so nothing on the wire can
+# name an identity. A request the server never identifies - anonymous, refused,
+# or with an authenticator that has no `identity` or answers nil - goes
+# straight through.
 #
 # Entries are keyed by the URL, that identity, and whether `Accept` asks for
 # JSON - the PyPI index answers one URL in HTML or JSON. The URL carries the
@@ -35,8 +36,8 @@ require "securerandom"
 # told apart by subdomain or by path prefix. The key is not what
 # keeps two callers apart - the ETag is, since the stored one has to be current
 # for the caller asking - but it keeps each caller from overwriting another's
-# entry, and a gate_key that wrongly names two customers alike from serving one's
-# body to the other.
+# entry, and an identity that wrongly names two customers alike from serving
+# one's body to the other.
 #
 # Only identified requests without a query string are stored, and the
 # client's own headers go into the key only as that one bit, so a stranger puts
@@ -365,7 +366,7 @@ class Paquette::ResponseCache::Lookup
   # @return [String, nil] the stored ETag to revalidate with
   def identify(identity)
     unless identity.nil? || identity.is_a?(String) || identity.is_a?(Integer)
-      raise TypeError, "identity(auth_token:) must return a String, an Integer or nil, not a #{identity.class}"
+      raise TypeError, "identity must return a String, an Integer or nil, not a #{identity.class}"
     end
     # Binary: `strip` raises on a String that is not valid UTF-8
     return nil if @key || identity.to_s.b.strip.empty?

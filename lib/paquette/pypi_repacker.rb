@@ -3,9 +3,11 @@ require "tmpdir"
 require "json"
 require "measurometer"
 
-# Rewrites the contents of a wheel or an sdist into a new one; the Python
-# counterpart of Paquette::NpmRepacker. Byte-reproducible, since pip checks
-# the sha256 the index published for the file.
+# Rewrites the contents of a wheel or an sdist into a new one for one caller:
+# every marker line filled with the caller's value (see Paquette::Markers),
+# the values written to paquette.json, files injected. The Python counterpart
+# of Paquette::NpmRepacker. Byte-reproducible, since pip checks the sha256 the
+# index published for the file.
 #
 # A wheel has its RECORD rewritten to match, and loses any signature over the
 # old one. An sdist only gets its files changed - whatever wheel pip builds
@@ -13,16 +15,14 @@ require "measurometer"
 class Paquette::PypiRepacker
   # Bumped whenever the same source file and the same arguments would repack
   # into different bytes, so a cache keyed on the inputs can include it.
+  # 2: markers, in every entry; paquette.json carries all the values.
   #
   # @return [Integer]
-  FORMAT_VERSION = 1
+  FORMAT_VERSION = 2
 
-  # @return [Array<String>]
-  SOURCE_EXTENSIONS = %w[.py .pyi].freeze
-
-  # Where the license key goes: next to METADATA in a wheel, where
+  # Where the values go: next to METADATA in a wheel, where
   # `importlib.metadata.distribution(name).read_text("paquette.json")` finds
-  # it, and at the root of an sdist.
+  # them, and at the root of an sdist.
   #
   # @return [String]
   STAMP_FILE = "paquette.json"
@@ -33,31 +33,43 @@ class Paquette::PypiRepacker
   # @param path [String]
   # @param filename [String] the distribution filename, which says which
   #   kind of archive this is
-  # @param stamp [Hash, nil] written as paquette.json; nil writes none
-  # @param magic_comment_replacements [Hash{String => String}]
+  # @param values [Hash{String => String}]
   # @param files [Hash{String => String}] path relative to the archive root =>
   #   content - the root of a wheel is site-packages
   # @param into [String, nil]
   # @return [String] the path of the repacked file
-  def self.repack(path, filename:, stamp: nil, magic_comment_replacements: {}, files: {}, into: nil)
-    new(path, filename: filename, stamp: stamp, magic_comment_replacements: magic_comment_replacements,
-      files: files, into: into).repack
+  def self.repack(path, filename:, values:, files: {}, into: nil)
+    new(path, filename: filename, values: values, files: files, into: into).repack
+  end
+
+  # The keys of every marker in the archive, whichever kind it is. Empty for
+  # a file that asks for nothing, which is how a personalizer knows to serve
+  # it as it is.
+  #
+  # @param path [String]
+  # @param filename [String]
+  # @return [Array<String>]
+  def self.marker_keys(path, filename:)
+    Measurometer.instrument("paquette.pypi_repacker.marker_keys") do
+      entries = Paquette::PypiServer::PypiRepository.wheel?(filename) ? Paquette::Wheel.entries(path) : Paquette::Tarball.entries(path)
+      entries.flat_map { |entry| Paquette::Markers.keys_in(entry.content.to_s) }.uniq
+    end
   end
 
   # @param path [String]
   # @param filename [String]
-  # @param stamp [Hash, nil]
-  # @param magic_comment_replacements [Hash{String => String}]
-  # @param files [Hash{String => String}]
+  # @param values [Hash{String => String}] the caller's values: each marker
+  #   line for a key is filled with its value, and all of them land in
+  #   paquette.json
+  # @param files [Hash{String => String}] with markers in the content filled in too
   # @param into [String, nil]
-  def initialize(path, filename:, stamp: nil, magic_comment_replacements: {}, files: {}, into: nil)
+  def initialize(path, filename:, values:, files: {}, into: nil)
     # The one-line rule has no sourcemaps to protect here, but it does keep
     # every traceback line number the same as in the source the publisher saw
-    Paquette::NpmRepacker.check_replacements!(magic_comment_replacements)
+    Paquette::Markers.check_values!(values)
     @path = path
     @filename = filename
-    @stamp = stamp
-    @magic_comment_replacements = magic_comment_replacements
+    @values = values
     @files = files
     @into = into
   end
@@ -92,8 +104,8 @@ class Paquette::PypiRepacker
     entries = entries.reject { |entry| RECORD_SIGNATURES.include?(entry.name.delete_prefix("#{dist_info}/")) }
     entries = entries.map { |entry| rewrite(entry, entry.name) }
 
-    injected = @files.map { |relative_path, content| [relative_path, content.to_s] }
-    injected << ["#{dist_info}/#{STAMP_FILE}", JSON.pretty_generate(@stamp)] if @stamp
+    injected = injected_files { |relative_path| relative_path }
+    injected << ["#{dist_info}/#{STAMP_FILE}", stamp]
     entries = inject(entries, injected) { |name, mode, content| Paquette::Wheel::Entry.new(name: name, mode: mode, mtime: mtime, content: content) }
 
     # The binary distribution format wants .dist-info last, and RECORD with it
@@ -130,23 +142,41 @@ class Paquette::PypiRepacker
       rewrite(entry, entry.name.delete_prefix("#{root}/"))
     end
 
-    injected = @files.map { |relative_path, content| ["#{root}/#{relative_path}", content.to_s] }
-    injected << ["#{root}/#{STAMP_FILE}", JSON.pretty_generate(@stamp)] if @stamp
+    injected = injected_files { |relative_path| "#{root}/#{relative_path}" }
+    injected << ["#{root}/#{STAMP_FILE}", stamp]
     entries = inject(entries, injected) { |name, mode, content| Paquette::Tarball::Entry.new(name: name, mode: mode, mtime: mtime, content: content) }
 
     Paquette::Tarball.write(destination, entries)
   end
 
-  # Either kind of entry - both structs answer to the same four fields
+  # @return [String]
+  def stamp
+    JSON.pretty_generate(@values)
+  end
+
+  # The injected files with their markers filled in, named by the block.
+  #
+  # @yieldparam relative_path [String]
+  # @return [Array<Array(String, String)>]
+  def injected_files
+    @files.map do |relative_path, content|
+      [yield(relative_path), Paquette::Markers.substitute(content.to_s, @values, described_as: relative_path)]
+    end
+  end
+
+  # Either kind of entry - both structs answer to the same four fields. Every
+  # entry, not only the sources: Markers leaves a binary alone itself.
   #
   # @param entry [Paquette::Wheel::Entry, Paquette::Tarball::Entry]
   # @param relative_path [String]
   # @return [Paquette::Wheel::Entry, Paquette::Tarball::Entry]
   def rewrite(entry, relative_path)
-    return entry unless @magic_comment_replacements.any? && SOURCE_EXTENSIONS.include?(File.extname(relative_path))
+    filled = Measurometer.instrument("paquette.pypi_repacker.replace_magic_comments") do
+      Paquette::Markers.substitute(entry.content, @values, described_as: relative_path)
+    end
+    return entry if filled.equal?(entry.content)
 
-    replaced = apply_magic_comment_replacements(entry.content, relative_path)
-    entry.dup.tap { |copy| copy.content = replaced }
+    entry.dup.tap { |copy| copy.content = filled }
   end
 
   # An injected file that replaces a shipped one keeps that one's place and mode.
@@ -163,36 +193,5 @@ class Paquette::PypiRepacker
       by_name[name] = yield(name, by_name[name]&.mode || 0o644, content)
     end
     by_name.values
-  end
-
-  # A whole comment line is replaced by a whole comment line, indentation and all
-  #
-  # @param content [String]
-  # @param relative_path [String]
-  # @return [String]
-  # @raise [Paquette::NpmRepacker::MarkerNotApplied]
-  def apply_magic_comment_replacements(content, relative_path)
-    text = content.dup.force_encoding(Encoding::UTF_8)
-    return content unless text.valid_encoding?
-
-    Measurometer.instrument("paquette.pypi_repacker.replace_magic_comments") do
-      replaced = text.lines.map do |line|
-        stripped = line.chomp
-        indent = stripped[0, stripped.length - stripped.lstrip.length]
-        replacement = @magic_comment_replacements.find { |marker, _| stripped.lstrip == marker }
-        next line unless replacement
-
-        "#{indent}# #{replacement[1]}#{line[stripped.length..]}"
-      end.join
-
-      @magic_comment_replacements.each_key do |marker|
-        next unless replaced.include?(marker)
-
-        raise Paquette::NpmRepacker::MarkerNotApplied,
-          "#{relative_path} still contains #{marker.inspect} after personalization: it is not alone on its line, " \
-          "so the license key would have been left out of the served package"
-      end
-      replaced.b
-    end
   end
 end

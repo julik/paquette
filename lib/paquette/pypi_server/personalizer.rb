@@ -4,43 +4,42 @@ require "digest"
 require "tmpdir"
 require "measurometer"
 
-# Serves each wheel and sdist repacked for one licensee - magic comment lines
-# replaced, files injected, the license key stamped into paquette.json - with
-# the repacked files cached on disk. Counterpart of NpmServer::Personalizer,
-# and the same two contracts about `files_for:` apply.
+# Serves each wheel and sdist repacked for the caller - every marker line
+# filled with the value the caller's authenticator gave for it (see
+# Paquette::Markers), the values written to paquette.json, files injected -
+# with the repacked files cached on disk. Counterpart of
+# NpmServer::Personalizer.
+#
+# Built once and shared: who the caller is comes from
+# Paquette::Authenticator.current, which the server sets for the request. A
+# caller whose authenticator gives no `personalization`, and a file with no
+# marker in it, are both served byte for byte.
 class Paquette::PypiServer::Personalizer < SimpleDelegator
   # @param repository [Paquette::PypiServer::PypiRepository] the repository
   #   to wrap
-  # @param license_key [String]
-  # @param magic_comment_replacements [Hash{String => String}] whole comment
-  #   lines in *.py and *.pyi to replace, marker => replacement
-  # @param files [Hash{String => String}] injected into every file, path
-  #   relative to the archive root - site-packages, for a wheel
-  # @param stamp [Hash, nil] written as paquette.json into the wheel's
-  #   .dist-info and the sdist's root; defaults to the license key
-  # @param files_for [Proc, nil] per-file extras, called with (project,
-  #   filename, original_path); nil means the file is served byte for byte
-  # @param personalization_key [String, nil] everything the personalized
-  #   bytes depend on beyond the file itself
+  # @param files [Hash{String => String}] injected into every file that
+  #   carries a marker, path relative to the archive root - site-packages,
+  #   for a wheel - with markers in the content filled in
   # @param cache_dir [String, nil] where personalized files and opt-out
   #   markers are kept
-  def initialize(repository, license_key:, magic_comment_replacements: {}, files: {}, stamp: nil,
-    files_for: nil, personalization_key: nil, cache_dir: nil)
-    Paquette::NpmRepacker.check_replacements!(magic_comment_replacements)
+  def initialize(repository, files: {}, cache_dir: nil)
     super(repository)
-    @license_key = license_key
-    @magic_comment_replacements = magic_comment_replacements
     @files = files
-    @stamp = stamp || {"license_key" => license_key}
-    @files_for = files_for
-    @personalization_key = personalization_key
     @cache_dir = cache_dir || File.join(Dir.tmpdir, "paquette_personalized_pypi")
   end
 
+  # The wrapped validator with what this caller gets written into their files
+  # mixed in - see the gem-side Personalizer. A caller who gets vanilla bytes
+  # gets the wrapped validator as it is.
+  #
+  # @param scope [String, nil] forwarded to the wrapped repository
   # @return [String, nil]
-  def cache_validator
-    inner = Paquette::CacheValidation.validator_of(__getobj__)
-    Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest)
+  def cache_validator(scope = nil)
+    inner = Paquette::CacheValidation.validator_of(__getobj__, scope)
+    values = personalization
+    return inner if values.nil?
+
+    Paquette::CacheValidation.derive_validator(inner, "personalizer", personalization_digest(values))
   end
 
   # @return [Boolean]
@@ -55,7 +54,10 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
     original_path = __getobj__.file_path(project, filename)
     return original_path unless original_path && File.exist?(original_path)
 
-    personalize(original_path, project, filename)
+    values = personalization
+    return original_path if values.nil?
+
+    personalize(original_path, project, filename, values)
   end
 
   # The hash and size have to be the personalized file's, or pip refuses
@@ -81,6 +83,20 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
 
   private
 
+  # The current caller's values. nil when there is nobody to personalize for.
+  #
+  # @return [Hash{String => String}, nil]
+  def personalization
+    authenticator = Paquette::Authenticator.current
+    return nil unless authenticator.respond_to?(:personalization)
+
+    values = authenticator.personalization
+    return nil if values.nil? || values.empty?
+
+    Paquette::Markers.check_values!(values)
+    values
+  end
+
   # A project page lists every file, and the stack is built per request, so
   # the hash is kept next to the file it describes. The path names everything
   # that went into the file, which is what makes the sidecar safe to trust.
@@ -99,34 +115,33 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
     end
   end
 
-  # Keyed by everything that goes INTO the file: two licensees never share one.
+  # Keyed by everything that goes INTO the file: two callers never share one.
+  # Consulted before the file is ever opened.
   #
   # @param original_path [String]
   # @param project [String]
   # @param filename [String]
+  # @param values [Hash{String => String}]
   # @return [String]
-  def personalize(original_path, project, filename)
+  def personalize(original_path, project, filename, values)
     stat = File.stat(original_path)
     # The served filename is the original one - pip reads the tags out of
     # it - so the digest goes into a directory instead
-    personalized_path = File.join(@cache_dir, cache_digest(project, filename, stat), filename)
+    personalized_path = File.join(@cache_dir, cache_digest(project, filename, stat, values), filename)
     if File.exist?(personalized_path)
       Measurometer.increment_counter("paquette.pypi_personalizer.cache_hit")
       return personalized_path
     end
 
-    if @files_for
-      marker = plain_marker_path(project, filename, stat)
-      return original_path if File.exist?(marker)
+    # Whether a file carries a marker is a fact about the file, so one look
+    # inside it answers for everybody.
+    marker = plain_marker_path(project, filename, stat)
+    return original_path if File.exist?(marker)
 
-      dynamic_files = @files_for.call(project, filename, original_path)
-      if dynamic_files.nil?
-        FileUtils.mkdir_p(File.dirname(marker))
-        FileUtils.touch(marker)
-        return original_path
-      end
-    else
-      dynamic_files = {}
+    if Paquette::PypiRepacker.marker_keys(original_path, filename: filename).empty?
+      FileUtils.mkdir_p(File.dirname(marker))
+      FileUtils.touch(marker)
+      return original_path
     end
 
     Measurometer.increment_counter("paquette.pypi_personalizer.cache_miss")
@@ -136,9 +151,8 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
       Dir.mktmpdir("paquette_personalize_pypi") do |workdir|
         built = Paquette::PypiRepacker.repack(original_path,
           filename: filename,
-          stamp: @stamp,
-          magic_comment_replacements: @magic_comment_replacements,
-          files: @files.merge(dynamic_files),
+          values: values,
+          files: @files,
           into: File.join(workdir, filename))
 
         # A rename is atomic, so a racing request sees a whole file or none
@@ -152,12 +166,13 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
   # @param project [String]
   # @param filename [String]
   # @param stat [::File::Stat]
+  # @param values [Hash{String => String}]
   # @return [String]
-  def cache_digest(project, filename, stat)
-    Digest::SHA256.hexdigest([project, filename, personalization_digest, stat.mtime.to_r, stat.size].join("\0"))[0, 24]
+  def cache_digest(project, filename, stat, values)
+    Digest::SHA256.hexdigest([project, filename, personalization_digest(values), stat.mtime.to_r, stat.size].join("\0"))[0, 24]
   end
 
-  # Keyed by the file alone, never the licensee - see NpmServer::Personalizer.
+  # Keyed by the file alone, never the caller - see NpmServer::Personalizer.
   #
   # @param project [String]
   # @param filename [String]
@@ -168,15 +183,17 @@ class Paquette::PypiServer::Personalizer < SimpleDelegator
     File.join(@cache_dir, "plain", "#{digest}.plain")
   end
 
+  # Everything that would be written into a file for this caller, and the
+  # repacker format it is written with. Values only ever come in as data, so
+  # the digest sees all of them - there is nothing to declare.
+  #
+  # @param values [Hash{String => String}]
   # @return [String]
-  def personalization_digest
-    @personalization_digest ||= Digest::SHA256.hexdigest([
+  def personalization_digest(values)
+    Digest::SHA256.hexdigest([
       Paquette::PypiRepacker::FORMAT_VERSION,
-      @license_key,
-      @magic_comment_replacements.sort.inspect,
-      @files.sort.inspect,
-      @stamp.sort.inspect,
-      @personalization_key.to_s
+      values.sort.inspect,
+      @files.sort.inspect
     ].join("\0"))[0, 16]
   end
 end

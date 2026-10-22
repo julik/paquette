@@ -286,17 +286,16 @@ class CompactIndexRangesTest < Minitest::Test
   # Under the gating model
   # ------------------------------------------------------------------
 
-  # A gate built without a gate_key refuses to name itself, so no ETag is
-  # emitted - that must not change here. The digest and the ranges still
-  # work: they describe the bytes this caller is being served, and nothing
-  # about them is stored or shared by anyone.
+  # A caller who sees nothing gets no ETag - that must not change here. The
+  # digest and the ranges still work: they describe the bytes this caller is
+  # being served, and nothing about them is stored or shared by anyone.
   def test_a_stack_that_cannot_name_itself_still_ranges_and_still_emits_no_etag
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: nil) { |**| true }
+    gated = Paquette::GemServer::ReadGatedRepository.new(repository, EntitlingAuthenticator.new { |**| false })
     app = Writable.gem_server(gated)
 
     full = get(app, "/versions")
-    assert_nil full[1]["ETag"], "a keyless gate must still emit no validator"
+    assert_nil full[1]["ETag"], "a gate with nothing to show must still emit no validator"
     assert_equal "sha-256=:#{Digest::SHA256.base64digest(body_of(full))}:", full[1]["Repr-Digest"]
 
     partial = get(app, "/versions", "HTTP_RANGE" => "bytes=0-0")
@@ -312,9 +311,7 @@ class CompactIndexRangesTest < Minitest::Test
   # this caller was going to be served - not of the ungated one.
   def test_a_range_is_taken_out_of_the_gated_document
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: "alice") do |name:, version: nil|
-      name == "minuscule_test"
-    end
+    gated = Paquette::GemServer::ReadGatedRepository.new(repository, EntitlingAuthenticator.new { |name:, version: nil| name == "minuscule_test" })
     app = Writable.gem_server(gated)
 
     full = body_of(get(app, "/versions"))

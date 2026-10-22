@@ -116,9 +116,9 @@ class Paquette::PypiServer
   #   will read; nil removes the cap
   # @param shared_caching [Boolean] false keeps every response `private` -
   #   see the same option on GemServer
-  # @param authenticator [Object, nil] answers `read_permitted?`,
-  #   `write_permitted?` and `check_otp!` - see Paquette::Authentication.
-  #   Without one, everyone reads and nobody writes
+  # @param authenticator [#call, nil] a subclass of Paquette::Authenticator,
+  #   or anything answering `call(token)` with one, asked once per request
+  #   who the caller is. Without one, everyone reads and nobody writes
   # @param on_publish [#call, nil] called with a Paquette::Published and the
   #   Rack::Request once an upload has landed - see the same option on GemServer
   def initialize(repository, placeholder_app: Paquette::IndexPage.new(DEFAULT_BLURB, title: "Paquette Python package index"),
@@ -161,10 +161,14 @@ class Paquette::PypiServer
         next refusal if refusal
       end
 
-      # Shared across Rack threads: the request lives on a per-request clone
+      # Shared across Rack threads: the request and the caller's view of the
+      # repository live on a per-request clone, and the caller's authenticator
+      # is current for the wrappers while the handler runs.
+      authenticator = env[Paquette::Authenticator::ENV_KEY]
       handler = clone
       handler.instance_variable_set(:@request, request)
-      response = @@routes.perform_action(route, handler, request)
+      handler.instance_variable_set(:@repository, repository_for(authenticator))
+      response = Paquette::Authenticator.with(authenticator) { @@routes.perform_action(route, handler, request) }
       Paquette::Served.package(env, handler.send(:served_package, route.params(request)), response[0])
       response
     end
@@ -172,6 +176,18 @@ class Paquette::PypiServer
     bad_request(e.message)
   rescue PayloadTooLarge => e
     payload_too_large(e.message)
+  end
+
+  # The repository as this caller sees it: behind a gate when their
+  # authenticator answers `entitled?`, the one the server was built with
+  # otherwise. The gate is per request because the authenticator is.
+  #
+  # @param authenticator [Paquette::Authenticator]
+  # @return [Object] a repository
+  def repository_for(authenticator)
+    return @repository unless authenticator.respond_to?(:entitled?)
+
+    Paquette::PypiServer::ReadGatedRepository.new(@repository, authenticator)
   end
 
   # The project a request was about, and the version when a file names one -
@@ -311,7 +327,7 @@ class Paquette::PypiServer
     format, content_type = negotiate
     return not_acceptable unless format
 
-    etag = etag_for("simple-project", project, content_type)
+    etag = etag_for("simple-project", project, content_type, scope: project)
     return not_modified(etag) if if_none_match_satisfied?(etag)
 
     Measurometer.instrument("paquette.pypi_server.project") do

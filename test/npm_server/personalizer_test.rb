@@ -4,7 +4,7 @@ class NpmPersonalizerTest < Minitest::Test
   include Rack::Test::Methods
 
   LICENSED_SOURCE = <<~JS
-    // paquette_license_info
+    // paquette:licensee
     export function greet() {
       return "hello";
     }
@@ -24,71 +24,88 @@ class NpmPersonalizerTest < Minitest::Test
     FileUtils.rm_rf(@dir) if @dir
   end
 
-  def personalized(license_key: "LIC-123", **options)
-    Paquette::NpmServer::Personalizer.new(
-      @repository,
-      license_key: license_key,
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to #{license_key}"},
-      **options
-    )
+  def personalized(**options)
+    Paquette::NpmServer::Personalizer.new(@repository, **options)
   end
 
-  def test_the_license_key_lands_in_the_served_tarball
-    path = personalized.package_file_path("widget", "1.0.0")
+  # The repository as one caller sees it: the personalizer is built once and
+  # asks the current authenticator who that is.
+  def as(licensee = "LIC-123", &block)
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, {"licensee" => "licensed to #{licensee}"}), &block)
+  end
 
-    assert_includes tarball_file(path, "package/index.js"), "licensed to LIC-123"
-    refute_includes tarball_file(path, "package/index.js"), "paquette_license_info"
+  def test_the_value_lands_in_the_served_tarball
+    path = as { personalized.package_file_path("widget", "1.0.0") }
+
+    assert_includes tarball_file(path, "package/index.js"), "// licensed to LIC-123"
+    refute_includes tarball_file(path, "package/index.js"), "paquette:licensee"
   end
 
   # Failing closed matters more here than anywhere: package.json still carries
-  # the key, so a package served with the marker left in its code looks
+  # the stamp, so a package served with the marker left in its code looks
   # personalized from the outside while the licensee's copy is untraceable.
   def test_a_package_whose_marker_could_not_be_applied_is_not_served
     write_npm_package(@dir, name: "minified", version: "1.0.0",
-      files: {"index.js" => "function e(o,r){return o+r}// paquette_license_info\n"})
+      files: {"index.js" => "function e(o,r){return o+r}// paquette:licensee\n"})
 
-    assert_raises(Paquette::NpmRepacker::MarkerNotApplied) do
-      personalized.package_file_path("minified", "1.0.0")
+    assert_raises(Paquette::Markers::NotApplied) do
+      as { personalized.package_file_path("minified", "1.0.0") }
     end
   end
 
-  # Refused where the stack is built, not on the first customer download.
-  def test_a_multiline_replacement_is_refused_when_the_stack_is_built
-    assert_raises(Paquette::NpmRepacker::MultilineReplacement) do
-      Paquette::NpmServer::Personalizer.new(@repository,
-        license_key: "LIC-123",
-        magic_comment_replacements: {"// paquette_license_info" => "licensed to Acme\nand more"})
+  # Refused before the tarball is opened: a value is one line or it is not a value.
+  def test_a_multiline_value_is_refused
+    authenticator = PersonalizingAuthenticator.new(nil, {"licensee" => "licensed to Acme\nand more"})
+
+    assert_raises(Paquette::Markers::MultilineValue) do
+      Paquette::Authenticator.with(authenticator) { personalized.package_file_path("widget", "1.0.0") }
     end
   end
 
-  # A package with no marker at all is ordinary, not a failure.
-  def test_a_package_without_the_marker_is_served
+  # A package with no marker at all is ordinary: it goes out as it sits on disk.
+  def test_a_package_without_a_marker_is_served_byte_for_byte
     write_npm_package(@dir, name: "unmarked", version: "1.0.0",
       files: {"index.js" => "export const x = 1;\n"})
 
-    path = personalized.package_file_path("unmarked", "1.0.0")
-    assert_equal "export const x = 1;\n", tarball_file(path, "package/index.js")
+    path = as { personalized.package_file_path("unmarked", "1.0.0") }
+    assert_equal @repository.package_file_path("unmarked", "1.0.0"), path
+    assert_nil JSON.parse(tarball_file(path, "package/package.json"))["paquette"]
   end
 
-  def test_the_license_key_lands_in_package_json
-    path = personalized.package_file_path("widget", "1.0.0")
+  # Nobody to personalize for, nothing personalized - and no cache touched.
+  def test_a_caller_without_personalization_gets_the_original
+    cache_dir = Dir.mktmpdir("paquette_npm_personalizer_cache")
+    repo = personalized(cache_dir: cache_dir)
+
+    assert_equal @repository.package_file_path("widget", "1.0.0"), repo.package_file_path("widget", "1.0.0")
+    Paquette::Authenticator.with(Paquette::Authenticator.new(nil)) do
+      assert_equal @repository.package_file_path("widget", "1.0.0"), repo.package_file_path("widget", "1.0.0")
+    end
+    assert_equal @repository.dist_for("widget", "1.0.0"), repo.dist_for("widget", "1.0.0")
+    assert_empty Dir.children(cache_dir)
+  ensure
+    FileUtils.rm_rf(cache_dir)
+  end
+
+  def test_the_values_land_in_package_json
+    path = as { personalized.package_file_path("widget", "1.0.0") }
     package_json = JSON.parse(tarball_file(path, "package/package.json"))
 
-    assert_equal({"licenseKey" => "LIC-123"}, package_json["paquette"])
+    assert_equal({"licensee" => "licensed to LIC-123"}, package_json["paquette"])
     assert_equal({"left-pad" => "^1.3.0"}, package_json["dependencies"])
     assert_equal "widget", package_json["name"]
   end
 
-  def test_injected_files_are_carried_into_the_package
-    repo = personalized(files: {"LICENSE.txt" => "Licensed to Acme Inc."})
-    path = repo.package_file_path("widget", "1.0.0")
+  def test_injected_files_are_carried_into_the_package_with_their_markers_filled
+    repo = personalized(files: {"LICENSE.txt" => "This copy is\n  paquette:licensee\n"})
+    path = as { repo.package_file_path("widget", "1.0.0") }
 
-    assert_equal "Licensed to Acme Inc.", tarball_file(path, "package/LICENSE.txt")
+    assert_equal "This copy is\n  licensed to LIC-123\n", tarball_file(path, "package/LICENSE.txt")
   end
 
   def test_the_original_is_left_alone
     original = File.binread(@repository.package_file_path("widget", "1.0.0"))
-    personalized.package_file_path("widget", "1.0.0")
+    as { personalized.package_file_path("widget", "1.0.0") }
 
     assert_equal original, File.binread(@repository.package_file_path("widget", "1.0.0"))
   end
@@ -96,35 +113,38 @@ class NpmPersonalizerTest < Minitest::Test
   # The integrity npm is told to expect must describe the bytes it is handed.
   def test_published_integrity_describes_the_personalized_tarball
     repo = personalized
-    metadata = repo.package_metadata("widget")
-    dist = metadata["versions"]["1.0.0"]["dist"]
+    as do
+      metadata = repo.package_metadata("widget")
+      dist = metadata["versions"]["1.0.0"]["dist"]
 
-    served = repo.package_file_path("widget", "1.0.0")
-    assert_equal Digest::SHA1.file(served).hexdigest, dist["shasum"]
-    assert_equal "sha512-" + [Digest::SHA512.file(served).digest].pack("m0"), dist["integrity"]
+      served = repo.package_file_path("widget", "1.0.0")
+      assert_equal Digest::SHA1.file(served).hexdigest, dist["shasum"]
+      assert_equal "sha512-" + [Digest::SHA512.file(served).digest].pack("m0"), dist["integrity"]
+    end
   end
 
   def test_personalization_changes_the_hashes
     original_dist = @repository.dist_for("widget", "1.0.0")
-    personalized_dist = personalized.dist_for("widget", "1.0.0")
+    personalized_dist = as { personalized.dist_for("widget", "1.0.0") }
 
     refute_equal original_dist["integrity"], personalized_dist["integrity"]
     assert_equal original_dist["tarball"], personalized_dist["tarball"]
   end
 
   def test_repacking_twice_produces_the_same_bytes
-    first = personalized.package_file_path("widget", "1.0.0")
+    first = as { personalized.package_file_path("widget", "1.0.0") }
     digest = Digest::SHA256.file(first).hexdigest
     File.unlink(first)
 
-    second = personalized.package_file_path("widget", "1.0.0")
+    second = as { personalized.package_file_path("widget", "1.0.0") }
     assert_equal digest, Digest::SHA256.file(second).hexdigest
   end
 
   # Two licensees must never share one personalized file.
   def test_two_licensees_get_different_files
-    one = personalized(license_key: "LIC-111").package_file_path("widget", "1.0.0")
-    two = personalized(license_key: "LIC-222").package_file_path("widget", "1.0.0")
+    repo = personalized
+    one = as("LIC-111") { repo.package_file_path("widget", "1.0.0") }
+    two = as("LIC-222") { repo.package_file_path("widget", "1.0.0") }
 
     refute_equal one, two
     assert_includes tarball_file(one, "package/index.js"), "LIC-111"
@@ -132,33 +152,34 @@ class NpmPersonalizerTest < Minitest::Test
   end
 
   def test_scoped_packages_are_personalized_too
-    path = personalized.package_file_path("@acme/gadget", "2.0.0")
+    path = as { personalized.package_file_path("@acme/gadget", "2.0.0") }
 
     assert_includes tarball_file(path, "package/index.js"), "licensed to LIC-123"
   end
 
   def test_metadata_still_describes_the_package_itself
-    metadata = personalized.package_metadata("widget")
+    metadata = as { personalized.package_metadata("widget") }
 
     assert_equal "widget", metadata["name"]
     assert_equal({"left-pad" => "^1.3.0"}, metadata["versions"]["1.0.0"]["dependencies"])
   end
 
   def test_stacked_on_a_gated_repository
-    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository) { |name:, version: nil| name == "widget" }
-    stack = Paquette::NpmServer::Personalizer.new(gated,
-      license_key: "LIC-999",
-      magic_comment_replacements: {"// paquette_license_info" => "licensed to LIC-999"})
+    gated = Paquette::NpmServer::ReadGatedRepository.new(@repository, EntitlingAuthenticator.new { |name:, version: nil| name == "widget" })
+    stack = Paquette::NpmServer::Personalizer.new(gated)
 
-    assert_nil stack.package_metadata("@acme/gadget")
+    as("LIC-999") do
+      assert_nil stack.package_metadata("@acme/gadget")
 
-    path = stack.package_file_path("widget", "1.0.0")
-    assert_includes tarball_file(path, "package/index.js"), "LIC-999"
+      path = stack.package_file_path("widget", "1.0.0")
+      assert_includes tarball_file(path, "package/index.js"), "LIC-999"
+    end
   end
 
+  # End to end: the server resolves the caller, the personalizer picks them up.
   def test_served_bytes_match_published_integrity
-    stack = personalized
-    @app = Paquette::NpmServer.new(stack)
+    @app = Paquette::NpmServer.new(personalized,
+      authenticator: PersonalizingAuthenticator.with({"licensee" => "licensed to LIC-123"}))
 
     get "/widget"
     dist = JSON.parse(last_response.body)["versions"]["1.0.0"]["dist"]

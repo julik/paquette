@@ -1,32 +1,49 @@
 require "delegate"
+require "digest"
 require "measurometer"
 
-# Wraps a gem repository and filters every read through an entitler block:
-# non-entitled gems disappear from listings, return nil paths, and report
-# as non-existent. Writes pass through - who may write is the authenticator's
-# to say, and the server asks it before any repository is touched.
+# Wraps a gem repository and filters every read through the caller's
+# authenticator: a gem the caller is not entitled to disappears from
+# listings, returns nil paths, and reports as non-existent. Writes pass
+# through - who may write is the authenticator's to say, and the server asks
+# it before any repository is touched.
+#
+# The server puts one of these around its repository for every request whose
+# authenticator answers `entitled?`, so an application never builds one.
 class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
   # @param repository [Paquette::GemServer::GemRepository] the repository
   #   to wrap
-  # @param gate_key [String, nil] what this gate is called, for HTTP
-  #   caching: the identity the entitler consults plus everything the
-  #   answers depend on. Left out, the whole stack emits no ETag and
-  #   serves every request in full — the intended fail-closed default,
-  #   because a wrong ETag hands one customer another's entitlements.
-  # @yield [name:, version:] the entitler; returns truthy when the caller
-  #   may see that gem/version
-  def initialize(repository, gate_key: nil, &entitler)
+  # @param authenticator [Paquette::Authenticator] the caller's, answering
+  #   `entitled?(name:, version: nil)` - truthy when they may see that gem,
+  #   or that version of it
+  def initialize(repository, authenticator)
     super(repository)
-    @entitler = entitler
-    @gate_key = gate_key
+    @authenticator = authenticator
   end
 
-  # nil without a gate_key — derive_validator does the refusing.
+  # The wrapped validator with what this caller can see mixed in: the names
+  # and versions the gate lets through, within the scope. Exact by
+  # construction - the ETag moves when and only when the visible set does -
+  # at the price of one entitlement question per package in scope, which is
+  # the same question rendering the body asks. A caller who can see nothing
+  # gets no validator: their response is empty and cheap, and an ETag over it
+  # would still move with the corpus beneath the gate, telling a stranger
+  # when gems they cannot see are published.
   #
+  # @param scope [String, nil] one gem name, or nil for the whole corpus
   # @return [String, nil]
-  def cache_validator
-    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__)
-    Paquette::GemServer::GemRepository.derive_validator(inner, "read-gate", @gate_key)
+  def cache_validator(scope = nil)
+    inner = Paquette::GemServer::GemRepository.cache_validator_of(__getobj__, scope)
+    return nil if inner.nil?
+
+    visible = if scope
+      versions_for_gem(scope).map { |version| [scope, version] }
+    else
+      gem_names.zip + gem_versions
+    end
+    return nil if visible.empty?
+
+    Paquette::GemServer::GemRepository.derive_validator(inner, "read-gate", Digest::SHA256.hexdigest(visible.sort.join("\0")))
   end
 
   # A gate may decide by something Paquette never sees — an IP, a header —
@@ -105,13 +122,14 @@ class Paquette::GemServer::ReadGatedRepository < SimpleDelegator
     end
   end
 
-  # The entitler is the caller's, and a listing calls it once per gem in
-  # the corpus — an entitler that reaches for a database on every call is
-  # the usual reason a gated index is slower than an ungated one.
+  # The authenticator is the caller's, and a listing asks it once per gem in
+  # the corpus — one that reaches for a database on every call, instead of
+  # remembering what it learned for the request, is the usual reason a gated
+  # index is slower than an ungated one.
   #
   # @param criteria [Hash]
   # @return [Object] truthy when entitled
   def entitled?(**criteria)
-    Measurometer.instrument("paquette.gem_read_gate.entitled") { @entitler.call(**criteria) }
+    Measurometer.instrument("paquette.gem_read_gate.entitled") { @authenticator.entitled?(**criteria) }
   end
 end

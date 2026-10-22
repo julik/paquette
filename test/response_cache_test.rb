@@ -1,32 +1,52 @@
 require_relative "test_helper"
 
-# Lets in what `permitted` says, and names the caller as `identities` does.
+# A factory in the shape the servers take. Its instances let in what
+# `permitted` says of the token, name the caller as `identities` does, and
+# gate reads through `entitled` when one is given. Every identity question
+# lands in `identity_questions`, with the token it was about.
 class ResponseCacheAuthenticator
   attr_accessor :permitted
   attr_reader :identity_questions
 
-  def initialize(identities, &permitted)
+  def initialize(identities, entitled: nil, &permitted)
     @identities = identities
+    @entitled = entitled
     @permitted = permitted || ->(_token) { true }
     @identity_questions = []
   end
 
-  def read_permitted?(auth_token:)
-    @permitted.call(auth_token)
+  def call(token)
+    klass = @entitled ? Gating : Instance
+    klass.new(token, self)
   end
 
-  def write_permitted?(auth_token:)
-    false
+  def read_permitted?(token) = @permitted.call(token)
+
+  def identity_for(token)
+    @identity_questions << token
+    @identities.call(token)
   end
 
-  def check_otp!(auth_token:, otp_code:)
-    raise Paquette::OtpRejected
+  def entitled_for(name:, version:) = @entitled.call(name: name, version: version)
+
+  class Instance < Paquette::Authenticator
+    def initialize(token, factory)
+      super(token)
+      @factory = factory
+    end
+
+    def read_permitted? = @factory.read_permitted?(token)
+
+    def identity = @factory.identity_for(token)
   end
 
-  def identity(auth_token:)
-    @identity_questions << auth_token
-    @identities.call(auth_token)
+  class Gating < Instance
+    def entitled?(name:, version: nil) = @factory.entitled_for(name: name, version: version)
   end
+end
+
+# Reads, and nothing else: no identity, so nothing to cache under.
+class NamelessAuthenticator < Paquette::Authenticator
 end
 
 class ResponseCacheTest < Minitest::Test
@@ -441,25 +461,31 @@ class ResponseCacheGemServerTest < Minitest::Test
     @questions = 0
     @licensed = true
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: "licensee-1") do |name:, version: nil|
+    # The server gates for an authenticator that answers entitled?, and the
+    # gate names itself by what the caller can see, so the stack has an ETag
+    entitled = lambda do |name:, version: nil|
       @questions += 1
       true
     end
-    @authenticator = ResponseCacheAuthenticator.new(->(token) { "licensee-1" if token.start_with?("licensee-1") }) { @licensed }
-    @app = Paquette::ResponseCache.new(Paquette::GemServer.new(gated, authenticator: @authenticator), directory: @dir)
+    @authenticator = ResponseCacheAuthenticator.new(->(token) { "licensee-1" if token.start_with?("licensee-1") }, entitled: entitled) { @licensed }
+    @app = Paquette::ResponseCache.new(Paquette::GemServer.new(repository, authenticator: @authenticator), directory: @dir)
   end
 
   def teardown
     FileUtils.rm_rf(@dir)
   end
 
+  # The gate names itself by what the caller can see, so answering the
+  # revalidation costs the visibility questions - once per name and version -
+  # but not the per-version checksumming a render does
   def test_a_hit_does_not_render
     first = get("/versions")
     asked_while_rendering = @questions
     second = get("/versions")
+    asked_while_revalidating = @questions - asked_while_rendering
 
     assert_operator asked_while_rendering, :>, 0
-    assert_equal asked_while_rendering, @questions, "the stored body was replayed without asking the gate"
+    assert_equal visibility_questions, asked_while_revalidating, "the stored body was replayed after naming the gate, without rendering"
     assert_equal first[2].to_a.join, second[2].to_a.join
     assert_equal [200, 200], [first[0], second[0]]
   end
@@ -502,10 +528,8 @@ class ResponseCacheGemServerTest < Minitest::Test
   end
 
   def test_an_authenticator_without_identity_is_never_cached
-    authenticator = Object.new
-    authenticator.define_singleton_method(:read_permitted?) { |auth_token:| true }
     app = Paquette::ResponseCache.new(Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
-      authenticator: authenticator), directory: @dir)
+      authenticator: NamelessAuthenticator), directory: @dir)
     env = Rack::MockRequest.env_for("/versions", "HTTP_AUTHORIZATION" => "Bearer licensee-1")
     app.call(env)
 
@@ -520,12 +544,19 @@ class ResponseCacheGemServerTest < Minitest::Test
     second = get("/versions", token: "licensee-1-rotated")
 
     assert_equal [200, first[2].to_a.join], [second[0], second[2].to_a.join]
-    assert_equal asked_while_rendering, @questions
+    assert_equal asked_while_rendering + visibility_questions, @questions
     @licensed = false
     assert_equal 401, get("/versions", token: "licensee-1-rotated")[0]
   end
 
   private
+
+  # What naming the gate for the whole corpus costs: one question per gem
+  # name, one per version
+  def visibility_questions
+    repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
+    repository.gem_names.length + repository.gem_versions.length
+  end
 
   def get(path, token: "licensee-1")
     @app.call(Rack::MockRequest.env_for(path, "HTTP_AUTHORIZATION" => "Bearer #{token}"))

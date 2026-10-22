@@ -117,8 +117,9 @@ class GemServerAuthenticationTest < Minitest::Test
 
   # Anything but OtpRejected is the authenticator's own failure, not a wrong code
   def test_other_errors_from_check_otp_propagate
-    broken = Paquette::Authentication::Open.new
-    def broken.check_otp!(**) = raise(IOError, "the database is gone")
+    broken = Class.new(Paquette::Authentication::Open) do
+      def check_otp!(code) = raise(IOError, "the database is gone")
+    end
     server = Paquette::GemServer.new(@repository, authenticator: broken)
 
     assert_raises(IOError) do

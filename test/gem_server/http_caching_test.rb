@@ -168,65 +168,82 @@ class HttpCachingTest < Minitest::Test
   # The wrapper chain: the part that must not be got wrong
   # ------------------------------------------------------------------
 
-  # The gate is an arbitrary caller-supplied block. Nothing here can tell
-  # what subset it selects, so without a caller-supplied key the server
-  # refuses to name the response at all.
-  def test_a_gate_without_a_key_emits_no_etag_at_all
-    response = get(gated_app(gate_key: nil) { |**| true }, "/versions")
+  # A caller who can see nothing gets no validator: their index is empty
+  # and cheap, and an ETag over it would still move with the corpus beneath
+  # the gate, telling a stranger when gems they cannot see are published.
+  def test_a_caller_who_sees_nothing_gets_no_etag_at_all
+    response = get(gated_app { |**| false }, "/versions")
 
     assert_equal 200, response[0]
-    assert_nil response[1]["ETag"],
-      "a gate that cannot describe itself must not be given a validator"
+    assert_nil response[1]["ETag"]
 
     # And with no validator there is no way to earn a 304 either.
-    assert_equal 200, get(gated_app(gate_key: nil) { |**| true }, "/versions", "HTTP_IF_NONE_MATCH" => "*")[0]
+    assert_equal 200, get(gated_app { |**| false }, "/versions", "HTTP_IF_NONE_MATCH" => "*")[0]
+    assert_nil get(gated_app { |**| false }, "/names")[1]["ETag"]
   end
 
   def test_the_fail_closed_gate_propagates_through_a_personalizer_above_it
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repository) { |**| true }
-    personalized = Paquette::GemServer::Personalizer.new(gated,
-      license_key: "L", personalization_key: "one", cache_dir: tmp_cache_dir)
+    gated = Paquette::GemServer::ReadGatedRepository.new(repository, EntitlingAuthenticator.new { |**| false })
+    personalized = Paquette::GemServer::Personalizer.new(gated, cache_dir: tmp_cache_dir)
+    app = Paquette::GemServer.new(personalized, authenticator: PersonalizingAuthenticator.with(values_for("one")))
 
-    assert_nil Paquette::GemServer.new(personalized).call(env_for("/versions"))[1]["ETag"],
+    assert_nil app.call(env_for("/versions"))[1]["ETag"],
       "a layer that refused to name itself must not be named from above"
   end
 
-  # The heart of it: two licensees, two gates, two different views of the
-  # corpus. Their validators must not collide, or one 304 hands the other's
-  # entitlements over.
+  # The heart of it: two licensees, two views of the corpus. Their validators
+  # must not collide, or one 304 hands the other's entitlements over.
   def test_two_different_gates_produce_different_validators
-    alice = get(gated_app(gate_key: "alice") { |name:, version: nil| name == "zip_kit" }, "/versions")
-    bob = get(gated_app(gate_key: "bob") { |name:, version: nil| name == "minuscule_test" }, "/versions")
+    alice = get(gated_app { |name:, version: nil| name == "zip_kit" }, "/versions")
+    bob = get(gated_app { |name:, version: nil| name == "minuscule_test" }, "/versions")
 
     refute_nil alice[1]["ETag"]
     refute_nil bob[1]["ETag"]
     refute_equal alice[1]["ETag"], bob[1]["ETag"]
 
     # Concretely: Bob's tag must not get Alice's index off the hook.
-    crossed = get(gated_app(gate_key: "alice") { |name:, version: nil| name == "zip_kit" },
+    crossed = get(gated_app { |name:, version: nil| name == "zip_kit" },
       "/versions", "HTTP_IF_NONE_MATCH" => bob[1]["ETag"])
     assert_equal 200, crossed[0]
   end
 
-  # Two gates that select the *same* gems but belong to different licensees
-  # still differ, because the key is the licensee and not the outcome. This
-  # is the case a naive "digest what the gate returned" scheme would get
-  # wrong the moment entitlements changed.
-  def test_gates_with_different_keys_differ_even_when_they_select_the_same_gems
-    one = get(gated_app(gate_key: "licensee-1") { |**| true }, "/names")[1]["ETag"]
-    two = get(gated_app(gate_key: "licensee-2") { |**| true }, "/names")[1]["ETag"]
+  # The validator is a digest of what the caller can see, so it moves the
+  # moment a version comes into or goes out of view - a window closing, a
+  # license revoked - with nothing to declare and nothing to get wrong.
+  def test_the_validator_moves_with_what_the_caller_can_see
+    whole = get(gated_app { |**| true }, "/info/zip_kit")[1]["ETag"]
+    narrowed = get(gated_app { |name:, version: nil| version.nil? || version == "6.2.0" }, "/info/zip_kit")[1]["ETag"]
 
-    refute_equal one, two
+    refute_nil whole
+    refute_nil narrowed
+    refute_equal whole, narrowed
+    assert_equal 200, get(gated_app { |name:, version: nil| version.nil? || version == "6.2.0" },
+      "/info/zip_kit", "HTTP_IF_NONE_MATCH" => whole)[0]
   end
 
-  def test_the_same_gate_key_is_stable_across_freshly_built_stacks
-    # The README builds the wrapper stack per request, so the Proc is a new
-    # object every time and cannot be what the validator is keyed on.
-    one = get(gated_app(gate_key: "licensee-1") { |**| true }, "/names")[1]["ETag"]
-    two = get(gated_app(gate_key: "licensee-1") { |**| true }, "/names")[1]["ETag"]
+  def test_the_same_view_is_stable_across_requests_and_callers
+    # One authenticator instance per request: the Proc and the instance are
+    # new every time, and neither is what the validator is keyed on.
+    one = get(gated_app { |**| true }, "/names")[1]["ETag"]
+    two = get(gated_app { |**| true }, "/names")[1]["ETag"]
 
     assert_equal one, two
+  end
+
+  # The endpoint about one gem pays for that gem alone: the gate is asked
+  # about the versions of the gem in scope, and about nothing else.
+  def test_an_info_validator_asks_the_gate_about_its_own_gem_only
+    questions = []
+    app = Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR),
+      authenticator: EntitlingAuthenticator.gating { |name:, version: nil|
+        questions << name
+        true
+      })
+
+    get(app, "/info/zip_kit")
+
+    assert_equal ["zip_kit"], questions.uniq
   end
 
   def test_a_personalized_index_does_not_collide_with_the_plain_one
@@ -244,20 +261,20 @@ class HttpCachingTest < Minitest::Test
     refute_equal one, two
   end
 
-  def test_a_gated_stack_with_a_key_still_tracks_the_corpus
+  def test_a_gated_stack_still_tracks_the_corpus
     Dir.mktmpdir do |dir|
       FileUtils.cp_r(File.join(FIXTURE_GEMS_DIR, "minuscule_test"), dir)
       repository = Paquette::GemServer::DirectoryGemRepository.new(dir)
-      build = -> {
-        gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: "k") { |**| true }
-        Paquette::GemServer.new(gated)
-      }
+      # Only minuscule_test is visible, so the view does not change when
+      # zip_kit arrives - the corpus underneath still has to be in the tag
+      app = Paquette::GemServer.new(repository, authenticator: EntitlingAuthenticator.gating { |name:, version: nil| name == "minuscule_test" })
 
-      before = get(build.call, "/versions")[1]["ETag"]
+      before = get(app, "/info/minuscule_test")[1]["ETag"]
+      refute_nil before
       repository.add_gem(File.binread(File.join(FIXTURE_GEMS_DIR, "zip_kit", "zip_kit-6.2.1.gem")))
 
-      refute_equal before, get(build.call, "/versions")[1]["ETag"],
-        "the gate's key must be mixed into the corpus fingerprint, not substituted for it"
+      refute_equal before, get(app, "/info/minuscule_test")[1]["ETag"],
+        "the visible set is mixed into the corpus fingerprint, not substituted for it"
     end
   end
 
@@ -403,10 +420,14 @@ class HttpCachingTest < Minitest::Test
   # otherwise a cache keyed on the URL hands one licensee's build to
   # another.
   def test_a_personalized_download_does_not_share_the_plain_validator
-    plain = get(plain_app, "/gems/zip_kit-6.2.0.gem")[1]["ETag"]
-    personalized = get(personalized_app(key: "one"), "/gems/zip_kit-6.2.0.gem")[1]["ETag"]
+    plain = get(plain_app, "/gems/minuscule_test-0.1.0.gem")[1]["ETag"]
+    personalized = get(personalized_app(key: "one"), "/gems/minuscule_test-0.1.0.gem")[1]["ETag"]
 
     refute_equal plain, personalized
+
+    # And a gem with no marker in it is the same bytes for everybody
+    assert_equal get(plain_app, "/gems/zip_kit-6.2.0.gem")[1]["ETag"],
+      get(personalized_app(key: "one"), "/gems/zip_kit-6.2.0.gem")[1]["ETag"]
   end
 
   # ------------------------------------------------------------------
@@ -515,7 +536,7 @@ class HttpCachingTest < Minitest::Test
   end
 
   def test_a_range_over_a_gated_gem_is_still_refused
-    app = gated_app(gate_key: "alice") { |**| false }
+    app = gated_app { |**| false }
     assert_equal 404, get(app, "/gems/zip_kit-6.2.0.gem", "HTTP_RANGE" => "bytes=0-9")[0]
   end
 
@@ -564,12 +585,15 @@ class HttpCachingTest < Minitest::Test
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
     plain = repository.gem_checksum("zip_kit", "6.2.0")
 
-    gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: "k") { |**| false }
+    gated = Paquette::GemServer::ReadGatedRepository.new(repository, EntitlingAuthenticator.new { |**| false })
     assert_nil gated.gem_checksum("zip_kit", "6.2.0")
 
-    personalized = Paquette::GemServer::Personalizer.new(repository,
-      license_key: "L", personalization_key: "one", cache_dir: tmp_cache_dir)
-    refute_equal plain, personalized.gem_checksum("zip_kit", "6.2.0")
+    personalized = Paquette::GemServer::Personalizer.new(repository, cache_dir: tmp_cache_dir)
+    Paquette::Authenticator.with(PersonalizingAuthenticator.new(nil, values_for("one"))) do
+      refute_equal plain, personalized.gem_checksum("minuscule_test", "0.1.0")
+      assert_equal repository.gem_checksum("zip_kit", "6.2.0"), personalized.gem_checksum("zip_kit", "6.2.0"),
+        "a gem with no marker is the one on disk, checksum included"
+    end
   end
 
   private
@@ -591,16 +615,15 @@ class HttpCachingTest < Minitest::Test
     [
       ["plain", plain_app, true],
       ["plain, shared_caching: false", Paquette::GemServer.new(repository, shared_caching: false), false],
-      ["gated with a key", gated_app(gate_key: "alice") { |**| true }, false],
-      ["gated without a key", gated_app(gate_key: nil) { |**| true }, false],
+      ["gated", gated_app { |**| true }, false],
+      ["gated to one gem", gated_app { |name:, version: nil| name == "zip_kit" }, false],
       ["personalized", personalized_app(key: "one"), false],
       ["gated and personalized", gated_and_personalized_app, false]
     ].each { |description, app, open| yield description, app, open }
   end
 
   # Every kind of response the gem server hands out, 304s included - by
-  # tag where the stack emits one, and by date on the download, which a
-  # keyless gate still answers.
+  # tag where the stack emits one, and by date on the download.
   def each_response(app, request_env = {})
     ["/versions", "/names", "/info/zip_kit", "/gems/zip_kit-6.2.0.gem",
       "/specs.4.8.gz", "/quick/Marshal.4.8/zip_kit-6.2.0.gemspec.rz", "/api/v1/versions",
@@ -635,28 +658,34 @@ class HttpCachingTest < Minitest::Test
     Paquette::GemServer.new(Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR))
   end
 
-  def gated_app(gate_key:, &entitler)
+  # The server gates for every request whose authenticator answers
+  # entitled?, so a gated app is a plain repository and a gating factory
+  def gated_app(&entitler)
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    Paquette::GemServer.new(
-      Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: gate_key, &entitler)
-    )
+    Paquette::GemServer.new(repository, authenticator: EntitlingAuthenticator.gating(&entitler))
+  end
+
+  def values_for(key)
+    {"license_key" => "LICENSE-#{key}", "licensee" => key}
   end
 
   def personalized_app(key:)
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    personalized = Paquette::GemServer::Personalizer.new(repository,
-      license_key: "LICENSE-#{key}", personalization_key: key, cache_dir: tmp_cache_dir)
+    personalized = Paquette::GemServer::Personalizer.new(repository, cache_dir: tmp_cache_dir)
 
-    Paquette::GemServer.new(personalized)
+    Paquette::GemServer.new(personalized, authenticator: PersonalizingAuthenticator.with(values_for(key)))
+  end
+
+  # Gating and personalizing at once, out of one authenticator
+  class GatingAndPersonalizing < PersonalizingAuthenticator
+    def entitled?(name:, version: nil) = true
   end
 
   def gated_and_personalized_app
     repository = Paquette::GemServer::DirectoryGemRepository.new(FIXTURE_GEMS_DIR)
-    gated = Paquette::GemServer::ReadGatedRepository.new(repository, gate_key: "alice") { |**| true }
-    personalized = Paquette::GemServer::Personalizer.new(gated,
-      license_key: "L", personalization_key: "alice", cache_dir: tmp_cache_dir)
+    personalized = Paquette::GemServer::Personalizer.new(repository, cache_dir: tmp_cache_dir)
 
-    Paquette::GemServer.new(personalized)
+    Paquette::GemServer.new(personalized, authenticator: ->(token) { GatingAndPersonalizing.new(token, values_for("alice")) })
   end
 
   # One per licensee, so the personalizer's own cache cannot be what makes

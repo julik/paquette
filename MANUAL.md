@@ -204,7 +204,42 @@ Without an authenticator, a server lets everyone read and refuses every write. `
 
 ## Hostnames and mounting
 
-The dev server runs on `http://localhost:9292`. The three registries have to live on separate hostnames, so `config.ru` routes by the first subdomain - `gem.`, `npm.` or `pypi.` - with `Paquette::SubdomainRouter`:
+The three registries live on separate hostnames. In Rails, give each server a constraint on the first label of the host and `mount` it at the root. `mount` takes any Rack callable, so a server built once goes in as is, and a stack built per caller goes in as the lambda from [Wiring it all together](#wiring-it-all-together):
+
+```ruby
+# config/routes.rb
+Rails.application.routes.draw do
+  constraints(->(req) { req.host.start_with?("gem.") }) do
+    mount gem_app, at: "/"
+  end
+
+  constraints(->(req) { req.host.start_with?("npm.") }) do
+    mount Paquette::NpmServer.new(npm_repo, authenticator: authenticator), at: "/"
+  end
+
+  constraints(->(req) { req.host.start_with?("pypi.") }) do
+    mount Paquette::PypiServer.new(pypi_repo, authenticator: authenticator), at: "/"
+  end
+
+  # Your own routes go below. Rails matches top to bottom, so a `root` or a
+  # catch-all declared above the mounts would answer `gem.example.com/` itself.
+  root "pages#home"
+end
+```
+
+Rails has a `subdomain:` constraint, but it is not the one to reach for here. It takes `config.action_dispatch.tld_length` labels (one by default) off the end of the host and calls the rest the subdomain, so `gem.example.com` has the subdomain `gem` while `gem.localhost` has none at all - `localhost` is the whole domain to Rails - and `gem.acme.co.uk` has `gem.acme`. The lambda looks at the first label and nothing else, so one routes file serves `gem.localhost:3000` in development and `gem.example.com` in production. A registry whose hostname does not start with the registry name gets a `host:` constraint instead:
+
+```ruby
+constraints host: "gems.acme.dev" do
+  mount gem_app, at: "/"
+end
+```
+
+In development Rails allows `.localhost`, `.test` and any IP address out of the box, so `gem.localhost:3000` answers straight away. If you set `config.hosts` in production, add each registry's hostname to it.
+
+Mounting in `routes.rb` runs the server inside the Rails executor, so ActiveRecord connections and `Current` are managed the same as for a controller action. See [Hosting Paquette inside a Rails application](docs/hosting-paquette-inside-rails.md).
+
+Outside Rails, in a bare `config.ru`, `Paquette::SubdomainRouter` does the same job by the first label of the host - this is what the dev server on `http://localhost:9292` runs:
 
 ```ruby
 run Paquette::SubdomainRouter.new { |router|
@@ -215,11 +250,20 @@ run Paquette::SubdomainRouter.new { |router|
 }
 ```
 
-If your OS supports `.localhost` TLDs, you can access `gem.whatever.localhost:9292` and it will respond. In Rails, mount each server under a host constraint, as in [Concepts](#concepts).
+If your OS supports `.localhost` TLDs, `gem.whatever.localhost:9292` will respond.
 
 ### Mounting under a path prefix (namespaces)
 
-All three servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/). In Rack only a `map` and nothing else:
+All three servers can be mounted under a prefix, which is how [gem.coop spells a namespace](https://gem.coop/updates/6/). In Rails that is the `at:` of the mount:
+
+```ruby
+constraints(->(req) { req.host.start_with?("gem.") }) do
+  mount Paquette::GemServer.new(acme_repo), at: "/@acme"
+  mount Paquette::GemServer.new(beta_repo), at: "/@beta"
+end
+```
+
+In Rack only a `map` and nothing else:
 
 ```ruby
 Rack::Builder.new do
